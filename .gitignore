@@ -1,3 +1,10 @@
+# Visual Studio Code
+.vscode/
+.claude/
+
+# exported Images
+*.png
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
