@@ -24,10 +24,10 @@ def main():
     print(robot)
     print()
 
-    # FK at neutral pose, then build skeleton-aligned cylinders
-    q = np.zeros(robot.nq)
-    q[1] = 0.8  # Example joint angle
-    q[3] = 0.9
+    # FK at neutral pose, with test joints angles, then build skeleton-aligned cylinders.
+    q = robot.neutral_config()
+    q[7] = -0.2   # Front_Left_Side_joint
+    q[9] = 1.0   # Front_Left_Calf_joint
     robot.forward_kinematics(q)
     robot.build_cylinders()
 

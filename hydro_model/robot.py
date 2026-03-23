@@ -26,12 +26,21 @@ class CylinderPrimitive:
     For leg links the cylinder spans between two skeleton joints
     (centerline-projected).  The radius is derived from the smallest
     principal moment of inertia: I_sym = m*r^2/2  →  r = sqrt(2*I_sym/m).
+
+    ``center_local`` is the offset of the cylinder midpoint from the link's
+    BODY-frame origin, expressed in the link LOCAL frame.  It is populated by
+    ``QuadrupedRobot.build_cylinders()`` and used by the CasADi symbolic
+    model to compute the correct world-frame cylinder centre from FK:
+
+        p_center_world = R_link @ center_local + t_link_world
     """
     radius: float           # [m]
     length: float           # [m]
     center: np.ndarray      # midpoint of the cylinder in world frame [m]
     axis_world: np.ndarray  # unit vector along the cylinder axis (world frame)
     axis_local: np.ndarray  # same axis expressed in the link body frame
+    center_local: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    # offset of cylinder midpoint from link frame origin, in link LOCAL frame
 
     @property
     def volume(self) -> float:
@@ -151,8 +160,16 @@ class QuadrupedRobot:
     def __init__(self, urdf_path: str | Path):
         self.urdf_path = Path(urdf_path)
 
-        # Build Pinocchio model (kinematic + dynamic, no geometry meshes)
-        self.model: pin.Model = pin.buildModelFromUrdf(str(self.urdf_path))
+        # Build Pinocchio model with a free-floating base so the robot body
+        # can translate and rotate in the world frame.
+        # Configuration layout: q = [x, y, z, qx, qy, qz, qw, joint_angles...]
+        #   nq = 7 (base) + 12 (joints) = 19
+        #   nv = 6 (base twist) + 12 (joints) = 18
+        # The base velocity v[0:3] is the linear velocity in the LOCAL (body)
+        # frame, and v[3:6] is the angular velocity in the LOCAL frame.
+        self.model: pin.Model = pin.buildModelFromUrdf(
+            str(self.urdf_path), pin.JointModelFreeFlyer()
+        )
         self.data: pin.Data = self.model.createData()
 
         # Extract per-link data from Pinocchio frames
@@ -221,17 +238,36 @@ class QuadrupedRobot:
 
     @property
     def nq(self) -> int:
-        """Number of configuration variables."""
+        """Number of configuration variables (19 = 7 base + 12 joints)."""
         return self.model.nq
 
     @property
     def nv(self) -> int:
-        """Number of velocity variables (= nq for revolute joints)."""
+        """Number of velocity variables (18 = 6 base + 12 joints)."""
         return self.model.nv
+
+    @property
+    def n_base_q(self) -> int:
+        """Configuration variables for the floating base (3 pos + 4 quat = 7)."""
+        return 7
+
+    @property
+    def n_base_v(self) -> int:
+        """Velocity variables for the floating base (3 lin + 3 ang = 6)."""
+        return 6
 
     @property
     def n_actuated(self) -> int:
         return len(self.actuated_joint_names)
+
+    def neutral_config(self) -> np.ndarray:
+        """Return the neutral configuration.
+
+        The floating base is placed at the origin with identity orientation
+        (quaternion w=1), and all joint angles are zero.  Always prefer this
+        over ``np.zeros(robot.nq)`` — a zero quaternion is not a valid rotation.
+        """
+        return pin.neutral(self.model)
 
     def forward_kinematics(
         self,
@@ -322,12 +358,12 @@ class QuadrupedRobot:
             base.cylinder = CylinderPrimitive.from_inertia_only(
                 base.mass, base.inertia, com_world, np.array(oMj.rotation),
             )
+            self._set_center_local(base)
 
         # -- Leg links --
         for leg in LEG_NAMES:
             proj = self.leg_centerline_positions(leg)
 
-            # Segment endpoints for each link type
             segments = {
                 "Side":  (proj["side"],  proj["thigh"]),
                 "Thigh": (proj["thigh"], proj["calf"]),
@@ -343,6 +379,7 @@ class QuadrupedRobot:
                 link.cylinder = CylinderPrimitive.from_segment(
                     p_start, p_end, link.mass, link.inertia, R_frame,
                 )
+                self._set_center_local(link)
 
             # Foot link: thin cylinder at the foot with calf's radius
             foot_name = f"{leg}_Foot_link"
@@ -358,6 +395,21 @@ class QuadrupedRobot:
                     axis_world=calf_link.cylinder.axis_world,
                     axis_local=calf_link.cylinder.axis_local,
                 )
+                self._set_center_local(foot_link)
+
+    def _set_center_local(self, link: "LinkData") -> None:
+        """Compute cylinder.center_local from the current FK placement.
+
+        center_local = R_frame^T @ (center_world - frame_origin_world)
+
+        This stores the cylinder midpoint as a fixed offset in the link's
+        LOCAL body frame so the symbolic model can reconstruct the correct
+        world-frame position via  p = R_sym @ center_local + t_sym.
+        """
+        oMf = self.data.oMf[link.frame_id]
+        R = np.array(oMf.rotation)          # world_R_local
+        t = np.array(oMf.translation)       # frame origin in world
+        link.cylinder.center_local = R.T @ (link.cylinder.center - t)
 
     def compute_jacobian(self, frame_id: int, q: np.ndarray) -> np.ndarray:
         """6×nv world-frame Jacobian for a given frame."""
@@ -447,12 +499,13 @@ class QuadrupedRobot:
     # ------------------------------------------------------------------
 
     def total_mass(self) -> float:
-        return sum(link.mass for link in self.links.values())
+        """Total robot mass [kg] from the Pinocchio model."""
+        return pin.computeTotalMass(self.model)
 
     def __repr__(self) -> str:
         return (
             f"QuadrupedRobot(links={len(self.links)}, "
-            f"nq={self.nq}, nv={self.nv}, "
-            f"actuated={self.n_actuated}, "
+            f"nq={self.nq} (base_q={self.n_base_q} + joints={self.n_actuated}), "
+            f"nv={self.nv} (base_v={self.n_base_v} + joints={self.n_actuated}), "
             f"total_mass={self.total_mass():.4f} kg)"
         )
