@@ -31,8 +31,12 @@ def main():
     print()
 
     # ── 3. Verify against Pinocchio numeric ────────────────────────────
-    q_test = np.array([0.1, 0.3, -0.2, 0.0, 0.4, -0.1,
-                       0.2, -0.3, 0.1, -0.1, 0.2, -0.4])
+    # q layout: [x, y, z, qx, qy, qz, qw, 12×joint_angles]
+    q_test = robot.neutral_config()
+    q_test[0:3]  = [0.1, 0.0, 0.0]    # base position
+    q_test[3:7]  = [0.0, 0.0, 0.0, 1.0]  # identity quaternion (already set by neutral_config)
+    q_test[7:19] = [0.1, 0.3, -0.2, 0.0, 0.4, -0.1,
+                    0.2, -0.3, 0.1, -0.1, 0.2, -0.4]  # joint angles
     v_test = np.ones(robot.nv) * 0.05
 
     # Mass matrix

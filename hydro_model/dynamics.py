@@ -51,6 +51,8 @@ class SymbolicDynamics:
         Cd_a: float = 0.8,
         Ca_t: float = 1.0,
         Ca_a: float = 0.1,
+        z_surface: float = 0.0,
+        v_linear_threshold: float = 0.2,
     ):
         self.robot = robot
         self.nq = robot.nq # number of configuration variables
@@ -66,6 +68,8 @@ class SymbolicDynamics:
         self.Cd_a = Cd_a
         self.Ca_t = Ca_t
         self.Ca_a = Ca_a
+        self.z_surface = z_surface
+        self.v_linear_threshold = v_linear_threshold
 
         # Symbolic state variables
         self.q = ca.SX.sym("q", self.nq)
@@ -166,16 +170,25 @@ class SymbolicDynamics:
         """Build CasADi symbolic expressions for hydrodynamic forces.
 
         For each link with a cylinder:
-          - Buoyancy: constant upward force, projected into joint space via J^T
-          - Drag: quadratic drag decomposed into axial/transverse components
-          - Added mass: configuration-dependent added inertia in joint space
+          - Buoyancy: upward force scaled by symbolic submersion ratio α(q)
+          - Drag: hybrid linear+quadratic drag scaled by α(q)
+          - Added mass: configuration-dependent added inertia scaled by α(q)
 
         The cylinder geometry (radius, length) is frozen at the values
-        computed by ``robot.build_cylinders()``.  The cylinder *axis* is
-        recomputed symbolically from FK so that it tracks the current q.
+        computed by ``robot.build_cylinders()``.  The cylinder *axis* and
+        *center z-position* are recomputed symbolically from FK so that they
+        track the current q.
+
+        Submersion ratio α ∈ [0,1] is computed per link from the symbolic
+        FK z-position and the constant water surface height z_surface.
+
+        Hybrid drag: F = -(D₁·v + ½ρCdA|v|v), D₁ = ½ρCdA·v_threshold.
+        This is smooth and differentiable everywhere, unlike a hard switch.
         """
         q, v = self.q, self.v
         rho, g = self.rho, GRAVITY
+        z_surf = float(self.z_surface)
+        v_thresh = float(self.v_linear_threshold)
 
         # Accumulate joint-space contributions
         tau_buoyancy = ca.SX.zeros(self.nv, 1)
@@ -201,10 +214,6 @@ class SymbolicDynamics:
             v_link = Jv @ v     # (3, 1)
 
             # ── Cylinder axis in world frame (symbolic) ──
-            # The local axis was computed at build time; rotate it
-            # by the current frame rotation.
-            # Cylinder axis in world frame: rotate the body-frame axis by
-            # the current (symbolic) link rotation.
             axis_sym = R_sym @ ca.SX(cyl.axis_local)
             axis_sym = axis_sym / (ca.norm_2(axis_sym) + 1e-15)
 
@@ -214,29 +223,52 @@ class SymbolicDynamics:
             A_t = cyl.cross_section_transverse
             A_a = cyl.cross_section_axial
 
-            # ── Buoyancy ──
-            F_buoy = ca.SX([0.0, 0.0, rho * g * V])
+            # ── Symbolic submersion ratio α(q) ──
+            # Reconstruct the cylinder midpoint in world frame from FK:
+            #   p_center = R_link @ center_local + t_link
+            # center_local is the fixed offset (in link LOCAL frame) from the
+            # link body-frame origin to the cylinder midpoint, stored at
+            # build time by QuadrupedRobot.build_cylinders().
+            p_center = oMf.translation + R_sym @ ca.SX(cyl.center_local)
+            z_center = p_center[2]
+            # Vertical half-span: axial projection + radial projection
+            axis_z_abs = ca.fabs(axis_sym[2])
+            dz_axial = 0.5 * L * axis_z_abs
+            dz_radial = r * ca.sqrt(ca.fmax(1.0 - axis_sym[2] ** 2, 0.0))
+            dz_half = dz_axial + dz_radial
+            z_top = z_center + dz_half
+            z_bottom = z_center - dz_half
+            # α = clamp((z_surf - z_bottom) / (z_top - z_bottom), 0, 1)
+            alpha = ca.fmin(1.0, ca.fmax(0.0,
+                (z_surf - z_bottom) / (z_top - z_bottom + 1e-6)
+            ))
+
+            # ── Buoyancy (scaled by α) ──
+            F_buoy = ca.vertcat(0.0, 0.0, alpha * rho * g * V)
             tau_buoyancy += Jv.T @ F_buoy
 
-            # ── Viscous drag ──
-            # Decompose velocity into axial and transverse
+            # ── Hybrid drag (scaled by α) ──
+            # F = -(D₁·v + ½ρCdA|v|v), D₁ = ½ρCdA·v_threshold
             v_ax_mag = ca.dot(v_link, axis_sym)
             v_ax = v_ax_mag * axis_sym
             v_tr = v_link - v_ax
+            v_tr_mag = ca.norm_2(v_tr) + 1e-15
 
-            F_drag_ax = -0.5 * rho * self.Cd_a * A_a * ca.fabs(v_ax_mag) * v_ax
-            v_tr_mag = ca.norm_2(v_tr)
-            F_drag_tr = -0.5 * rho * self.Cd_t * A_t * v_tr_mag * v_tr
-            F_drag = F_drag_ax + F_drag_tr
-            tau_drag += Jv.T @ F_drag
+            D1_a = 0.5 * rho * self.Cd_a * A_a * v_thresh
+            F_drag_ax = -(D1_a * v_ax + 0.5 * rho * self.Cd_a * A_a * ca.fabs(v_ax_mag) * v_ax)
 
-            # ── Added mass (joint-space) ──
-            # M_A = J^T * M_A_cartesian * J
+            D1_t = 0.5 * rho * self.Cd_t * A_t * v_thresh
+            F_drag_tr = -(D1_t * v_tr + 0.5 * rho * self.Cd_t * A_t * v_tr_mag * v_tr)
+
+            tau_drag += Jv.T @ (alpha * (F_drag_ax + F_drag_tr))
+
+            # ── Added mass (joint-space, scaled by α) ──
+            # M_A = J^T * (α · M_A_cartesian) * J
             # M_A_cartesian = ma_t * I + (ma_a - ma_t) * (a ⊗ a)
             ma_t = self.Ca_t * rho * V
             ma_a = self.Ca_a * rho * V
             a_col = axis_sym  # already (3,1)
-            M_A_cart = ma_t * ca.SX.eye(3) + (ma_a - ma_t) * (a_col @ a_col.T)
+            M_A_cart = alpha * (ma_t * ca.SX.eye(3) + (ma_a - ma_t) * (a_col @ a_col.T))
             M_added += Jv.T @ M_A_cart @ Jv
 
         # ── Wrap as CasADi Functions ──
@@ -251,33 +283,94 @@ class SymbolicDynamics:
         )
 
     # ==================================================================
+    # SE(3) configuration time derivative
+    # ==================================================================
+
+    def _dq_dt(self, q: ca.SX, v: ca.SX) -> ca.SX:
+        """Configuration time derivative for a free-flyer + revolute joints.
+
+        For the free-floating base the velocity ``v[0:6]`` is expressed in the
+        LOCAL (body) frame, so the configuration derivative is NOT simply ``v``:
+
+          dp/dt   = R(q_base) · v_lin        (rotate body-frame velocity to world)
+          dquat/dt = ½ · q_base ⊗ [ω_body; 0]  (quaternion kinematics)
+
+        For the revolute joints:
+          dq_j/dt = v_j   (trivial, Euclidean)
+
+        Returns ``dq_dt`` of shape (nq=19, 1).
+
+        Configuration layout (Pinocchio free-flyer convention):
+          q[0:3]  = world position  [x, y, z]
+          q[3:7]  = unit quaternion [qx, qy, qz, qw]  (scalar last)
+          q[7:19] = joint angles
+        Velocity layout:
+          v[0:3]  = linear velocity  in body frame
+          v[3:6]  = angular velocity in body frame
+          v[6:18] = joint velocities
+        """
+        # Quaternion components (scalar last: [qx, qy, qz, qw])
+        qx = q[3];  qy = q[4];  qz = q[5];  qw = q[6]
+
+        # Linear and angular velocity in body frame
+        vx = v[0];  vy = v[1];  vz = v[2]
+        wx = v[3];  wy = v[4];  wz = v[5]
+
+        # World-frame position derivative:  dp/dt = R_world_body · v_body
+        # R constructed from quaternion (scalar last convention)
+        dp = ca.vertcat(
+            (1 - 2*(qy**2 + qz**2))*vx + 2*(qx*qy - qw*qz)*vy + 2*(qx*qz + qw*qy)*vz,
+            2*(qx*qy + qw*qz)*vx + (1 - 2*(qx**2 + qz**2))*vy + 2*(qy*qz - qw*qx)*vz,
+            2*(qx*qz - qw*qy)*vx + 2*(qy*qz + qw*qx)*vy + (1 - 2*(qx**2 + qy**2))*vz,
+        )
+
+        # Quaternion kinematics:  dq/dt = ½ · q ⊗ [ω; 0]
+        dqx = 0.5 * ( qw*wx + qy*wz - qz*wy)
+        dqy = 0.5 * ( qw*wy + qz*wx - qx*wz)
+        dqz = 0.5 * ( qw*wz + qx*wy - qy*wx)
+        dqw = 0.5 * (-qx*wx - qy*wy - qz*wz)
+
+        # Joint angle derivatives (trivial)
+        return ca.vertcat(dp, dqx, dqy, dqz, dqw, v[6:])   # (19, 1)
+
+    # ==================================================================
     # Full equations of motion
     # ==================================================================
 
     def _build_eom(self):
-        """Assemble the complete EoM as a CasADi Function.
+        """Assemble the complete EoM as CasADi Functions.
 
-        [M_rb(q) + M_A(q)] * q̈ + C_rb(q,q̇) * q̇ + g_rb(q)
-            = τ + τ_buoyancy(q) + τ_drag(q, q̇)
+        [M_rb(q) + M_A(q)] · v̇  +  C_rb(q,v) · v  +  g_rb(q)
+            = τ  +  τ_buoyancy(q)  +  τ_drag(q, v)
 
         The added-mass Coriolis term C_A is neglected (small for slow motion).
 
-        Rearranged to give q̈:
-            q̈ = M_total^{-1} * (τ + τ_buoyancy + τ_drag - C_rb*q̇ - g)
+        For the free-floating base the first 6 rows of τ carry the external
+        wrench on the base (zero for a purely swimming robot with no
+        direct base actuation).
+
+        State-space ODE:
+          x  = [q (19); v (18)]           dim = 37
+          ẋ  = [dq/dt (19); v̇ (18)]       dim = 37
+
+        Note: dq/dt ≠ v for the free-flyer because the quaternion
+        derivative and position derivative involve the current orientation.
+        Use ``f_xdot`` for ODE integration and ``f_integrate`` for
+        single-step configuration updates on the SE(3) manifold.
         """
         q, v, tau = self.q, self.v, self.tau
 
-        M_rb = self.f_M_rb(q)
-        C_rb = self.f_C_rb(q, v)
-        g_rb = self.f_g_rb(q)
-        M_A = self.f_M_added(q)
+        M_rb  = self.f_M_rb(q)
+        C_rb  = self.f_C_rb(q, v)
+        g_rb  = self.f_g_rb(q)
+        M_A   = self.f_M_added(q)
         tau_b = self.f_tau_buoyancy(q)
         tau_d = self.f_tau_drag(q, v)
 
         M_total = M_rb + M_A
-        rhs = tau + tau_b + tau_d - C_rb @ v - g_rb
+        rhs     = tau + tau_b + tau_d - C_rb @ v - g_rb
 
-        # Forward dynamics: q̈ = M_total \ rhs
+        # Forward dynamics: v̇ = M_total \ rhs   (nv = 18)
         a_expr = ca.solve(M_total, rhs)
 
         self.f_forward_dynamics = ca.Function(
@@ -286,16 +379,13 @@ class SymbolicDynamics:
             ["q", "v", "tau"], ["a"],
         )
 
-        # Inverse dynamics: τ = M_total * q̈ + C*q̇ + g - τ_hydro
-        a = self.a
-        M_rb2 = self.f_M_rb(q)
-        C_rb2 = self.f_C_rb(q, v)
-        g_rb2 = self.f_g_rb(q)
-        M_A2 = self.f_M_added(q)
-        tau_b2 = self.f_tau_buoyancy(q)
-        tau_d2 = self.f_tau_drag(q, v)
-
-        tau_id = (M_rb2 + M_A2) @ a + C_rb2 @ v + g_rb2 - tau_b2 - tau_d2
+        # Inverse dynamics: τ = M_total · v̇ + C·v + g − τ_hydro
+        a     = self.a
+        tau_id = (self.f_M_rb(q) + self.f_M_added(q)) @ a \
+                 + self.f_C_rb(q, v) @ v \
+                 + self.f_g_rb(q) \
+                 - self.f_tau_buoyancy(q) \
+                 - self.f_tau_drag(q, v)
 
         self.f_inverse_dynamics = ca.Function(
             "inverse_dynamics",
@@ -303,20 +393,20 @@ class SymbolicDynamics:
             ["q", "v", "a"], ["tau"],
         )
 
-        # State-space form for ODE integration.
-        # The EoM is second-order (M·q̈ = ...), but integrators expect first-order.
+        # Continuous-time state-space ODE  ẋ = f(x, u)
+        # x = [q (19); v (18)],  u = tau (18)
+        # ẋ = [dq/dt (19); v̇ (18)]
         #
-        #   ẋ = [ dq/dt  ]  =  [           q̇              ]
-        #       [ dq̇/dt  ]     [ M_total⁻¹·(τ+τ_hydro-C·q̇-g) ]
-        x = ca.vertcat(q, v)
-        u = tau
-        xdot = ca.vertcat(v, a_expr)
+        # dq/dt is computed via the SE(3) tangent map (see _dq_dt), which
+        # accounts for the quaternion kinematics of the floating base.
+        dq_dt = self._dq_dt(q, v)   # (19, 1)
+        x     = ca.vertcat(q, v)    # (37, 1)
+        xdot  = ca.vertcat(dq_dt, a_expr)  # (37, 1)
 
-        # given x = [q, v] and u = tau, return xdot = [q̇, q̈]
         self.f_xdot = ca.Function(
             "xdot",
-            [x, u], [xdot],
-            ["x", "u"], ["xdot"],
+            [x, tau], [xdot],
+            ["x", "tau"], ["xdot"],
         )
 
     # ==================================================================
@@ -335,17 +425,102 @@ class SymbolicDynamics:
         """Evaluate inverse dynamics numerically."""
         return np.array(self.f_inverse_dynamics(q, v, a)).flatten()
 
+    def find_trim_state(
+        self,
+        q_joints: np.ndarray | None = None,
+        z_guess: float = 0.05,
+    ) -> np.ndarray:
+        """Find the floating-equilibrium configuration (trim state) at rest.
+
+        Solves for base (z, pitch, roll) such that buoyancy and gravity
+        generalised forces cancel at zero velocity:
+
+            tau_buoyancy(q)[2:5]  ==  g_rb(q)[2:5]
+
+        Indices 2-4 of the free-flyer generalised force are the base
+        z-force, x-moment, and y-moment.  x=y=yaw=0 is fixed by
+        symmetry; tau_drag=0 because v=0.
+
+        Use the returned q_trim (paired with v_trim = np.zeros(nv)) as
+        the initial state for trajectory optimisation.  Starting from
+        the trim state removes the vertical / rotational transient so
+        the optimizer can focus on the swimming gait directly.
+
+        Parameters
+        ----------
+        q_joints : (n_actuated,) array, optional
+            Joint angles held fixed during the solve.  Defaults to
+            neutral (all zeros).
+        z_guess : float
+            Initial guess for base height [m].  Must be above 0 (body
+            above the waterline).  The previous sweep showed z ≈ 0.08 m
+            for the neutral pose, so 0.05 is a safe lower bound.
+
+        Returns
+        -------
+        q_trim : (nq=19,) ndarray
+            Full trim configuration.
+        """
+        from scipy.optimize import brentq
+
+        if q_joints is None:
+            q_joints = np.zeros(self.robot.n_actuated)
+
+        n_base = self.robot.n_base_q  # 7
+        v_zero  = np.zeros(self.nv)
+        tau_zero = np.zeros(self.nv)
+
+        def make_q(z: float) -> np.ndarray:
+            q = np.zeros(self.nq)
+            q[2] = z
+            q[6] = 1.0          # identity quaternion (level, yaw = 0)
+            q[n_base:] = q_joints
+            return q
+
+        def az(z: float) -> float:
+            """Base z-acceleration at height z, v=0, tau=0, level orientation."""
+            return float(self.eval_forward_dynamics(make_q(z), v_zero, tau_zero)[2])
+
+        # Find vertical equilibrium by bisection on a_z(z) = 0.
+        z_lo, z_hi = 0.0, 0.5
+        if az(z_lo) * az(z_hi) > 0:
+            raise RuntimeError(
+                "find_trim_state: no sign change in a_z between "
+                f"z={z_lo} and z={z_hi} m.  "
+                "Check z_surface setting and robot geometry."
+            )
+        z_eq = brentq(az, z_lo, z_hi, xtol=1e-5)
+
+        q_trim = make_q(z_eq)
+        a_trim = self.eval_forward_dynamics(q_trim, v_zero, tau_zero)
+
+        print("Trim state (vertical equilibrium, level orientation):")
+        print(f"  Base z:         {z_eq:.4f} m")
+        print(f"  a_z at trim:    {a_trim[2]:.2e} m/s²  (≈0 ✓)")
+        print(f"  a_pitch at trim:{a_trim[4]:.2f} rad/s²")
+        print(f"    ↳ Non-zero pitch acceleration is expected — this robot has")
+        print(f"      no passive pitch equilibrium at neutral joints.  The")
+        print(f"      trajectory optimiser must find joint torques to stabilise pitch.")
+
+        return q_trim
+
     def print_summary(self):
         """Print a summary of the symbolic dynamics."""
         print("=== Symbolic Dynamics Summary ===")
-        print(f"  State dimension:   nq={self.nq}, nv={self.nv}")
+        print(f"  State dimension:   nq={self.nq} (base_q=7 + joints=12), "
+              f"nv={self.nv} (base_v=6 + joints=12)")
+        print(f"  State vector x:    dim={self.nq + self.nv}  [q({self.nq}); v({self.nv})]")
         print(f"  Links with hydro:  {sum(1 for l in self.robot.links.values() if l.cylinder)}")
         print(f"  Fluid density:     {self.rho} kg/m^3")
         print(f"  Drag coeffs:       Cd_t={self.Cd_t}, Cd_a={self.Cd_a}")
         print(f"  Added-mass coeffs: Ca_t={self.Ca_t}, Ca_a={self.Ca_a}")
+        print(f"  Water surface:     z = {self.z_surface:.3f} m")
+        print(f"  Drag threshold:    v = {self.v_linear_threshold:.2f} m/s")
         print()
         print("CasADi Functions:")
         for attr_name in sorted(dir(self)):
             if attr_name.startswith("f_") and isinstance(getattr(self, attr_name), ca.Function):
                 fn = getattr(self, attr_name)
-                print(f"  {fn.name():25s}  {fn.size_in(0)} → {fn.size_out(0)}")
+                ins  = " × ".join(str(fn.size_in(i))  for i in range(fn.n_in()))
+                outs = " × ".join(str(fn.size_out(i)) for i in range(fn.n_out()))
+                print(f"  {fn.name():25s}  ({ins}) → ({outs})")
