@@ -4,6 +4,9 @@
 
 # exported Images
 *.png
+*.gif
+*.jpg
+*.jpeg
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
