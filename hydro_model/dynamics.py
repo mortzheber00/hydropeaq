@@ -204,13 +204,20 @@ class SymbolicDynamics:
             oMf = self.cdata.oMf[fid]
             R_sym = oMf.rotation   # 3x3 symbolic rotation
 
-            # Jacobian (translational part) for this link
+            # Jacobian at the frame origin, world-aligned.
+            # LOCAL_WORLD_ALIGNED gives the spatial velocity at the *frame
+            # origin* in world-frame coordinates.  This matches the wrench
+            # convention [F; r_offset × F] used below (wrench at frame origin).
+            # Using WORLD would give velocity/wrench at the *world* origin,
+            # making the base columns identical for all frames on the same
+            # body and breaking left/right symmetry of torque projections.
             J_full = cpin.computeFrameJacobian(
-                self.cmodel, self.cdata, q, fid, pin.ReferenceFrame.WORLD,
+                self.cmodel, self.cdata, q, fid,
+                pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
             )
             Jv = J_full[:3, :]  # (3, nv)
 
-            # Link CoM velocity in world frame
+            # Link velocity at frame origin in world frame
             v_link = Jv @ v     # (3, 1)
 
             # ── Cylinder axis in world frame (symbolic) ──
@@ -244,23 +251,36 @@ class SymbolicDynamics:
             ))
 
             # ── Buoyancy (scaled by α) ──
+            # The buoyancy force acts at the cylinder center, offset from
+            # the frame origin by r_offset = R @ center_local.  A force F
+            # at offset r from the frame origin produces the spatial wrench
+            # [F; r × F] at the frame origin, matching the
+            # LOCAL_WORLD_ALIGNED Jacobian convention.
             F_buoy = ca.vertcat(0.0, 0.0, alpha * rho * g * V)
-            tau_buoyancy += Jv.T @ F_buoy
+            r_offset = R_sym @ ca.SX(cyl.center_local)   # frame origin → CoB
+            wrench_buoy = ca.vertcat(F_buoy, ca.cross(r_offset, F_buoy))
+            tau_buoyancy += J_full.T @ wrench_buoy
 
             # ── Hybrid drag (scaled by α) ──
             # F = -(D₁·v + ½ρCdA|v|v), D₁ = ½ρCdA·v_threshold
             v_ax_mag = ca.dot(v_link, axis_sym)
             v_ax = v_ax_mag * axis_sym
             v_tr = v_link - v_ax
-            v_tr_mag = ca.norm_2(v_tr) + 1e-15
+            # Smooth norm/abs to avoid NaN gradients at v=0
+            _eps2 = 1e-8
+            v_tr_mag = ca.sqrt(ca.dot(v_tr, v_tr) + _eps2)
 
             D1_a = 0.5 * rho * self.Cd_a * A_a * v_thresh
-            F_drag_ax = -(D1_a * v_ax + 0.5 * rho * self.Cd_a * A_a * ca.fabs(v_ax_mag) * v_ax)
+            v_ax_abs = ca.sqrt(v_ax_mag ** 2 + _eps2)
+            F_drag_ax = -(D1_a * v_ax + 0.5 * rho * self.Cd_a * A_a * v_ax_abs * v_ax)
 
             D1_t = 0.5 * rho * self.Cd_t * A_t * v_thresh
             F_drag_tr = -(D1_t * v_tr + 0.5 * rho * self.Cd_t * A_t * v_tr_mag * v_tr)
 
-            tau_drag += Jv.T @ (alpha * (F_drag_ax + F_drag_tr))
+            # Drag acts at the cylinder center — use full wrench like buoyancy
+            F_drag = alpha * (F_drag_ax + F_drag_tr)
+            wrench_drag = ca.vertcat(F_drag, ca.cross(r_offset, F_drag))
+            tau_drag += J_full.T @ wrench_drag
 
             # ── Added mass (joint-space, scaled by α) ──
             # M_A = J^T * (α · M_A_cartesian) * J
@@ -430,21 +450,11 @@ class SymbolicDynamics:
         q_joints: np.ndarray | None = None,
         z_guess: float = 0.05,
     ) -> np.ndarray:
-        """Find the floating-equilibrium configuration (trim state) at rest.
+        """Find the full floating-equilibrium configuration at rest.
 
-        Solves for base (z, pitch, roll) such that buoyancy and gravity
-        generalised forces cancel at zero velocity:
-
-            tau_buoyancy(q)[2:5]  ==  g_rb(q)[2:5]
-
-        Indices 2-4 of the free-flyer generalised force are the base
-        z-force, x-moment, and y-moment.  x=y=yaw=0 is fixed by
-        symmetry; tau_drag=0 because v=0.
-
-        Use the returned q_trim (paired with v_trim = np.zeros(nv)) as
-        the initial state for trajectory optimisation.  Starting from
-        the trim state removes the vertical / rotational transient so
-        the optimizer can focus on the swimming gait directly.
+        Solves for base z, pitch, and roll such that all base
+        accelerations are zero at v=0, τ=0.  Uses scipy.optimize.minimize
+        to drive the base acceleration residual to zero.
 
         Parameters
         ----------
@@ -452,16 +462,14 @@ class SymbolicDynamics:
             Joint angles held fixed during the solve.  Defaults to
             neutral (all zeros).
         z_guess : float
-            Initial guess for base height [m].  Must be above 0 (body
-            above the waterline).  The previous sweep showed z ≈ 0.08 m
-            for the neutral pose, so 0.05 is a safe lower bound.
+            Initial guess for base height [m].
 
         Returns
         -------
         q_trim : (nq=19,) ndarray
             Full trim configuration.
         """
-        from scipy.optimize import brentq
+        from scipy.optimize import minimize
 
         if q_joints is None:
             q_joints = np.zeros(self.robot.n_actuated)
@@ -470,38 +478,58 @@ class SymbolicDynamics:
         v_zero  = np.zeros(self.nv)
         tau_zero = np.zeros(self.nv)
 
-        def make_q(z: float) -> np.ndarray:
+        def make_q(z: float, roll: float, pitch: float) -> np.ndarray:
+            """Build q from base z, roll, pitch (yaw=0)."""
             q = np.zeros(self.nq)
             q[2] = z
-            q[6] = 1.0          # identity quaternion (level, yaw = 0)
+            # Quaternion from roll-pitch-yaw (scalar last: qx, qy, qz, qw)
+            cr, sr = np.cos(roll / 2), np.sin(roll / 2)
+            cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
+            # yaw = 0
+            q[3] = sr * cp           # qx
+            q[4] = cr * sp           # qy
+            q[5] = -sr * sp          # qz
+            q[6] = cr * cp           # qw
             q[n_base:] = q_joints
             return q
 
-        def az(z: float) -> float:
-            """Base z-acceleration at height z, v=0, tau=0, level orientation."""
-            return float(self.eval_forward_dynamics(make_q(z), v_zero, tau_zero)[2])
+        def residual(params):
+            """Sum of squared heave + pitch generalized force residuals.
 
-        # Find vertical equilibrium by bisection on a_z(z) = 0.
-        z_lo, z_hi = 0.0, 0.5
-        if az(z_lo) * az(z_hi) > 0:
-            raise RuntimeError(
-                "find_trim_state: no sign change in a_z between "
-                f"z={z_lo} and z={z_hi} m.  "
-                "Check z_surface setting and robot geometry."
-            )
-        z_eq = brentq(az, z_lo, z_hi, xtol=1e-5)
+            Uses direct force balance (tau_buoyancy - g_rb) rather than
+            forward dynamics.  The forward-dynamics formulation (a[2]**2 +
+            a[4]**2) is wrong here because the joint–base coupling in
+            M^{-1} can zero those two acceleration components while leaving
+            a large net force unbalanced (e.g. 14 N net upward when only
+            the two base DOFs happen to cancel through off-diagonal terms).
+            """
+            z, pitch = params
+            q = make_q(z, 0.0, pitch)  # roll = 0 (left-right symmetric)
+            tau_b = np.array(self.f_tau_buoyancy(q)).flatten()
+            g_rb  = np.array(self.f_g_rb(q)).flatten()
+            rhs   = tau_b - g_rb
+            return rhs[2]**2 + rhs[4]**2
 
-        q_trim = make_q(z_eq)
-        a_trim = self.eval_forward_dynamics(q_trim, v_zero, tau_zero)
+        res = minimize(residual, [z_guess, 0.0], method="Nelder-Mead",
+                       options={"xatol": 1e-8, "fatol": 1e-12, "maxiter": 5000})
 
-        print("Trim state (vertical equilibrium, level orientation):")
-        print(f"  Base z:         {z_eq:.4f} m")
-        print(f"  a_z at trim:    {a_trim[2]:.2e} m/s²  (≈0 ✓)")
-        print(f"  a_pitch at trim:{a_trim[4]:.2f} rad/s²")
-        print(f"    ↳ Non-zero pitch acceleration is expected — this robot has")
-        print(f"      no passive pitch equilibrium at neutral joints.  The")
-        print(f"      trajectory optimiser must find joint torques to stabilise pitch.")
+        z_eq, pitch_eq = res.x
+        roll_eq = 0.0
+        q_trim = make_q(z_eq, roll_eq, pitch_eq)
+        tau_b_trim = np.array(self.f_tau_buoyancy(q_trim)).flatten()
+        g_trim     = np.array(self.f_g_rb(q_trim)).flatten()
+        rhs_trim   = tau_b_trim - g_trim
 
+        print("Trim state (hydrostatic base equilibrium):")
+        print(f"  Base z:          {z_eq:.4f} m")
+        print(f"  Roll:            {np.degrees(roll_eq):.2f}°")
+        print(f"  Pitch:           {np.degrees(pitch_eq):.2f}°")
+        print(f"  Total buoyancy:  {tau_b_trim[2]:.4f} N  (weight = {g_trim[2]:.4f} N)")
+        print(f"  rhs[2] (heave):  {rhs_trim[2]:.2e} N   (→ 0 = force balanced)")
+        print(f"  rhs[4] (pitch):  {rhs_trim[4]:.2e} N·m (→ 0 = moment balanced)")
+        print('Base force residuals at trim:')
+        for i, name in enumerate(['surge','sway','heave','roll','pitch','yaw']):
+            print(f'  rhs[{i}] ({name:5s}) = {rhs_trim[i]:.4e}')
         return q_trim
 
     def print_summary(self):

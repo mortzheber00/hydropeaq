@@ -30,6 +30,12 @@ def main():
     dyn.print_summary()
     print()
 
+    # ── 2. Trim state ──────────────────────────────────────────────────
+    print("\nFinding trim state...")
+    q_trim = dyn.find_trim_state()
+    print(f'\nq_trim = {q_trim}')
+    print()
+
     # ── 3. Verify against Pinocchio numeric ────────────────────────────
     # q layout: [x, y, z, qx, qy, qz, qw, 12×joint_angles]
     q_test = robot.neutral_config()
@@ -40,7 +46,9 @@ def main():
     v_test = np.ones(robot.nv) * 0.05
 
     # Mass matrix
+    # Symbolic solution
     M_sym = np.array(dyn.f_M_rb(q_test))
+    # Pinocchio solution
     M_pin = robot.mass_matrix(q_test)
     # CRBA returns upper triangle; symmetrise
     M_pin = np.triu(M_pin) + np.triu(M_pin, 1).T

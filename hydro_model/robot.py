@@ -170,6 +170,7 @@ class QuadrupedRobot:
         self.model: pin.Model = pin.buildModelFromUrdf(
             str(self.urdf_path), pin.JointModelFreeFlyer()
         )
+        self._recenter_base_y()
         self.data: pin.Data = self.model.createData()
 
         # Extract per-link data from Pinocchio frames
@@ -195,6 +196,34 @@ class QuadrupedRobot:
     # ------------------------------------------------------------------
     # Internal setup
     # ------------------------------------------------------------------
+
+    def _recenter_base_y(self):
+        """Shift the base frame origin so the base CoM lies at y = 0.
+
+        The SolidWorks URDF export places the base frame origin ~4 mm off
+        the geometric centerline in y.  This makes left/right side-joint
+        origins asymmetric (±0.057 vs ±0.065) even though the physical
+        robot is symmetric.
+
+        Fix: move the base frame by dy (the base CoM y-offset) and
+        compensate every base-child joint placement by -dy so that all
+        joints remain at their original world-frame positions.
+        """
+        # Joint 0 is the free-flyer "universe → base" virtual joint.
+        # Joint 1 is the first real joint (root_joint in Pinocchio).
+        # Base inertia is stored at joint index 1 for a free-flyer model.
+        base_jid = 1
+        dy = self.model.inertias[base_jid].lever[1]
+        if abs(dy) < 1e-6:
+            return
+
+        # Shift all joints whose parent is the base (the 4 side joints)
+        for jid in range(2, self.model.njoints):
+            if self.model.parents[jid] == base_jid:
+                self.model.jointPlacements[jid].translation[1] -= dy
+
+        # Zero out the base CoM y-offset
+        self.model.inertias[base_jid].lever[1] = 0.0
 
     def _extract_links(self):
         """Pull mass, CoM, and inertia from Pinocchio BODY frames."""
