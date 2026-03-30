@@ -29,9 +29,13 @@ GAITS = {
 _LSPG_OFFSETS = np.array([0.25, 0.50, 0.00, 0.75])
 _TLPG_OFFSETS = np.array([0.00, 0.50, 0.50, 0.00])
 
-# Joint-angle mapping amplitudes
-_THIGH_AMP = 0.35   # rad — thigh joint swing amplitude
-_CALF_AMP  = 0.50   # rad — calf  joint swing amplitude
+# Joint-angle mapping amplitudes — tune independently per leg type
+#   α1 ∈ [-1, +1] is multiplied by _THIGH_AMP to get the thigh joint offset from trim
+#   α2 ∈ [-1, +1] is multiplied by _CALF_AMP  to get the calf  joint offset from trim
+_FRONT_THIGH_AMP = 0.35   # rad — front thigh swing amplitude
+_FRONT_CALF_AMP  = 0.8    # rad — front calf  swing amplitude
+_HIND_THIGH_AMP  = 0.55   # rad — hind  thigh swing amplitude
+_HIND_CALF_AMP   = 0.4    # rad — hind  calf  swing amplitude
 
 
 # ── Fourier trajectory ───────────────────────────────────────────────────────
@@ -124,6 +128,8 @@ def build_initial_guess(
     T_FIXED: float,
     D_MIN: float,
     TAU_MAX: float,
+    hind_thigh_offset: float = 0.0,
+    hind_calf_offset: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build (X_guess, U_guess) for the Task 3 OCP.
 
@@ -144,6 +150,12 @@ def build_initial_guess(
         Minimum forward displacement per cycle [m].
     TAU_MAX : float
         Joint torque clipping limit [Nm].
+    hind_thigh_offset : float
+        Constant angle offset [rad] added to both hind thigh joints on top of
+        the Fourier trajectory.  Positive rotates the thigh forward.
+    hind_calf_offset : float
+        Constant angle offset [rad] added to both hind calf joints on top of
+        the Fourier trajectory.  Positive increases knee bend.
 
     Returns
     -------
@@ -168,10 +180,10 @@ def build_initial_guess(
 
     # ── Step 1: build joint trajectory ──────────────────────────────────
     # Joint-angle mapping:
-    #   α1 = +1 (θ1=100°, leg forward) → front thigh at NEGATIVE angle
-    #   α2 = +1 (θ2=110°, knee bent)   → front calf  at POSITIVE angle
-    #   Hind legs have the sagittal plane flipped (side-joint rpy=0 0 π),
-    #   handled by s = -1 (same convention throughout the codebase).
+    #   α1 = +1 (θ1=100°, leg forward) → front thigh at POSITIVE angle
+    #     (+thigh moves front foot in +x; +thigh moves hind foot in -x,
+    #      so s = -1 for hind compensates: q_trim + (-1)*a1 → hind foot +x ✓)
+    #   α2 = +1 (θ2=110°, knee bent)   → calf at s * POSITIVE angle
     q_joints = np.zeros((n_act, N + 1))   # absolute joint angles
     v_joints = np.zeros((n_act, N + 1))   # joint velocities
 
@@ -184,16 +196,20 @@ def build_initial_guess(
             da1 = float(dalpha1(t_leg)) / T_FIXED
             da2 = float(dalpha2(t_leg)) / T_FIXED
 
-            s = -1 if i >= 2 else 1
-            b = i * 3
+            is_hind    = i >= 2
+            s          = -1 if is_hind else 1   # hind: sagittal plane is flipped
+            z          =  1 if is_hind else -1  # hind: amplitude sign
+            thigh_amp  = _HIND_THIGH_AMP if is_hind else _FRONT_THIGH_AMP
+            calf_amp   = _HIND_CALF_AMP  if is_hind else _FRONT_CALF_AMP
+            b          = i * 3
 
             q_joints[b,     k] = q_trim[7 + b]
-            q_joints[b + 1, k] = q_trim[8 + b] - s * a1 * _THIGH_AMP
-            q_joints[b + 2, k] = q_trim[9 + b] +     a2 * _CALF_AMP
+            q_joints[b + 1, k] = q_trim[8 + b] + z * s * a1 * thigh_amp + (hind_thigh_offset if is_hind else 0.0)
+            q_joints[b + 2, k] = q_trim[9 + b] +      s * a2 * calf_amp  + (hind_calf_offset  if is_hind else 0.0)
 
             v_joints[b,     k] = 0.0
-            v_joints[b + 1, k] = -s * da1 * _THIGH_AMP
-            v_joints[b + 2, k] =     da2 * _CALF_AMP
+            v_joints[b + 1, k] =      s * da1 * thigh_amp
+            v_joints[b + 2, k] = z *  s * da2 * calf_amp
 
     # Joint accelerations via finite differences (used in base simulation)
     a_joints = (v_joints[:, 1:] - v_joints[:, :-1]) / dt_val   # (n_act, N)

@@ -25,7 +25,13 @@ W_DIST = 1.0     # weight for forward distance reward (tune relative to W_torque
 # "LSPG25" : lateral-sequence paddling, 25 % power phase
 # "LSPG33" : lateral-sequence paddling, 33 % power phase (fastest in paper)
 # "TLPG50" : trot-like paddling,        50 % power phase (most stable)
-GAIT = "LSPG33"
+GAIT = "TLPG50"
+
+# Constant angle offsets [rad] added to both hind leg joints in the initial guess.
+# Positive HIND_THIGH_OFFSET rotates the hind thigh forward.
+# Positive HIND_CALF_OFFSET increases hind knee bend.
+HIND_THIGH_OFFSET = 0.0   # [rad]
+HIND_CALF_OFFSET  = 0.5   # [rad]
 
 
 def build_rk4_integrator(f_xdot: ca.Function, nq: int, nv: int, dt: float):
@@ -74,7 +80,11 @@ def build_ocp():
 
     # ── 4. Kinematic initial guess (Qu et al. 2025) ────────────────────
     print(f"Building initial guess from paper trajectory ({GAIT})...")
-    X_guess, U_guess = build_initial_guess(dyn, GAIT, N, T_FIXED, D_MIN, TAU_MAX)
+    X_guess, U_guess = build_initial_guess(
+        dyn, GAIT, N, T_FIXED, D_MIN, TAU_MAX,
+        hind_thigh_offset=HIND_THIGH_OFFSET,
+        hind_calf_offset=HIND_CALF_OFFSET,
+    )
 
     print(f"  Torque guess RMS = {np.sqrt(np.mean(U_guess**2)):.3f} Nm")
     print(f"  Torque guess max = {np.max(np.abs(U_guess)):.3f} Nm")
