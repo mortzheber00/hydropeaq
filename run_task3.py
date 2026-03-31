@@ -124,8 +124,8 @@ def build_ocp():
         opti.subject_to(opti.bounded(q_lb, X[7:nq, k], q_ub))
         # Leg joint velocity limits
         opti.subject_to(opti.bounded(v_lb, X[nq + 6:, k], v_ub))
-        # Base velocity limits
-        #opti.subject_to(opti.bounded(-2.0, X[nq:nq + 6, k], 2.0))
+        # Base velocity limits to avoid unrealistic speeds
+        opti.subject_to(opti.bounded(-2.0, X[nq:nq + 6, k], 2.0))
         
 
     for k in range(N):
@@ -137,17 +137,22 @@ def build_ocp():
     opti.subject_to(xN[7:nq] == x0[7:nq])
     opti.subject_to(xN[nq + 6:] == x0[nq + 6:])
     opti.subject_to(xN[nq:nq + 6] == x0[nq:nq + 6])
-    # Soft: base pose (y, z, quat) penalised in cost
-    periodic_cost = W_PERIODIC * (
-        ca.sumsqr(xN[1] - x0[1])
-        + ca.sumsqr(xN[2] - x0[2])
-        + ca.sumsqr(xN[3:7] - x0[3:7])
-    )
+    # base pose (y, z, quat) penalised in cost
+    opti.subject_to(xN[1] == x0[1])
+    opti.subject_to(xN[2] == x0[2])
+    opti.subject_to(xN[3:7] == x0[3:7])
+    #periodic_cost = W_PERIODIC * (
+    #    ca.sumsqr(xN[1] - x0[1])
+    #    + ca.sumsqr(xN[2] - x0[2])
+    #   + ca.sumsqr(xN[3:7] - x0[3:7])
+    #)
+
     dist = xN[0] - x0[0]
-    opti.minimize(torque_cost + periodic_cost - W_DIST * dist)
+    opti.subject_to(dist == 0.035)
+    opti.minimize(torque_cost)
 
     # Forward progress & anchors
-    opti.subject_to(xN[0] - x0[0] >= D_MIN)
+    #opti.subject_to(xN[0] - x0[0] >= D_MIN)
     opti.subject_to(X[0, 0] == 0.0)
     opti.subject_to(X[1, 0] == 0.0)
 
