@@ -10,10 +10,11 @@ This script:
   4. Visualises the cylinder-approximated robot.
 """
 
-import numpy as np
-from hydro_model import QuadrupedRobot, HydrodynamicModel
-from hydro_model.visualization import visualize_robot, visualize_skeleton
 import matplotlib.pyplot as plt
+import numpy as np
+
+from hydro_model import HydrodynamicModel, QuadrupedRobot
+from hydro_model.visualization import visualize_robot, visualize_skeleton
 
 URDF_PATH = "urdf/amph.urdf"
 
@@ -26,8 +27,6 @@ def main():
 
     # FK at neutral pose, with test joints angles, then build skeleton-aligned cylinders.
     q = robot.neutral_config()
-    q[7] = 0   # Front_Left_Side_joint
-    q[9] = 0   # Front_Left_Calf_joint
     robot.forward_kinematics(q)
     robot.build_cylinders()
 
@@ -67,8 +66,7 @@ def main():
 
     # -- Pressure-gradient (Froude-Krylov) for still water = 0 --
     F_fk = sum(
-        hydro.pressure_gradient_force(name, np.zeros(3))
-        for name in hydro.link_hydro
+        hydro.pressure_gradient_force(name, np.zeros(3)) for name in hydro.link_hydro
     )
     print(f"Pressure-gradient force (still water): {F_fk} N")
 
@@ -88,13 +86,15 @@ def main():
 
     # ── 4. Visualise ───────────────────────────────────────────────────
     visualize_skeleton(
-        robot, q,
+        robot,
+        q,
         title="AMPH — Kinematic Skeleton (Neutral Pose)",
         save_path="robot_skeleton.png",
     )
 
     visualize_robot(
-        robot, q,
+        robot,
+        q,
         title="AMPH — Cylinder Approximation (Neutral Pose)",
         save_path="robot_cylinder_approximation.png",
     )

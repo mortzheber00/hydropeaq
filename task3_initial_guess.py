@@ -17,9 +17,9 @@ from hydro_model import SymbolicDynamics
 
 # Supported gaits and their power-phase ratios
 GAITS = {
-    "LSPG25": 0.25,   # lateral-sequence, 25 % power phase
+    "LSPG25": 0.25,  # lateral-sequence, 25 % power phase
     "LSPG33": 0.33,  # lateral-sequence, 33 % power phase (fastest in paper)
-    "TLPG50": 0.50,   # trot-like,        50 % power phase (most stable)
+    "TLPG50": 0.50,  # trot-like,        50 % power phase (most stable)
 }
 
 # Phase offsets (cycle fraction) per leg [FL, FR, HL, HR].
@@ -32,13 +32,14 @@ _TLPG_OFFSETS = np.array([0.00, 0.50, 0.50, 0.00])
 # Joint-angle mapping amplitudes — tune independently per leg type
 #   α1 ∈ [-1, +1] is multiplied by _THIGH_AMP to get the thigh joint offset from trim
 #   α2 ∈ [-1, +1] is multiplied by _CALF_AMP  to get the calf  joint offset from trim
-_FRONT_THIGH_AMP = 0.35   # rad — front thigh swing amplitude
-_FRONT_CALF_AMP  = 0.8    # rad — front calf  swing amplitude
-_HIND_THIGH_AMP  = 0.55   # rad — hind  thigh swing amplitude
-_HIND_CALF_AMP   = 0.4    # rad — hind  calf  swing amplitude
+_FRONT_THIGH_AMP = 0.35  # rad — front thigh swing amplitude
+_FRONT_CALF_AMP = 0.8  # rad — front calf  swing amplitude
+_HIND_THIGH_AMP = 0.55  # rad — hind  thigh swing amplitude
+_HIND_CALF_AMP = 0.4  # rad — hind  calf  swing amplitude
 
 
 # ── Fourier trajectory ───────────────────────────────────────────────────────
+
 
 def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
     """Fourier-series leg trajectory from Qu et al. 2025.
@@ -69,9 +70,11 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
     # 12 keypoints (degrees):
     #   PPIP, int1, int2, PPMP, int3, int4, PPEP=RPIP, int5, int6, RPMP, int7, int8
     theta1_kp = np.array([100, 90, 80, 70, 60, 50, 40, 50, 60, 70, 80, 90], dtype=float)
-    theta2_kp = np.array([80, 60, 40, 20, 38.33, 56.67, 75, 86.67, 98.33, 110, 100, 90], dtype=float)
+    theta2_kp = np.array(
+        [80, 60, 40, 20, 38.33, 56.67, 75, 86.67, 98.33, 110, 100, 90], dtype=float
+    )
 
-    theta1_mean, theta1_half = 70.0, 30.0   # degrees
+    theta1_mean, theta1_half = 70.0, 30.0  # degrees
     theta2_mean, theta2_half = 65.0, 45.0
 
     alpha1_kp = (theta1_kp - theta1_mean) / theta1_half  # normalised ∈ [-1, 1]
@@ -79,17 +82,19 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
 
     # Keypoint times: 6 evenly spaced in the power phase, 6 in recovery
     n_half = 6
-    t_kp = np.concatenate([
-        np.linspace(0,        pp_ratio, n_half + 1)[:-1],
-        np.linspace(pp_ratio, 1.0,      n_half + 1)[:-1],
-    ])
+    t_kp = np.concatenate(
+        [
+            np.linspace(0, pp_ratio, n_half + 1)[:-1],
+            np.linspace(pp_ratio, 1.0, n_half + 1)[:-1],
+        ]
+    )
 
     # Fourier design matrix (constant + n_harmonics cosine/sine pairs)
     n = len(t_kp)
     A = np.ones((n, 1 + 2 * n_harmonics))
     for h in range(1, n_harmonics + 1):
-        A[:, 2*h - 1] = np.cos(2 * np.pi * h * t_kp)
-        A[:, 2*h]     = np.sin(2 * np.pi * h * t_kp)
+        A[:, 2 * h - 1] = np.cos(2 * np.pi * h * t_kp)
+        A[:, 2 * h] = np.sin(2 * np.pi * h * t_kp)
 
     c1, _, _, _ = np.linalg.lstsq(A, alpha1_kp, rcond=None)
     c2, _, _, _ = np.linalg.lstsq(A, alpha2_kp, rcond=None)
@@ -98,8 +103,8 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
         t = np.asarray(t, dtype=float)
         out = np.full_like(t, c[0])
         for h in range(1, n_harmonics + 1):
-            out += c[2*h - 1] * np.cos(2 * np.pi * h * t)
-            out += c[2*h]     * np.sin(2 * np.pi * h * t)
+            out += c[2 * h - 1] * np.cos(2 * np.pi * h * t)
+            out += c[2 * h] * np.sin(2 * np.pi * h * t)
         return out
 
     def _deval(t, c):
@@ -107,8 +112,8 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
         out = np.zeros_like(t)
         for h in range(1, n_harmonics + 1):
             w = 2 * np.pi * h
-            out += -c[2*h - 1] * w * np.sin(w * t)
-            out +=  c[2*h]     * w * np.cos(w * t)
+            out += -c[2 * h - 1] * w * np.sin(w * t)
+            out += c[2 * h] * w * np.cos(w * t)
         return out
 
     return (
@@ -120,6 +125,7 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
 
 
 # ── Main entry point ─────────────────────────────────────────────────────────
+
 
 def build_initial_guess(
     dyn: SymbolicDynamics,
@@ -172,7 +178,6 @@ def build_initial_guess(
     dt_val = T_FIXED / N
 
     q_trim = dyn.find_trim_state()
-    v_trim = np.zeros(nv)
 
     pp_ratio = GAITS[gait]
     phase_offsets = _TLPG_OFFSETS if gait == "TLPG50" else _LSPG_OFFSETS
@@ -184,35 +189,43 @@ def build_initial_guess(
     #     (+thigh moves front foot in +x; +thigh moves hind foot in -x,
     #      so s = -1 for hind compensates: q_trim + (-1)*a1 → hind foot +x ✓)
     #   α2 = +1 (θ2=110°, knee bent)   → calf at s * POSITIVE angle
-    q_joints = np.zeros((n_act, N + 1))   # absolute joint angles
-    v_joints = np.zeros((n_act, N + 1))   # joint velocities
+    q_joints = np.zeros((n_act, N + 1))  # absolute joint angles
+    v_joints = np.zeros((n_act, N + 1))  # joint velocities
 
     for k in range(N + 1):
         t_norm = k / N
         for i, phi_off in enumerate(phase_offsets):
             t_leg = (t_norm + phi_off) % 1.0
-            a1  = float(alpha1(t_leg))
-            a2  = float(alpha2(t_leg))
+            a1 = float(alpha1(t_leg))
+            a2 = float(alpha2(t_leg))
             da1 = float(dalpha1(t_leg)) / T_FIXED
             da2 = float(dalpha2(t_leg)) / T_FIXED
 
-            is_hind    = i >= 2
-            s          = -1 if is_hind else 1   # hind: sagittal plane is flipped
-            z          =  1 if is_hind else -1  # hind: amplitude sign
-            thigh_amp  = _HIND_THIGH_AMP if is_hind else _FRONT_THIGH_AMP
-            calf_amp   = _HIND_CALF_AMP  if is_hind else _FRONT_CALF_AMP
-            b          = i * 3
+            is_hind = i >= 2
+            s = -1 if is_hind else 1  # hind: sagittal plane is flipped
+            z = 1 if is_hind else -1  # hind: amplitude sign
+            thigh_amp = _HIND_THIGH_AMP if is_hind else _FRONT_THIGH_AMP
+            calf_amp = _HIND_CALF_AMP if is_hind else _FRONT_CALF_AMP
+            b = i * 3
 
-            q_joints[b,     k] = q_trim[7 + b]
-            q_joints[b + 1, k] = q_trim[8 + b] + z * s * a1 * thigh_amp + (hind_thigh_offset if is_hind else 0.0)
-            q_joints[b + 2, k] = q_trim[9 + b] +      s * a2 * calf_amp  + (hind_calf_offset  if is_hind else 0.0)
+            q_joints[b, k] = q_trim[7 + b]
+            q_joints[b + 1, k] = (
+                q_trim[8 + b]
+                + z * s * a1 * thigh_amp
+                + (hind_thigh_offset if is_hind else 0.0)
+            )
+            q_joints[b + 2, k] = (
+                q_trim[9 + b]
+                + s * a2 * calf_amp
+                + (hind_calf_offset if is_hind else 0.0)
+            )
 
-            v_joints[b,     k] = 0.0
-            v_joints[b + 1, k] =      s * da1 * thigh_amp
-            v_joints[b + 2, k] = z *  s * da2 * calf_amp
+            v_joints[b, k] = 0.0
+            v_joints[b + 1, k] = s * da1 * thigh_amp
+            v_joints[b + 2, k] = z * s * da2 * calf_amp
 
     # Joint accelerations via finite differences (used in base simulation)
-    a_joints = (v_joints[:, 1:] - v_joints[:, :-1]) / dt_val   # (n_act, N)
+    a_joints = (v_joints[:, 1:] - v_joints[:, :-1]) / dt_val  # (n_act, N)
 
     # ── Step 2: simulate base DOF with prescribed joints ─────────────────
     # Joints follow the Fourier trajectory exactly; only the 6 unactuated
@@ -220,7 +233,12 @@ def build_initial_guess(
     # speed and position trajectory driven by the leg-water interaction.
     print("  Simulating base DOF (prescribed joint kinematics)...")
     q_base_traj, v_base_traj = _simulate_base_kinematics(
-        dyn, q_joints, v_joints, a_joints, q_trim, dt_val,
+        dyn,
+        q_joints,
+        v_joints,
+        a_joints,
+        q_trim,
+        dt_val,
     )
 
     # ── Step 3: assemble full state trajectory ───────────────────────────
@@ -242,9 +260,9 @@ def build_initial_guess(
 
 def _simulate_base_kinematics(
     dyn: SymbolicDynamics,
-    q_joints: np.ndarray,   # (n_act, N+1)
-    v_joints: np.ndarray,   # (n_act, N+1)
-    a_joints: np.ndarray,   # (n_act, N)
+    q_joints: np.ndarray,  # (n_act, N+1)
+    v_joints: np.ndarray,  # (n_act, N+1)
+    a_joints: np.ndarray,  # (n_act, N)
     q_trim: np.ndarray,
     dt: float,
     n_cycles: int = 20,
@@ -276,9 +294,9 @@ def _simulate_base_kinematics(
         # accumulate across cycles.  Only x velocity carries over (convergence
         # of the forward cruise speed); angular/lateral/vertical velocities
         # are reset to zero as they should be zero at periodic steady state.
-        q_base[1:7] = q_trim[1:7]   # y, z, quat back to trim
-        q_base[0] = 0.0             # reset x to measure per-cycle distance
-        v_base[1:] = 0.0            # reset non-forward velocity components
+        q_base[1:7] = q_trim[1:7]  # y, z, quat back to trim
+        q_base[0] = 0.0  # reset x to measure per-cycle distance
+        v_base[1:] = 0.0  # reset non-forward velocity components
 
         q_cycle = np.zeros((7, N + 1))
         v_cycle = np.zeros((6, N + 1))
@@ -289,9 +307,9 @@ def _simulate_base_kinematics(
             q = np.concatenate([q_base, q_joints[:, k]])
             v = np.concatenate([v_base, v_joints[:, k]])
 
-            M  = np.array(dyn.f_M_rb(q))   + np.array(dyn.f_M_added(q))
-            C  = np.array(dyn.f_C_rb(q, v))
-            g  = np.array(dyn.f_g_rb(q)).flatten()
+            M = np.array(dyn.f_M_rb(q)) + np.array(dyn.f_M_added(q))
+            C = np.array(dyn.f_C_rb(q, v))
+            g = np.array(dyn.f_g_rb(q)).flatten()
             tb = np.array(dyn.f_tau_buoyancy(q)).flatten()
             td = np.array(dyn.f_tau_drag(q, v)).flatten()
 
@@ -303,27 +321,41 @@ def _simulate_base_kinematics(
 
             # SE3 position update (quaternion kinematics, scalar-last convention)
             qx, qy, qz, qw = q_base[3], q_base[4], q_base[5], q_base[6]
-            vx, vy, vz     = v_base[0], v_base[1], v_base[2]
-            wx, wy, wz     = v_base[3], v_base[4], v_base[5]
+            vx, vy, vz = v_base[0], v_base[1], v_base[2]
+            wx, wy, wz = v_base[3], v_base[4], v_base[5]
 
-            q_base[0] += ((1-2*(qy**2+qz**2))*vx + 2*(qx*qy-qw*qz)*vy + 2*(qx*qz+qw*qy)*vz) * dt
-            q_base[1] += (2*(qx*qy+qw*qz)*vx + (1-2*(qx**2+qz**2))*vy + 2*(qy*qz-qw*qx)*vz) * dt
-            q_base[2] += (2*(qx*qz-qw*qy)*vx + 2*(qy*qz+qw*qx)*vy + (1-2*(qx**2+qy**2))*vz) * dt
-            q_base[3] += 0.5 * ( qw*wx + qy*wz - qz*wy) * dt
-            q_base[4] += 0.5 * ( qw*wy + qz*wx - qx*wz) * dt
-            q_base[5] += 0.5 * ( qw*wz + qx*wy - qy*wx) * dt
-            q_base[6] += 0.5 * (-qx*wx - qy*wy - qz*wz) * dt
+            q_base[0] += (
+                (1 - 2 * (qy**2 + qz**2)) * vx
+                + 2 * (qx * qy - qw * qz) * vy
+                + 2 * (qx * qz + qw * qy) * vz
+            ) * dt
+            q_base[1] += (
+                2 * (qx * qy + qw * qz) * vx
+                + (1 - 2 * (qx**2 + qz**2)) * vy
+                + 2 * (qy * qz - qw * qx) * vz
+            ) * dt
+            q_base[2] += (
+                2 * (qx * qz - qw * qy) * vx
+                + 2 * (qy * qz + qw * qx) * vy
+                + (1 - 2 * (qx**2 + qy**2)) * vz
+            ) * dt
+            q_base[3] += 0.5 * (qw * wx + qy * wz - qz * wy) * dt
+            q_base[4] += 0.5 * (qw * wy + qz * wx - qx * wz) * dt
+            q_base[5] += 0.5 * (qw * wz + qx * wy - qy * wx) * dt
+            q_base[6] += 0.5 * (-qx * wx - qy * wy - qz * wz) * dt
             q_base[3:7] /= np.linalg.norm(q_base[3:7])
 
             q_cycle[:, k + 1] = q_base.copy()
             v_cycle[:, k + 1] = v_base.copy()
 
         dist = float(q_base[0])
-        print(f"    cycle {cycle + 1:2d}/{n_cycles}: Δx = {dist:.4f} m, "
-              f"mean vx = {np.mean(v_cycle[0]):.4f} m/s")
+        print(
+            f"    cycle {cycle + 1:2d}/{n_cycles}: Δx = {dist:.4f} m, "
+            f"mean vx = {np.mean(v_cycle[0]):.4f} m/s"
+        )
 
         if not np.isnan(dist_prev) and abs(dist - dist_prev) < 1e-5:
-            print(f"    Converged.")
+            print("    Converged.")
             break
         dist_prev = dist
 

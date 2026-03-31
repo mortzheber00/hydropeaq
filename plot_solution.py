@@ -9,23 +9,24 @@ Produces:
   4. Animated 3D skeleton of the swim cycle.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
+import sys
+
 import matplotlib.animation as animation
+import matplotlib.pyplot as plt
+import numpy as np
+
 from hydro_model import QuadrupedRobot
-from hydro_model.visualization import visualize_skeleton
 
 URDF_PATH = "urdf/amph.urdf"
-SOL_PATH  = "task3_solution.npz"
+SOL_PATH = "task3_solution.npz"
 
-import sys
 if len(sys.argv) > 1:
     SOL_PATH = sys.argv[1]
 
 # Joint index mapping (within the 12 actuated joints, offset 7 in q)
 # Order: FL_side, FL_thigh, FL_calf, FR_side, FR_thigh, FR_calf,
 #        HL_side, HL_thigh, HL_calf, HR_side, HR_thigh, HR_calf
-LEG_NAMES  = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
+LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
 JOINT_TYPES = ["Side", "Thigh", "Calf"]
 
 
@@ -42,8 +43,7 @@ def plot_joint_angles(X, T, N, nq):
     for i, leg in enumerate(LEG_NAMES):
         for j, jtype in enumerate(JOINT_TYPES):
             ax = axes[i, j]
-            q_idx = 7 + i * 3 + j          # index into q vector
-            v_idx = nq + 6 + i * 3 + j     # index into xdot (velocity part)
+            q_idx = 7 + i * 3 + j  # index into q vector
             ax.plot(t, X[q_idx, :], "b-o", markersize=3, label="angle [rad]")
             ax.axhline(0, color="k", linewidth=0.5, linestyle=":")
             ax.set_ylabel("rad")
@@ -109,8 +109,14 @@ def plot_foot_positions(robot, X, T, N, nq):
 
     for i, leg in enumerate(LEG_NAMES):
         for ax, key, yl in zip(axes, ["x", "y", "z"], ylabel):
-            ax.plot(t, foot_traj[leg][key], color=colors[i],
-                    marker="o", markersize=3, label=leg.replace("_", " "))
+            ax.plot(
+                t,
+                foot_traj[leg][key],
+                color=colors[i],
+                marker="o",
+                markersize=3,
+                label=leg.replace("_", " "),
+            )
 
     for ax, yl in zip(axes, ylabel):
         ax.set_ylabel(yl)
@@ -128,8 +134,8 @@ def plot_foot_positions(robot, X, T, N, nq):
 def animate_skeleton(robot, X, T, N, nq):
     """Animated 3D skeleton cycling through all N+1 poses."""
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
     from hydro_model.robot import LEG_NAMES as _LEG_NAMES
-    from hydro_model.visualization import _draw_frame_axes, _link_color, _set_equal_aspect
 
     # Pre-compute all joint positions
     frames = []
@@ -140,16 +146,12 @@ def animate_skeleton(robot, X, T, N, nq):
         base_pos = np.array(robot.data.oMi[1].translation)
         leg_data = {}
         for leg in _LEG_NAMES:
-            side_jid  = robot.model.getJointId(f"{leg}_Side_joint")
-            thigh_jid = robot.model.getJointId(f"{leg}_Thigh_joint")
-            calf_jid  = robot.model.getJointId(f"{leg}_Calf_joint")
-            foot_fid  = robot.foot_frame_ids[leg]
             proj = robot.leg_centerline_positions(leg)
             leg_data[leg] = {
-                "side":  proj["side"],
+                "side": proj["side"],
                 "thigh": proj["thigh"],
-                "calf":  proj["calf"],
-                "foot":  proj["foot"],
+                "calf": proj["calf"],
+                "foot": proj["foot"],
             }
         frames.append({"base": base_pos, "legs": leg_data})
 
@@ -161,14 +163,14 @@ def animate_skeleton(robot, X, T, N, nq):
             for v in f["legs"][leg].values():
                 all_pts.append(v)
     all_pts = np.array(all_pts)
-    mid  = all_pts.mean(axis=0)
+    mid = all_pts.mean(axis=0)
     span = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2 * 1.3
 
     fig = plt.figure(figsize=(10, 8))
-    ax  = fig.add_subplot(111, projection="3d")
+    ax = fig.add_subplot(111, projection="3d")
     ax.view_init(elev=25, azim=-60)
 
-    time_text = ax.set_title("")
+    ax.set_title("")
     colors_leg = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 
     def draw_frame(k):
@@ -176,7 +178,9 @@ def animate_skeleton(robot, X, T, N, nq):
         ax.set_xlim(mid[0] - span, mid[0] + span)
         ax.set_ylim(mid[1] - span, mid[1] + span)
         ax.set_zlim(mid[2] - span, mid[2] + span)
-        ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]"); ax.set_zlabel("Z [m]")
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
+        ax.set_zlabel("Z [m]")
         ax.set_title(f"Swim Cycle — t = {k * T / N:.3f} s  (frame {k}/{N})")
 
         f = frames[k]
@@ -191,16 +195,24 @@ def animate_skeleton(robot, X, T, N, nq):
                 ax.plot(*zip(a, b), color=c, linewidth=2.0, alpha=0.85)
             for key in ["side", "thigh", "calf"]:
                 ax.scatter(*pts[key], s=30, c="k", zorder=5)
-            ax.scatter(*pts["foot"], s=50, c=c, marker="v",
-                       edgecolors="k", linewidths=0.5, zorder=5)
+            ax.scatter(
+                *pts["foot"],
+                s=50,
+                c=c,
+                marker="v",
+                edgecolors="k",
+                linewidths=0.5,
+                zorder=5,
+            )
 
         # Water surface reference
-        xlim = ax.get_xlim(); ylim = ax.get_ylim()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
         xx, yy = np.meshgrid(xlim, ylim)
-        ax.plot_surface(xx, yy, np.zeros_like(xx),
-                        alpha=0.08, color="cyan", zorder=0)
+        ax.plot_surface(xx, yy, np.zeros_like(xx), alpha=0.08, color="cyan", zorder=0)
 
         from matplotlib.patches import Patch
+
         legend_elements = [
             Patch(facecolor=c, label=leg.replace("_", " "))
             for c, leg in zip(colors_leg, _LEG_NAMES)
@@ -208,7 +220,8 @@ def animate_skeleton(robot, X, T, N, nq):
         ax.legend(handles=legend_elements, loc="upper left", fontsize=8)
 
     ani = animation.FuncAnimation(
-        fig, draw_frame,
+        fig,
+        draw_frame,
         frames=N + 1,
         interval=int(T / (N + 1) * 1000),  # ms per frame → real-time
         repeat=True,

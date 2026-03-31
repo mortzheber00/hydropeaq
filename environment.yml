@@ -8,6 +8,8 @@ dependencies:
   - scipy
   - matplotlib
   - pinocchio
+  - ruff
+  - pre-commit
   - pip
   - pip:
     - casadi

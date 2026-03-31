@@ -31,18 +31,18 @@ import numpy as np
 
 from .robot import CylinderPrimitive, QuadrupedRobot
 
-
 # ---------------------------------------------------------------------------
 # Physical constants
 # ---------------------------------------------------------------------------
 
-RHO_WATER = 997.0   # freshwater density [kg/m^3]
-GRAVITY = 9.81       # gravitational acceleration [m/s^2]
+RHO_WATER = 997.0  # freshwater density [kg/m^3]
+GRAVITY = 9.81  # gravitational acceleration [m/s^2]
 
 
 # ---------------------------------------------------------------------------
 # Partial submersion
 # ---------------------------------------------------------------------------
+
 
 def submersion_ratio(cyl: CylinderPrimitive, z_surface: float = 0.0) -> float:
     """Fraction of the cylinder volume that is below the water surface.
@@ -67,7 +67,7 @@ def submersion_ratio(cyl: CylinderPrimitive, z_surface: float = 0.0) -> float:
     # Axial contribution to vertical half-span
     dz_axial = 0.5 * cyl.length * axis_z
     # Radial contribution: radius projected vertically (= r·sin θ)
-    dz_radial = cyl.radius * np.sqrt(max(1.0 - axis_z ** 2, 0.0))
+    dz_radial = cyl.radius * np.sqrt(max(1.0 - axis_z**2, 0.0))
     dz_half = dz_axial + dz_radial
 
     z_top = cyl.center[2] + dz_half
@@ -84,22 +84,24 @@ def submersion_ratio(cyl: CylinderPrimitive, z_surface: float = 0.0) -> float:
 # Per-link hydrodynamic properties
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class LinkHydroProperties:
     """Pre-computed hydrodynamic quantities for a single cylinder-link."""
+
     name: str
-    volume: float               # displaced volume [m^3]
-    buoyancy_force_mag: float   # rho * g * V  [N]
+    volume: float  # displaced volume [m^3]
+    buoyancy_force_mag: float  # rho * g * V  [N]
 
     # Drag areas & coefficients
-    Cd_transverse: float        # drag coeff for crossflow (~1.0 for cylinder)
-    Cd_axial: float             # drag coeff for axial flow (~0.8 for blunt end)
-    A_transverse: float         # projected area perpendicular to axis [m^2]
-    A_axial: float              # end-cap area [m^2]
+    Cd_transverse: float  # drag coeff for crossflow (~1.0 for cylinder)
+    Cd_axial: float  # drag coeff for axial flow (~0.8 for blunt end)
+    A_transverse: float  # projected area perpendicular to axis [m^2]
+    A_axial: float  # end-cap area [m^2]
 
     # Added mass (diagonal in body frame for a cylinder)
-    ma_transverse: float        # [kg]
-    ma_axial: float             # [kg]
+    ma_transverse: float  # [kg]
+    ma_axial: float  # [kg]
 
     cylinder: CylinderPrimitive
 
@@ -107,6 +109,7 @@ class LinkHydroProperties:
 # ---------------------------------------------------------------------------
 # Hydrodynamic model
 # ---------------------------------------------------------------------------
+
 
 class HydrodynamicModel:
     """Simplified hydrodynamic model for the full robot.
@@ -135,7 +138,7 @@ class HydrodynamicModel:
         Cd_transverse: float = 1.0,
         Cd_axial: float = 0.8,
         Ca_transverse: float = 1.0,
-        Ca_axial: float = 0.1,   # for infinite cylinder Ca_axial = 0
+        Ca_axial: float = 0.1,  # for infinite cylinder Ca_axial = 0
         z_surface: float = 0.0,
         v_linear_threshold: float = 0.2,
     ):
@@ -174,7 +177,8 @@ class HydrodynamicModel:
     # ------------------------------------------------------------------
 
     def buoyancy_wrench(
-        self, link_name: str,
+        self,
+        link_name: str,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Buoyancy force and torque about the world origin for one link.
 
@@ -210,8 +214,8 @@ class HydrodynamicModel:
     ) -> np.ndarray:
         """Hybrid viscous drag on one link in world frame, scaled by submersion ratio.
 
-        Hybrid drag gives a numerically stable transition from linear damping at low 
-        velocity to quadratic drag at high velocity, with a smooth transition around 
+        Hybrid drag gives a numerically stable transition from linear damping at low
+        velocity to quadratic drag at high velocity, with a smooth transition around
         the specified velocity threshold.
 
         Decomposed into axial and transverse components relative to the
@@ -243,7 +247,12 @@ class HydrodynamicModel:
         v_trans_mag = np.linalg.norm(v_trans)
         F_trans = -(
             D1_t * v_trans
-            + 0.5 * self.rho * hp.Cd_transverse * hp.A_transverse * v_trans_mag * v_trans
+            + 0.5
+            * self.rho
+            * hp.Cd_transverse
+            * hp.A_transverse
+            * v_trans_mag
+            * v_trans
         )
 
         return alpha * (F_axial + F_trans)
@@ -264,7 +273,9 @@ class HydrodynamicModel:
     # ------------------------------------------------------------------
 
     def pressure_gradient_force(
-        self, link_name: str, fluid_accel: np.ndarray,
+        self,
+        link_name: str,
+        fluid_accel: np.ndarray,
     ) -> np.ndarray:
         """Force due to the ambient pressure gradient: F_A = rho * V * a_fluid."""
         hp = self.link_hydro[link_name]
@@ -286,9 +297,8 @@ class HydrodynamicModel:
         a = axis.reshape(3, 1)
 
         # M = ma_trans * I + (ma_axial - ma_trans) * (a ⊗ a)
-        M_trans = (
-            hp.ma_transverse * np.eye(3)
-            + (hp.ma_axial - hp.ma_transverse) * (a @ a.T)
+        M_trans = hp.ma_transverse * np.eye(3) + (hp.ma_axial - hp.ma_transverse) * (
+            a @ a.T
         )
         M_A = np.zeros((6, 6))
         M_A[:3, :3] = alpha * M_trans
@@ -302,7 +312,9 @@ class HydrodynamicModel:
         return M_total
 
     def added_mass_force(
-        self, link_name: str, a_link: np.ndarray,
+        self,
+        link_name: str,
+        a_link: np.ndarray,
     ) -> np.ndarray:
         """Force due to added mass for one link: F = -M_A_trans @ a."""
         M_A = self.added_mass_matrix_link(link_name)
@@ -314,13 +326,17 @@ class HydrodynamicModel:
 
     def print_summary(self):
         """Print a table of hydrodynamic properties per link."""
-        print(f"Water surface: z = {self.z_surface:.3f} m  |  "
-              f"Drag threshold: v = {self.v_linear_threshold:.2f} m/s")
+        print(
+            f"Water surface: z = {self.z_surface:.3f} m  |  "
+            f"Drag threshold: v = {self.v_linear_threshold:.2f} m/s"
+        )
         total_vol = 0.0
         total_buoy = 0.0
-        print(f"{'Link':<30s} {'Vol [cm³]':>10s} {'Buoy [N]':>10s} "
-              f"{'r [mm]':>8s} {'L [mm]':>8s} "
-              f"{'α':>6s} {'ma_t [g]':>9s} {'ma_a [g]':>9s}")
+        print(
+            f"{'Link':<30s} {'Vol [cm³]':>10s} {'Buoy [N]':>10s} "
+            f"{'r [mm]':>8s} {'L [mm]':>8s} "
+            f"{'α':>6s} {'ma_t [g]':>9s} {'ma_a [g]':>9s}"
+        )
         print("-" * 103)
         for name, hp in self.link_hydro.items():
             alpha = submersion_ratio(hp.cylinder, self.z_surface)
@@ -342,5 +358,7 @@ class HydrodynamicModel:
         print(f"{'TOTAL':<30s} {total_vol * 1e6:10.2f} {total_buoy:10.4f}")
         print(f"\nRobot mass:   {total_mass:.4f} kg")
         print(f"Robot weight: {weight:.4f} N")
-        print(f"Net vertical: {total_buoy - weight:+.4f} N  "
-              f"({'positively buoyant' if total_buoy > weight else 'negatively buoyant'})")
+        print(
+            f"Net vertical: {total_buoy - weight:+.4f} N  "
+            f"({'positively buoyant' if total_buoy > weight else 'negatively buoyant'})"
+        )

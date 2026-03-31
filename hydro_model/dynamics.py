@@ -24,8 +24,8 @@ import numpy as np
 import pinocchio as pin
 import pinocchio.casadi as cpin
 
+from .hydrodynamics import GRAVITY, RHO_WATER
 from .robot import QuadrupedRobot
-from .hydrodynamics import RHO_WATER, GRAVITY
 
 
 class SymbolicDynamics:
@@ -55,8 +55,8 @@ class SymbolicDynamics:
         v_linear_threshold: float = 0.2,
     ):
         self.robot = robot
-        self.nq = robot.nq # number of configuration variables
-        self.nv = robot.nv # number of velocity variables
+        self.nq = robot.nq  # number of configuration variables
+        self.nv = robot.nv  # number of velocity variables
 
         # Cast the Pinocchio model to CasADi
         self.cmodel = cpin.Model(robot.model)
@@ -73,8 +73,8 @@ class SymbolicDynamics:
 
         # Symbolic state variables
         self.q = ca.SX.sym("q", self.nq)
-        self.v = ca.SX.sym("v", self.nv)   # q̇
-        self.a = ca.SX.sym("a", self.nv)   # q̈
+        self.v = ca.SX.sym("v", self.nv)  # q̇
+        self.a = ca.SX.sym("a", self.nv)  # q̈
         self.tau = ca.SX.sym("tau", self.nv)
 
         # Pre-compute all symbolic expressions and wrap as CasADi Functions
@@ -134,24 +134,40 @@ class SymbolicDynamics:
             fid = link.frame_id
             oMf = self.cdata.oMf[fid]
 
-            pos = oMf.translation     # (3, 1)
-            R = oMf.rotation          # (3, 3)
+            pos = oMf.translation  # (3, 1)
+            R = oMf.rotation  # (3, 3)
 
             self.f_fk[name] = ca.Function(
-                f"fk_{name}", [q], [pos, R], ["q"], ["pos", "R"],
+                f"fk_{name}",
+                [q],
+                [pos, R],
+                ["q"],
+                ["pos", "R"],
             )
 
             J_full = cpin.computeFrameJacobian(
-                self.cmodel, self.cdata, q, fid, pin.ReferenceFrame.WORLD,
+                self.cmodel,
+                self.cdata,
+                q,
+                fid,
+                pin.ReferenceFrame.WORLD,
             )
             # Translational part: rows 0-2
             J_trans = J_full[:3, :]
 
             self.f_J[name] = ca.Function(
-                f"J_{name}", [q], [J_full], ["q"], ["J"],
+                f"J_{name}",
+                [q],
+                [J_full],
+                ["q"],
+                ["J"],
             )
             self.f_Jv[name] = ca.Function(
-                f"Jv_{name}", [q], [J_trans], ["q"], ["Jv"],
+                f"Jv_{name}",
+                [q],
+                [J_trans],
+                ["q"],
+                ["Jv"],
             )
 
         # Foot positions (convenience)
@@ -159,7 +175,11 @@ class SymbolicDynamics:
         for leg, fid in self.robot.foot_frame_ids.items():
             pos = self.cdata.oMf[fid].translation
             self.f_foot_pos[leg] = ca.Function(
-                f"foot_{leg}", [q], [pos], ["q"], ["pos"],
+                f"foot_{leg}",
+                [q],
+                [pos],
+                ["q"],
+                ["pos"],
             )
 
     # ==================================================================
@@ -202,7 +222,7 @@ class SymbolicDynamics:
 
             fid = link.frame_id
             oMf = self.cdata.oMf[fid]
-            R_sym = oMf.rotation   # 3x3 symbolic rotation
+            R_sym = oMf.rotation  # 3x3 symbolic rotation
 
             # Jacobian at the frame origin, world-aligned.
             # LOCAL_WORLD_ALIGNED gives the spatial velocity at the *frame
@@ -212,13 +232,16 @@ class SymbolicDynamics:
             # making the base columns identical for all frames on the same
             # body and breaking left/right symmetry of torque projections.
             J_full = cpin.computeFrameJacobian(
-                self.cmodel, self.cdata, q, fid,
+                self.cmodel,
+                self.cdata,
+                q,
+                fid,
                 pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
             )
             Jv = J_full[:3, :]  # (3, nv)
 
             # Link velocity at frame origin in world frame
-            v_link = Jv @ v     # (3, 1)
+            v_link = Jv @ v  # (3, 1)
 
             # ── Cylinder axis in world frame (symbolic) ──
             axis_sym = R_sym @ ca.SX(cyl.axis_local)
@@ -246,9 +269,9 @@ class SymbolicDynamics:
             z_top = z_center + dz_half
             z_bottom = z_center - dz_half
             # α = clamp((z_surf - z_bottom) / (z_top - z_bottom), 0, 1)
-            alpha = ca.fmin(1.0, ca.fmax(0.0,
-                (z_surf - z_bottom) / (z_top - z_bottom + 1e-6)
-            ))
+            alpha = ca.fmin(
+                1.0, ca.fmax(0.0, (z_surf - z_bottom) / (z_top - z_bottom + 1e-6))
+            )
 
             # ── Buoyancy (scaled by α) ──
             # The buoyancy force acts at the cylinder center, offset from
@@ -257,7 +280,7 @@ class SymbolicDynamics:
             # [F; r × F] at the frame origin, matching the
             # LOCAL_WORLD_ALIGNED Jacobian convention.
             F_buoy = ca.vertcat(0.0, 0.0, alpha * rho * g * V)
-            r_offset = R_sym @ ca.SX(cyl.center_local)   # frame origin → CoB
+            r_offset = R_sym @ ca.SX(cyl.center_local)  # frame origin → CoB
             wrench_buoy = ca.vertcat(F_buoy, ca.cross(r_offset, F_buoy))
             tau_buoyancy += J_full.T @ wrench_buoy
 
@@ -271,7 +294,7 @@ class SymbolicDynamics:
             v_tr_mag = ca.sqrt(ca.dot(v_tr, v_tr) + _eps2)
 
             D1_a = 0.5 * rho * self.Cd_a * A_a * v_thresh
-            v_ax_abs = ca.sqrt(v_ax_mag ** 2 + _eps2)
+            v_ax_abs = ca.sqrt(v_ax_mag**2 + _eps2)
             F_drag_ax = -(D1_a * v_ax + 0.5 * rho * self.Cd_a * A_a * v_ax_abs * v_ax)
 
             D1_t = 0.5 * rho * self.Cd_t * A_t * v_thresh
@@ -293,13 +316,25 @@ class SymbolicDynamics:
 
         # ── Wrap as CasADi Functions ──
         self.f_tau_buoyancy = ca.Function(
-            "tau_buoyancy", [q], [tau_buoyancy], ["q"], ["tau"],
+            "tau_buoyancy",
+            [q],
+            [tau_buoyancy],
+            ["q"],
+            ["tau"],
         )
         self.f_tau_drag = ca.Function(
-            "tau_drag", [q, v], [tau_drag], ["q", "v"], ["tau"],
+            "tau_drag",
+            [q, v],
+            [tau_drag],
+            ["q", "v"],
+            ["tau"],
         )
         self.f_M_added = ca.Function(
-            "M_added", [q], [M_added], ["q"], ["M"],
+            "M_added",
+            [q],
+            [M_added],
+            ["q"],
+            ["M"],
         )
 
     # ==================================================================
@@ -330,28 +365,41 @@ class SymbolicDynamics:
           v[6:18] = joint velocities
         """
         # Quaternion components (scalar last: [qx, qy, qz, qw])
-        qx = q[3];  qy = q[4];  qz = q[5];  qw = q[6]
+        qx = q[3]
+        qy = q[4]
+        qz = q[5]
+        qw = q[6]
 
         # Linear and angular velocity in body frame
-        vx = v[0];  vy = v[1];  vz = v[2]
-        wx = v[3];  wy = v[4];  wz = v[5]
+        vx = v[0]
+        vy = v[1]
+        vz = v[2]
+        wx = v[3]
+        wy = v[4]
+        wz = v[5]
 
         # World-frame position derivative:  dp/dt = R_world_body · v_body
         # R constructed from quaternion (scalar last convention)
         dp = ca.vertcat(
-            (1 - 2*(qy**2 + qz**2))*vx + 2*(qx*qy - qw*qz)*vy + 2*(qx*qz + qw*qy)*vz,
-            2*(qx*qy + qw*qz)*vx + (1 - 2*(qx**2 + qz**2))*vy + 2*(qy*qz - qw*qx)*vz,
-            2*(qx*qz - qw*qy)*vx + 2*(qy*qz + qw*qx)*vy + (1 - 2*(qx**2 + qy**2))*vz,
+            (1 - 2 * (qy**2 + qz**2)) * vx
+            + 2 * (qx * qy - qw * qz) * vy
+            + 2 * (qx * qz + qw * qy) * vz,
+            2 * (qx * qy + qw * qz) * vx
+            + (1 - 2 * (qx**2 + qz**2)) * vy
+            + 2 * (qy * qz - qw * qx) * vz,
+            2 * (qx * qz - qw * qy) * vx
+            + 2 * (qy * qz + qw * qx) * vy
+            + (1 - 2 * (qx**2 + qy**2)) * vz,
         )
 
         # Quaternion kinematics:  dq/dt = ½ · q ⊗ [ω; 0]
-        dqx = 0.5 * ( qw*wx + qy*wz - qz*wy)
-        dqy = 0.5 * ( qw*wy + qz*wx - qx*wz)
-        dqz = 0.5 * ( qw*wz + qx*wy - qy*wx)
-        dqw = 0.5 * (-qx*wx - qy*wy - qz*wz)
+        dqx = 0.5 * (qw * wx + qy * wz - qz * wy)
+        dqy = 0.5 * (qw * wy + qz * wx - qx * wz)
+        dqz = 0.5 * (qw * wz + qx * wy - qy * wx)
+        dqw = 0.5 * (-qx * wx - qy * wy - qz * wz)
 
         # Joint angle derivatives (trivial)
-        return ca.vertcat(dp, dqx, dqy, dqz, dqw, v[6:])   # (19, 1)
+        return ca.vertcat(dp, dqx, dqy, dqz, dqw, v[6:])  # (19, 1)
 
     # ==================================================================
     # Full equations of motion
@@ -380,37 +428,43 @@ class SymbolicDynamics:
         """
         q, v, tau = self.q, self.v, self.tau
 
-        M_rb  = self.f_M_rb(q)
-        C_rb  = self.f_C_rb(q, v)
-        g_rb  = self.f_g_rb(q)
-        M_A   = self.f_M_added(q)
+        M_rb = self.f_M_rb(q)
+        C_rb = self.f_C_rb(q, v)
+        g_rb = self.f_g_rb(q)
+        M_A = self.f_M_added(q)
         tau_b = self.f_tau_buoyancy(q)
         tau_d = self.f_tau_drag(q, v)
 
         M_total = M_rb + M_A
-        rhs     = tau + tau_b + tau_d - C_rb @ v - g_rb
+        rhs = tau + tau_b + tau_d - C_rb @ v - g_rb
 
         # Forward dynamics: v̇ = M_total \ rhs   (nv = 18)
         a_expr = ca.solve(M_total, rhs)
 
         self.f_forward_dynamics = ca.Function(
             "forward_dynamics",
-            [q, v, tau], [a_expr],
-            ["q", "v", "tau"], ["a"],
+            [q, v, tau],
+            [a_expr],
+            ["q", "v", "tau"],
+            ["a"],
         )
 
         # Inverse dynamics: τ = M_total · v̇ + C·v + g − τ_hydro
-        a     = self.a
-        tau_id = (self.f_M_rb(q) + self.f_M_added(q)) @ a \
-                 + self.f_C_rb(q, v) @ v \
-                 + self.f_g_rb(q) \
-                 - self.f_tau_buoyancy(q) \
-                 - self.f_tau_drag(q, v)
+        a = self.a
+        tau_id = (
+            (self.f_M_rb(q) + self.f_M_added(q)) @ a
+            + self.f_C_rb(q, v) @ v
+            + self.f_g_rb(q)
+            - self.f_tau_buoyancy(q)
+            - self.f_tau_drag(q, v)
+        )
 
         self.f_inverse_dynamics = ca.Function(
             "inverse_dynamics",
-            [q, v, a], [tau_id],
-            ["q", "v", "a"], ["tau"],
+            [q, v, a],
+            [tau_id],
+            ["q", "v", "a"],
+            ["tau"],
         )
 
         # Continuous-time state-space ODE  ẋ = f(x, u)
@@ -419,14 +473,16 @@ class SymbolicDynamics:
         #
         # dq/dt is computed via the SE(3) tangent map (see _dq_dt), which
         # accounts for the quaternion kinematics of the floating base.
-        dq_dt = self._dq_dt(q, v)   # (19, 1)
-        x     = ca.vertcat(q, v)    # (37, 1)
-        xdot  = ca.vertcat(dq_dt, a_expr)  # (37, 1)
+        dq_dt = self._dq_dt(q, v)  # (19, 1)
+        x = ca.vertcat(q, v)  # (37, 1)
+        xdot = ca.vertcat(dq_dt, a_expr)  # (37, 1)
 
         self.f_xdot = ca.Function(
             "xdot",
-            [x, tau], [xdot],
-            ["x", "tau"], ["xdot"],
+            [x, tau],
+            [xdot],
+            ["x", "tau"],
+            ["xdot"],
         )
 
     # ==================================================================
@@ -434,13 +490,19 @@ class SymbolicDynamics:
     # ==================================================================
 
     def eval_forward_dynamics(
-        self, q: np.ndarray, v: np.ndarray, tau: np.ndarray,
+        self,
+        q: np.ndarray,
+        v: np.ndarray,
+        tau: np.ndarray,
     ) -> np.ndarray:
         """Evaluate forward dynamics numerically."""
         return np.array(self.f_forward_dynamics(q, v, tau)).flatten()
 
     def eval_inverse_dynamics(
-        self, q: np.ndarray, v: np.ndarray, a: np.ndarray,
+        self,
+        q: np.ndarray,
+        v: np.ndarray,
+        a: np.ndarray,
     ) -> np.ndarray:
         """Evaluate inverse dynamics numerically."""
         return np.array(self.f_inverse_dynamics(q, v, a)).flatten()
@@ -475,8 +537,6 @@ class SymbolicDynamics:
             q_joints = np.zeros(self.robot.n_actuated)
 
         n_base = self.robot.n_base_q  # 7
-        v_zero  = np.zeros(self.nv)
-        tau_zero = np.zeros(self.nv)
 
         def make_q(z: float, roll: float, pitch: float) -> np.ndarray:
             """Build q from base z, roll, pitch (yaw=0)."""
@@ -486,10 +546,10 @@ class SymbolicDynamics:
             cr, sr = np.cos(roll / 2), np.sin(roll / 2)
             cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
             # yaw = 0
-            q[3] = sr * cp           # qx
-            q[4] = cr * sp           # qy
-            q[5] = -sr * sp          # qz
-            q[6] = cr * cp           # qw
+            q[3] = sr * cp  # qx
+            q[4] = cr * sp  # qy
+            q[5] = -sr * sp  # qz
+            q[6] = cr * cp  # qw
             q[n_base:] = q_joints
             return q
 
@@ -506,19 +566,23 @@ class SymbolicDynamics:
             z, pitch = params
             q = make_q(z, 0.0, pitch)  # roll = 0 (left-right symmetric)
             tau_b = np.array(self.f_tau_buoyancy(q)).flatten()
-            g_rb  = np.array(self.f_g_rb(q)).flatten()
-            rhs   = tau_b - g_rb
-            return rhs[2]**2 + rhs[4]**2
+            g_rb = np.array(self.f_g_rb(q)).flatten()
+            rhs = tau_b - g_rb
+            return rhs[2] ** 2 + rhs[4] ** 2
 
-        res = minimize(residual, [z_guess, 0.0], method="Nelder-Mead",
-                       options={"xatol": 1e-8, "fatol": 1e-12, "maxiter": 5000})
+        res = minimize(
+            residual,
+            [z_guess, 0.0],
+            method="Nelder-Mead",
+            options={"xatol": 1e-8, "fatol": 1e-12, "maxiter": 5000},
+        )
 
         z_eq, pitch_eq = res.x
         roll_eq = 0.0
         q_trim = make_q(z_eq, roll_eq, pitch_eq)
         tau_b_trim = np.array(self.f_tau_buoyancy(q_trim)).flatten()
-        g_trim     = np.array(self.f_g_rb(q_trim)).flatten()
-        rhs_trim   = tau_b_trim - g_trim
+        g_trim = np.array(self.f_g_rb(q_trim)).flatten()
+        rhs_trim = tau_b_trim - g_trim
 
         print("Trim state (hydrostatic base equilibrium):")
         print(f"  Base z:          {z_eq:.4f} m")
@@ -527,18 +591,24 @@ class SymbolicDynamics:
         print(f"  Total buoyancy:  {tau_b_trim[2]:.4f} N  (weight = {g_trim[2]:.4f} N)")
         print(f"  rhs[2] (heave):  {rhs_trim[2]:.2e} N   (→ 0 = force balanced)")
         print(f"  rhs[4] (pitch):  {rhs_trim[4]:.2e} N·m (→ 0 = moment balanced)")
-        print('Base force residuals at trim:')
-        for i, name in enumerate(['surge','sway','heave','roll','pitch','yaw']):
-            print(f'  rhs[{i}] ({name:5s}) = {rhs_trim[i]:.4e}')
+        print("Base force residuals at trim:")
+        for i, name in enumerate(["surge", "sway", "heave", "roll", "pitch", "yaw"]):
+            print(f"  rhs[{i}] ({name:5s}) = {rhs_trim[i]:.4e}")
         return q_trim
 
     def print_summary(self):
         """Print a summary of the symbolic dynamics."""
         print("=== Symbolic Dynamics Summary ===")
-        print(f"  State dimension:   nq={self.nq} (base_q=7 + joints=12), "
-              f"nv={self.nv} (base_v=6 + joints=12)")
-        print(f"  State vector x:    dim={self.nq + self.nv}  [q({self.nq}); v({self.nv})]")
-        print(f"  Links with hydro:  {sum(1 for l in self.robot.links.values() if l.cylinder)}")
+        print(
+            f"  State dimension:   nq={self.nq} (base_q=7 + joints=12), "
+            f"nv={self.nv} (base_v=6 + joints=12)"
+        )
+        print(
+            f"  State vector x:    dim={self.nq + self.nv}  [q({self.nq}); v({self.nv})]"
+        )
+        print(
+            f"  Links with hydro:  {sum(1 for link in self.robot.links.values() if link.cylinder)}"
+        )
         print(f"  Fluid density:     {self.rho} kg/m^3")
         print(f"  Drag coeffs:       Cd_t={self.Cd_t}, Cd_a={self.Cd_a}")
         print(f"  Added-mass coeffs: Ca_t={self.Ca_t}, Ca_a={self.Ca_a}")
@@ -547,8 +617,10 @@ class SymbolicDynamics:
         print()
         print("CasADi Functions:")
         for attr_name in sorted(dir(self)):
-            if attr_name.startswith("f_") and isinstance(getattr(self, attr_name), ca.Function):
+            if attr_name.startswith("f_") and isinstance(
+                getattr(self, attr_name), ca.Function
+            ):
                 fn = getattr(self, attr_name)
-                ins  = " × ".join(str(fn.size_in(i))  for i in range(fn.n_in()))
+                ins = " × ".join(str(fn.size_in(i)) for i in range(fn.n_in()))
                 outs = " × ".join(str(fn.size_out(i)) for i in range(fn.n_out()))
                 print(f"  {fn.name():25s}  ({ins}) → ({outs})")

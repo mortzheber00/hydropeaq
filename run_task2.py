@@ -10,7 +10,8 @@ This script:
 """
 
 import numpy as np
-from hydro_model import QuadrupedRobot, HydrodynamicModel, SymbolicDynamics
+
+from hydro_model import QuadrupedRobot, SymbolicDynamics
 
 URDF_PATH = "urdf/amph.urdf"
 
@@ -33,16 +34,33 @@ def main():
     # ── 2. Trim state ──────────────────────────────────────────────────
     print("\nFinding trim state...")
     q_trim = dyn.find_trim_state()
-    print(f'\nq_trim = {q_trim}')
+    print(f"\nq_trim = {q_trim}")
     print()
 
     # ── 3. Verify against Pinocchio numeric ────────────────────────────
     # q layout: [x, y, z, qx, qy, qz, qw, 12×joint_angles]
     q_test = robot.neutral_config()
-    q_test[0:3]  = [0.1, 0.0, 0.0]    # base position
-    q_test[3:7]  = [0.0, 0.0, 0.0, 1.0]  # identity quaternion (already set by neutral_config)
-    q_test[7:19] = [0.1, 0.3, -0.2, 0.0, 0.4, -0.1,
-                    0.2, -0.3, 0.1, -0.1, 0.2, -0.4]  # joint angles
+    q_test[0:3] = [0.1, 0.0, 0.0]  # base position
+    q_test[3:7] = [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]  # identity quaternion (already set by neutral_config)
+    q_test[7:19] = [
+        0.1,
+        0.3,
+        -0.2,
+        0.0,
+        0.4,
+        -0.1,
+        0.2,
+        -0.3,
+        0.1,
+        -0.1,
+        0.2,
+        -0.4,
+    ]  # joint angles
     v_test = np.ones(robot.nv) * 0.05
 
     # Mass matrix
@@ -94,16 +112,15 @@ def main():
     print(f"  τ_buoyancy = {tau_buoy}")
     print(f"  τ_drag     = {tau_drag}")
     print(f"  M_added diag = {np.diag(M_added)}")
-    print(f"  M_added / M_rb ratio (diag): "
-          f"{np.diag(M_added) / np.diag(M_sym)}")
+    print(f"  M_added / M_rb ratio (diag): {np.diag(M_added) / np.diag(M_sym)}")
     print()
 
     # ── 6. State-space ODE ─────────────────────────────────────────────
     x0 = np.concatenate([q_test, v_test])
     xdot = np.array(dyn.f_xdot(x0, tau_zero)).flatten()
     print("State-space ODE (x = [q, v]):")
-    print(f"  ẋ[:nq]  = v     = {xdot[:robot.nq]}")
-    print(f"  ẋ[nq:]  = q̈     = {xdot[robot.nq:]}")
+    print(f"  ẋ[:nq]  = v     = {xdot[: robot.nq]}")
+    print(f"  ẋ[nq:]  = q̈     = {xdot[robot.nq :]}")
 
 
 if __name__ == "__main__":

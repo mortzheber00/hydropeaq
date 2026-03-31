@@ -7,8 +7,8 @@ at the pose computed by Pinocchio forward kinematics.
 
 from __future__ import annotations
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.patches import Patch
 
 from .robot import QuadrupedRobot
@@ -41,21 +41,23 @@ def _rotation_align_z_to(target: np.ndarray) -> np.ndarray:
     v = np.cross(z_axis, target)
     s = np.linalg.norm(v)
     c = np.dot(z_axis, target)
-    vx = np.array([
-        [    0, -v[2],  v[1]],
-        [ v[2],     0, -v[0]],
-        [-v[1],  v[0],     0],
-    ])
+    vx = np.array(
+        [
+            [0, -v[2], v[1]],
+            [v[2], 0, -v[0]],
+            [-v[1], v[0], 0],
+        ]
+    )
     return np.eye(3) + vx + vx @ vx * (1 - c) / (s * s + 1e-15)
 
 
 # Color palette for different link types
 LINK_COLORS = {
-    "base":  "#4A90D9",
-    "side":  "#E8A838",
+    "base": "#4A90D9",
+    "side": "#E8A838",
     "thigh": "#5CB85C",
-    "calf":  "#D9534F",
-    "foot":  "#9B59B6",
+    "calf": "#D9534F",
+    "foot": "#9B59B6",
 }
 
 
@@ -126,8 +128,16 @@ def visualize_skeleton(
     all_pts.append(base_pos)
     ax.scatter(*base_pos, s=50, c="k", zorder=5)
     _draw_frame_axes(ax, base_pos, base_R, length=0.015)
-    ax.text(base_pos[0], base_pos[1], base_pos[2] + 0.005,
-            "base", fontsize=5, ha="center", va="bottom", color="dimgray")
+    ax.text(
+        base_pos[0],
+        base_pos[1],
+        base_pos[2] + 0.005,
+        "base",
+        fontsize=5,
+        ha="center",
+        va="bottom",
+        color="dimgray",
+    )
 
     # -- Draw each leg --
     for leg in LEG_NAMES:
@@ -138,10 +148,10 @@ def visualize_skeleton(
         foot_fid = robot.foot_frame_ids[leg]
 
         raw = {
-            "side":  np.array(robot.data.oMi[side_jid].translation),
+            "side": np.array(robot.data.oMi[side_jid].translation),
             "thigh": np.array(robot.data.oMi[thigh_jid].translation),
-            "calf":  np.array(robot.data.oMi[calf_jid].translation),
-            "foot":  np.array(robot.data.oMf[foot_fid].translation),
+            "calf": np.array(robot.data.oMi[calf_jid].translation),
+            "foot": np.array(robot.data.oMf[foot_fid].translation),
         }
 
         if centerline:
@@ -150,8 +160,13 @@ def visualize_skeleton(
             for key in ["thigh", "calf", "foot"]:
                 ax.scatter(*raw[key], s=12, c="gray", alpha=0.3, zorder=2)
                 # Dashed line from ghost to projected
-                ax.plot(*zip(raw[key], proj[key]), color="gray",
-                        linewidth=0.5, linestyle=":", alpha=0.4)
+                ax.plot(
+                    *zip(raw[key], proj[key]),
+                    color="gray",
+                    linewidth=0.5,
+                    linestyle=":",
+                    alpha=0.4,
+                )
             pts = proj
         else:
             pts = raw
@@ -170,26 +185,58 @@ def visualize_skeleton(
         foot_pos = pts["foot"]
         foot_R = np.array(robot.data.oMf[foot_fid].rotation)
         all_pts.append(foot_pos)
-        ax.scatter(*foot_pos, s=60, c="#9B59B6", marker="v",
-                   edgecolors="k", linewidths=0.5, zorder=5)
+        ax.scatter(
+            *foot_pos,
+            s=60,
+            c="#9B59B6",
+            marker="v",
+            edgecolors="k",
+            linewidths=0.5,
+            zorder=5,
+        )
         _draw_frame_axes(ax, foot_pos, foot_R, length=0.015)
 
         # Connecting lines: base→side→thigh→calf, calf--foot
-        ax.plot(*zip(base_pos, pts["side"]),
-                color=_link_color("side"), linewidth=2.5, alpha=0.8)
-        ax.plot(*zip(pts["side"], pts["thigh"]),
-                color=_link_color("side"), linewidth=2.5, alpha=0.8)
-        ax.plot(*zip(pts["thigh"], pts["calf"]),
-                color=_link_color("thigh"), linewidth=2.5, alpha=0.8)
-        ax.plot(*zip(pts["calf"], pts["foot"]),
-                color=_link_color("calf"), linewidth=2.0, linestyle="--", alpha=0.7)
+        ax.plot(
+            *zip(base_pos, pts["side"]),
+            color=_link_color("side"),
+            linewidth=2.5,
+            alpha=0.8,
+        )
+        ax.plot(
+            *zip(pts["side"], pts["thigh"]),
+            color=_link_color("side"),
+            linewidth=2.5,
+            alpha=0.8,
+        )
+        ax.plot(
+            *zip(pts["thigh"], pts["calf"]),
+            color=_link_color("thigh"),
+            linewidth=2.5,
+            alpha=0.8,
+        )
+        ax.plot(
+            *zip(pts["calf"], pts["foot"]),
+            color=_link_color("calf"),
+            linewidth=2.0,
+            linestyle="--",
+            alpha=0.7,
+        )
 
         # Labels
         for key in ["side", "thigh", "calf"]:
             pos = pts[key]
             label = f"{leg}\n{key}".replace("_", "\n")
-            ax.text(pos[0], pos[1], pos[2] + 0.005, label,
-                    fontsize=4, ha="center", va="bottom", color="dimgray")
+            ax.text(
+                pos[0],
+                pos[1],
+                pos[2] + 0.005,
+                label,
+                fontsize=4,
+                ha="center",
+                va="bottom",
+                color="dimgray",
+            )
 
     all_pts = np.array(all_pts)
     _set_equal_aspect(ax, all_pts)
@@ -261,15 +308,22 @@ def visualize_robot(
                 X[i, j], Y[i, j], Z[i, j] = pt
                 all_pts.append(pt)
 
-        ax.plot_surface(X, Y, Z, alpha=0.6, color=color, edgecolor="k",
-                        linewidth=0.3)
+        ax.plot_surface(X, Y, Z, alpha=0.6, color=color, edgecolor="k", linewidth=0.3)
 
-        ax.text(cyl.center[0], cyl.center[1], cyl.center[2],
-                name.replace("_link", "").replace("_", "\n"),
-                fontsize=5, ha="center", va="bottom", color="k")
+        ax.text(
+            cyl.center[0],
+            cyl.center[1],
+            cyl.center[2],
+            name.replace("_link", "").replace("_", "\n"),
+            fontsize=5,
+            ha="center",
+            va="bottom",
+            color="k",
+        )
 
     # Draw centerline skeleton on top
     from .robot import LEG_NAMES
+
     base_pos = np.array(robot.data.oMi[0].translation)
     for leg in LEG_NAMES:
         proj = robot.leg_centerline_positions(leg)

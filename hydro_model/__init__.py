@@ -1,5 +1,5 @@
-from .robot import QuadrupedRobot
-from .hydrodynamics import HydrodynamicModel
 from .dynamics import SymbolicDynamics
+from .hydrodynamics import HydrodynamicModel
+from .robot import QuadrupedRobot
 
 __all__ = ["QuadrupedRobot", "HydrodynamicModel", "SymbolicDynamics"]
