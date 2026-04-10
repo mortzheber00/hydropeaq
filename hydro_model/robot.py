@@ -14,10 +14,10 @@ from pathlib import Path
 import numpy as np
 import pinocchio as pin
 
-
 # ---------------------------------------------------------------------------
 # Geometric primitive
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class CylinderPrimitive:
@@ -34,9 +34,10 @@ class CylinderPrimitive:
 
         p_center_world = R_link @ center_local + t_link_world
     """
-    radius: float           # [m]
-    length: float           # [m]
-    center: np.ndarray      # midpoint of the cylinder in world frame [m]
+
+    radius: float  # [m]
+    length: float  # [m]
+    center: np.ndarray  # midpoint of the cylinder in world frame [m]
     axis_world: np.ndarray  # unit vector along the cylinder axis (world frame)
     axis_local: np.ndarray  # same axis expressed in the link body frame
     center_local: np.ndarray = field(default_factory=lambda: np.zeros(3))
@@ -86,9 +87,15 @@ class CylinderPrimitive:
         axis_world = diff / length
         axis_local = R_frame.T @ axis_world
         center = (p_start + p_end) / 2.0
-        radius = cls.radius_from_inertia(mass, inertia)
-        return cls(radius=radius, length=length, center=center,
-                   axis_world=axis_world, axis_local=axis_local)
+        # TODO: avoid hard coded radius reduction
+        radius = cls.radius_from_inertia(mass, inertia) - 0.02
+        return cls(
+            radius=radius,
+            length=length,
+            center=center,
+            axis_world=axis_world,
+            axis_local=axis_local,
+        )
 
     @classmethod
     def from_inertia_only(
@@ -110,29 +117,37 @@ class CylinderPrimitive:
         # For a solid cylinder, the inertia about the central axis is I_sym = m*r^2/2,
         # and the inertia about any transverse axis is I_trans = m*(3*r^2 + h^2)/12.
         r_sq = 2.0 * I_sym / mass
-        radius = np.sqrt(max(r_sq, 1e-10))
+        # TODO: avoid hard coded radius reduction
+        radius = np.sqrt(max(r_sq, 1e-10)) - 0.02
         h_sq = 12.0 * I_trans / mass - 3.0 * r_sq
         length = np.sqrt(max(h_sq, 1e-10))
 
         axis_local = eigvecs[:, idx_min]
         axis_world = R_world @ axis_local
-        return cls(radius=radius, length=length, center=center,
-                   axis_world=axis_world, axis_local=axis_local)
+        return cls(
+            radius=radius,
+            length=length,
+            center=center,
+            axis_world=axis_world,
+            axis_local=axis_local,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Per-link data combining Pinocchio inertia with cylinder geometry
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class LinkData:
     """Physical properties of a single link, derived from Pinocchio."""
+
     name: str
-    frame_id: int          # Pinocchio frame index (BODY type)
-    parent_joint: int      # Pinocchio joint index that moves this link
-    mass: float            # [kg]
-    com_local: np.ndarray  # center of mass in link frame [m]
-    inertia: np.ndarray    # 3x3 inertia tensor at CoM, link frame
+    frame_id: int  # Pinocchio frame index (BODY type)
+    parent_joint: int  # Pinocchio joint index that moves this link
+    mass: float  # [kg]
+    com_local: np.ndarray  # center of mass in joint frame [m]
+    inertia: np.ndarray  # 3x3 inertia tensor at CoM, joint frame
     cylinder: CylinderPrimitive | None = field(default=None, init=False)
 
 
@@ -147,6 +162,7 @@ JOINTS_PER_LEG = ["Side_joint", "Thigh_joint", "Calf_joint"]
 # ---------------------------------------------------------------------------
 # Main robot class
 # ---------------------------------------------------------------------------
+
 
 class QuadrupedRobot:
     """Quadruped robot backed by Pinocchio with cylinder-approximated links.
@@ -344,11 +360,12 @@ class QuadrupedRobot:
         """World-frame CoM position for each link (call FK first)."""
         coms = {}
         for name, link in self.links.items():
-            oMf = self.data.oMf[link.frame_id]
             # CoM is stored relative to the joint frame; the BODY frame
             # may have an offset, but for standard URDFs they coincide.
             oMj = self.data.oMi[link.parent_joint]
-            coms[name] = np.array(oMj.act(pin.SE3.Identity().translation + link.com_local))
+            coms[name] = np.array(
+                oMj.act(pin.SE3.Identity().translation + link.com_local)
+            )
         return coms
 
     def foot_positions(self) -> dict[str, np.ndarray]:
@@ -382,10 +399,15 @@ class QuadrupedRobot:
             # joint placement in world frame 4x4 transformation (populated by FK)
             oMj = self.data.oMi[base.parent_joint]
             # CoM in world frame = joint translation + rotated local CoM offset
-            com_world = np.array(oMj.translation) + np.array(oMj.rotation) @ base.com_local
+            com_world = (
+                np.array(oMj.translation) + np.array(oMj.rotation) @ base.com_local
+            )
             # Geometry from inertia alone (no clear axis from joint-to-joint segment since it's the root link)
             base.cylinder = CylinderPrimitive.from_inertia_only(
-                base.mass, base.inertia, com_world, np.array(oMj.rotation),
+                base.mass,
+                base.inertia,
+                com_world,
+                np.array(oMj.rotation),
             )
             self._set_center_local(base)
 
@@ -394,9 +416,9 @@ class QuadrupedRobot:
             proj = self.leg_centerline_positions(leg)
 
             segments = {
-                "Side":  (proj["side"],  proj["thigh"]),
+                "Side": (proj["side"], proj["thigh"]),
                 "Thigh": (proj["thigh"], proj["calf"]),
-                "Calf":  (proj["calf"],  proj["foot"]),
+                "Calf": (proj["calf"], proj["foot"]),
             }
 
             for link_type, (p_start, p_end) in segments.items():
@@ -406,7 +428,11 @@ class QuadrupedRobot:
                     continue
                 R_frame = np.array(self.data.oMf[link.frame_id].rotation)
                 link.cylinder = CylinderPrimitive.from_segment(
-                    p_start, p_end, link.mass, link.inertia, R_frame,
+                    p_start,
+                    p_end,
+                    link.mass,
+                    link.inertia,
+                    R_frame,
                 )
                 self._set_center_local(link)
 
@@ -415,7 +441,11 @@ class QuadrupedRobot:
             calf_name = f"{leg}_Calf_link"
             foot_link = self.links.get(foot_name)
             calf_link = self.links.get(calf_name)
-            if foot_link is not None and calf_link is not None and calf_link.cylinder is not None:
+            if (
+                foot_link is not None
+                and calf_link is not None
+                and calf_link.cylinder is not None
+            ):
                 foot_pos = proj["foot"]
                 foot_link.cylinder = CylinderPrimitive(
                     radius=calf_link.cylinder.radius,
@@ -436,14 +466,18 @@ class QuadrupedRobot:
         world-frame position via  p = R_sym @ center_local + t_sym.
         """
         oMf = self.data.oMf[link.frame_id]
-        R = np.array(oMf.rotation)          # world_R_local
-        t = np.array(oMf.translation)       # frame origin in world
+        R = np.array(oMf.rotation)  # world_R_local
+        t = np.array(oMf.translation)  # frame origin in world
         link.cylinder.center_local = R.T @ (link.cylinder.center - t)
 
     def compute_jacobian(self, frame_id: int, q: np.ndarray) -> np.ndarray:
         """6×nv world-frame Jacobian for a given frame."""
         return pin.computeFrameJacobian(
-            self.model, self.data, q, frame_id, pin.ReferenceFrame.WORLD,
+            self.model,
+            self.data,
+            q,
+            frame_id,
+            pin.ReferenceFrame.WORLD,
         )
 
     # ------------------------------------------------------------------
@@ -482,13 +516,13 @@ class QuadrupedRobot:
         oMj = self.data.oMi[side_jid]
         point = np.array(oMj.translation)
         # Normal is the side joint's local Y-axis rotated into world frame
-        normal = np.array(oMj.rotation[:, 1])   # second column = local Y
+        normal = np.array(oMj.rotation[:, 1])  # second column = local Y
         normal /= np.linalg.norm(normal)
         return point, normal
 
-
     def leg_centerline_positions(
-        self, leg: str,
+        self,
+        leg: str,
     ) -> dict[str, np.ndarray]:
         """Project leg joint/foot positions onto the leg's sagittal plane.
 
@@ -510,17 +544,16 @@ class QuadrupedRobot:
             offset = pos - plane_pt
             return pos - np.dot(offset, normal) * normal
 
-
         side_jid = self.model.getJointId(f"{leg}_Side_joint")
         thigh_jid = self.model.getJointId(f"{leg}_Thigh_joint")
         calf_jid = self.model.getJointId(f"{leg}_Calf_joint")
         foot_fid = self.foot_frame_ids[leg]
 
         return {
-            "side":  _project(np.array(self.data.oMi[side_jid].translation)),
+            "side": _project(np.array(self.data.oMi[side_jid].translation)),
             "thigh": _project(np.array(self.data.oMi[thigh_jid].translation)),
-            "calf":  _project(np.array(self.data.oMi[calf_jid].translation)),
-            "foot":  _project(np.array(self.data.oMf[foot_fid].translation)),
+            "calf": _project(np.array(self.data.oMi[calf_jid].translation)),
+            "foot": _project(np.array(self.data.oMf[foot_fid].translation)),
         }
 
     # ------------------------------------------------------------------

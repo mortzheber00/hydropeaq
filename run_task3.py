@@ -6,20 +6,21 @@ Minimises squared joint torques over a periodic swim cycle.
 Period T is fixed to avoid symbolic dt ill-conditioning.
 """
 
-import numpy as np
 import casadi as ca
+import numpy as np
+
 from hydro_model import QuadrupedRobot, SymbolicDynamics
 from task3_initial_guess import build_initial_guess
 
 URDF_PATH = "urdf/amph.urdf"
 
 # ── OCP parameters ──────────────────────────────────────────────────────
-N = 15            # shooting intervals
-T_FIXED = 1.0    # fixed cycle period [s]
-D_MIN = 0.001    # minimum forward distance per cycle [m] (avoids trivial solution)
-TAU_MAX = 3.5    # joint torque limit [Nm]
+N = 15  # shooting intervals
+T_FIXED = 1.0  # fixed cycle period [s]
+D_MIN = 0.001  # minimum forward distance per cycle [m] (avoids trivial solution)
+TAU_MAX = 3.5  # joint torque limit [Nm]
 W_PERIODIC = 10.0  # weight for soft periodicity terms (y, z, quat, base vel)
-W_DIST = 1.0     # weight for forward distance reward (tune relative to W_torque=1)
+W_DIST = 1.0  # weight for forward distance reward (tune relative to W_torque=1)
 
 # ── Initial guess gait (Qu et al. 2025) ─────────────────────────────────
 # "LSPG25" : lateral-sequence paddling, 25 % power phase
@@ -30,8 +31,8 @@ GAIT = "TLPG50"
 # Constant angle offsets [rad] added to both hind leg joints in the initial guess.
 # Positive HIND_THIGH_OFFSET rotates the hind thigh forward.
 # Positive HIND_CALF_OFFSET increases hind knee bend.
-HIND_THIGH_OFFSET = 0.0   # [rad]
-HIND_CALF_OFFSET  = 0.5   # [rad]
+HIND_THIGH_OFFSET = 0.0  # [rad]
+HIND_CALF_OFFSET = 0.5  # [rad]
 
 
 def build_rk4_integrator(f_xdot: ca.Function, nq: int, nv: int, dt: float):
@@ -68,10 +69,10 @@ def build_ocp():
     q_ub = robot.model.upperPositionLimit[7:]
     # Joint velocity limits
     v_lb = -robot.model.velocityLimit[6:]
-    v_ub =  robot.model.velocityLimit[6:]
+    v_ub = robot.model.velocityLimit[6:]
     # Joint torque limits
     tau_lb = -robot.model.effortLimit[6:]
-    tau_ub =  robot.model.effortLimit[6:]
+    tau_ub = robot.model.effortLimit[6:]
     dt_val = T_FIXED / N
 
     # ── 3. RK4 integrator (fixed dt) ───────────────────────────────────
@@ -81,7 +82,12 @@ def build_ocp():
     # ── 4. Kinematic initial guess (Qu et al. 2025) ────────────────────
     print(f"Building initial guess from paper trajectory ({GAIT})...")
     X_guess, U_guess = build_initial_guess(
-        dyn, GAIT, N, T_FIXED, D_MIN, TAU_MAX,
+        dyn,
+        GAIT,
+        N,
+        T_FIXED,
+        D_MIN,
+        TAU_MAX,
         hind_thigh_offset=HIND_THIGH_OFFSET,
         hind_calf_offset=HIND_CALF_OFFSET,
     )
@@ -123,10 +129,9 @@ def build_ocp():
         # Leg joint angle limits
         opti.subject_to(opti.bounded(q_lb, X[7:nq, k], q_ub))
         # Leg joint velocity limits
-        opti.subject_to(opti.bounded(v_lb, X[nq + 6:, k], v_ub))
+        opti.subject_to(opti.bounded(v_lb, X[nq + 6 :, k], v_ub))
         # Base velocity limits to avoid unrealistic speeds
-        opti.subject_to(opti.bounded(-2.0, X[nq:nq + 6, k], 2.0))
-        
+        opti.subject_to(opti.bounded(-2.0, X[nq : nq + 6, k], 2.0))
 
     for k in range(N):
         opti.subject_to(opti.bounded(tau_lb, U[:, k], tau_ub))
@@ -135,24 +140,24 @@ def build_ocp():
     x0, xN = X[:, 0], X[:, N]
     # Hard: joint angles, joint velocities, and base velocity must be exactly periodic
     opti.subject_to(xN[7:nq] == x0[7:nq])
-    opti.subject_to(xN[nq + 6:] == x0[nq + 6:])
-    opti.subject_to(xN[nq:nq + 6] == x0[nq:nq + 6])
+    opti.subject_to(xN[nq + 6 :] == x0[nq + 6 :])
+    opti.subject_to(xN[nq : nq + 6] == x0[nq : nq + 6])
     # base pose (y, z, quat) penalised in cost
     opti.subject_to(xN[1] == x0[1])
     opti.subject_to(xN[2] == x0[2])
     opti.subject_to(xN[3:7] == x0[3:7])
-    #periodic_cost = W_PERIODIC * (
+    # periodic_cost = W_PERIODIC * (
     #    ca.sumsqr(xN[1] - x0[1])
     #    + ca.sumsqr(xN[2] - x0[2])
     #   + ca.sumsqr(xN[3:7] - x0[3:7])
-    #)
+    # )
 
     dist = xN[0] - x0[0]
-    opti.subject_to(dist == 0.035)
+    opti.subject_to(dist == 0.0325)
     opti.minimize(torque_cost)
 
     # Forward progress & anchors
-    #opti.subject_to(xN[0] - x0[0] >= D_MIN)
+    # opti.subject_to(xN[0] - x0[0] >= D_MIN)
     opti.subject_to(X[0, 0] == 0.0)
     opti.subject_to(X[1, 0] == 0.0)
 
@@ -163,16 +168,20 @@ def build_ocp():
         opti.set_initial(U[:, k], U_guess[:, k])
 
     # ── 6. Solve ───────────────────────────────────────────────────────
-    opti.solver("ipopt", {"expand": False}, {
-        "max_iter": 1000,
-        "tol": 1e-4,
-        "acceptable_tol": 1e-3,
-        "acceptable_iter": 15,
-        "print_level": 5,
-        "linear_solver": "mumps",
-        "mu_strategy": "adaptive",
-        "nlp_scaling_method": "gradient-based",
-    })
+    opti.solver(
+        "ipopt",
+        {"expand": False},
+        {
+            "max_iter": 1000,
+            "tol": 1e-4,
+            "acceptable_tol": 1e-3,
+            "acceptable_iter": 15,
+            "print_level": 5,
+            "linear_solver": "mumps",
+            "mu_strategy": "adaptive",
+            "nlp_scaling_method": "gradient-based",
+        },
+    )
 
     print("Solving OCP...")
     print("=" * 60)
@@ -195,13 +204,15 @@ def extract_solution(sol, X, U, nq):
     print(f"  Cycle period T       = {T_FIXED:.4f} s")
     print(f"  Forward distance     = {X_val[0, -1] - X_val[0, 0]:.4f} m")
     print(f"  Average forward vel  = {(X_val[0, -1] - X_val[0, 0]) / T_FIXED:.4f} m/s")
-    print(f"  Base z range         = [{X_val[2, :].min():.4f}, {X_val[2, :].max():.4f}] m")
+    print(
+        f"  Base z range         = [{X_val[2, :].min():.4f}, {X_val[2, :].max():.4f}] m"
+    )
     print(f"  Torque RMS           = {np.sqrt(np.mean(U_val**2)):.4f} Nm")
     print(f"  Torque max |τ|       = {np.max(np.abs(U_val)):.4f} Nm")
     print(f"  Cost (avg τ²/N)      = {np.sum(U_val**2) / N:.6f}")
 
     x0, xN = X_val[:, 0], X_val[:, -1]
-    print(f"\n  Periodicity residuals:")
+    print("\n  Periodicity residuals:")
     print(f"    Δq_y   = {xN[1] - x0[1]:.2e}")
     print(f"    Δq_z   = {xN[2] - x0[2]:.2e}")
     print(f"    Δquat  = {np.linalg.norm(xN[3:7] - x0[3:7]):.2e}")
