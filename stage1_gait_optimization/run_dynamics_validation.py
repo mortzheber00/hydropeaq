@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Task 2 — CasADi-symbolic rigid-body + hydrodynamic dynamics.
+CasADi-symbolic dynamics validation.
 
 This script:
   1. Builds the Pinocchio model and cylinder geometry.
@@ -9,11 +9,12 @@ This script:
   4. Demonstrates forward and inverse dynamics with hydrodynamic forces.
 """
 
-import numpy as np
+from pathlib import Path
 
+import numpy as np
 from hydro_model import QuadrupedRobot, SymbolicDynamics
 
-URDF_PATH = "urdf/amph.urdf"
+URDF_PATH = Path(__file__).parent.parent / "urdf" / "amph.urdf"
 
 
 def main():
@@ -38,37 +39,18 @@ def main():
     print()
 
     # ── 3. Verify against Pinocchio numeric ────────────────────────────
-    # q layout: [x, y, z, qx, qy, qz, qw, 12×joint_angles]
     q_test = robot.neutral_config()
-    q_test[0:3] = [0.1, 0.0, 0.0]  # base position
-    q_test[3:7] = [
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-    ]  # identity quaternion (already set by neutral_config)
+    q_test[0:3] = [0.1, 0.0, 0.0]
+    q_test[3:7] = [0.0, 0.0, 0.0, 1.0]
     q_test[7:19] = [
-        0.1,
-        0.3,
-        -0.2,
-        0.0,
-        0.4,
-        -0.1,
-        0.2,
-        -0.3,
-        0.1,
-        -0.1,
-        0.2,
-        -0.4,
-    ]  # joint angles
+        0.1, 0.3, -0.2, 0.0, 0.4, -0.1,
+        0.2, -0.3, 0.1, -0.1, 0.2, -0.4,
+    ]
     v_test = np.ones(robot.nv) * 0.05
 
     # Mass matrix
-    # Symbolic solution
     M_sym = np.array(dyn.f_M_rb(q_test))
-    # Pinocchio solution
     M_pin = robot.mass_matrix(q_test)
-    # CRBA returns upper triangle; symmetrise
     M_pin = np.triu(M_pin) + np.triu(M_pin, 1).T
     err_M = np.max(np.abs(M_sym - M_pin))
     print(f"Mass matrix max error (symbolic vs Pinocchio): {err_M:.2e}")
@@ -91,16 +73,16 @@ def main():
     # ── 4. Evaluate dynamics ───────────────────────────────────────────
     tau_zero = np.zeros(robot.nv)
 
-    # Forward dynamics (free fall in water, no torque)
     a_free = dyn.eval_forward_dynamics(q_test, v_test, tau_zero)
     print("Forward dynamics (zero torque, v=0.05):")
-    print(f"  q̈ = {a_free}")
+    print(f"  qdd = {a_free}")
     print()
 
-    # Inverse dynamics (what torque to hold position?)
-    tau_hold = dyn.eval_inverse_dynamics(q_test, np.zeros(robot.nv), np.zeros(robot.nv))
+    tau_hold = dyn.eval_inverse_dynamics(
+        q_test, np.zeros(robot.nv), np.zeros(robot.nv)
+    )
     print("Inverse dynamics (hold position, zero velocity/acceleration):")
-    print(f"  τ = {tau_hold}")
+    print(f"  tau = {tau_hold}")
     print()
 
     # ── 5. Hydrodynamic contributions ──────────────────────────────────
@@ -109,8 +91,8 @@ def main():
     M_added = np.array(dyn.f_M_added(q_test))
 
     print("Hydrodynamic joint-space contributions:")
-    print(f"  τ_buoyancy = {tau_buoy}")
-    print(f"  τ_drag     = {tau_drag}")
+    print(f"  tau_buoyancy = {tau_buoy}")
+    print(f"  tau_drag     = {tau_drag}")
     print(f"  M_added diag = {np.diag(M_added)}")
     print(f"  M_added / M_rb ratio (diag): {np.diag(M_added) / np.diag(M_sym)}")
     print()
@@ -119,8 +101,8 @@ def main():
     x0 = np.concatenate([q_test, v_test])
     xdot = np.array(dyn.f_xdot(x0, tau_zero)).flatten()
     print("State-space ODE (x = [q, v]):")
-    print(f"  ẋ[:nq]  = v     = {xdot[: robot.nq]}")
-    print(f"  ẋ[nq:]  = q̈     = {xdot[robot.nq :]}")
+    print(f"  xdot[:nq]  = v     = {xdot[: robot.nq]}")
+    print(f"  xdot[nq:]  = qdd   = {xdot[robot.nq :]}")
 
 
 if __name__ == "__main__":

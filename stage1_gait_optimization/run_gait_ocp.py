@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-Task 3 — Optimal Control Problem for efficient swimming gait.
+Optimal Control Problem for efficient swimming gait.
 
 Minimises squared joint torques over a periodic swim cycle.
 Period T is fixed to avoid symbolic dt ill-conditioning.
 """
 
+from pathlib import Path
+
 import casadi as ca
 import numpy as np
-
 from hydro_model import QuadrupedRobot, SymbolicDynamics
-from task3_initial_guess import build_initial_guess
+from initial_guess import build_initial_guess
 
-URDF_PATH = "urdf/amph.urdf"
+URDF_PATH = Path(__file__).parent.parent / "urdf" / "amph.urdf"
 
 # ── OCP parameters ──────────────────────────────────────────────────────
 N = 15  # shooting intervals
@@ -29,8 +30,6 @@ W_DIST = 1.0  # weight for forward distance reward (tune relative to W_torque=1)
 GAIT = "TLPG50"
 
 # Constant angle offsets [rad] added to both hind leg joints in the initial guess.
-# Positive HIND_THIGH_OFFSET rotates the hind thigh forward.
-# Positive HIND_CALF_OFFSET increases hind knee bend.
 HIND_THIGH_OFFSET = 0.0  # [rad]
 HIND_CALF_OFFSET = 0.5  # [rad]
 
@@ -98,7 +97,7 @@ def build_ocp():
     print("  Initial guess saved to task3_guess.npz")
     print()
 
-    save = input("Stop optimization after initail guess? [y/N] ").strip().lower()
+    save = input("Stop optimization after initial guess? [y/N] ").strip().lower()
     if save == "y":
         return
 
@@ -146,18 +145,12 @@ def build_ocp():
     opti.subject_to(xN[1] == x0[1])
     opti.subject_to(xN[2] == x0[2])
     opti.subject_to(xN[3:7] == x0[3:7])
-    # periodic_cost = W_PERIODIC * (
-    #    ca.sumsqr(xN[1] - x0[1])
-    #    + ca.sumsqr(xN[2] - x0[2])
-    #   + ca.sumsqr(xN[3:7] - x0[3:7])
-    # )
 
     dist = xN[0] - x0[0]
     opti.subject_to(dist == 0.0325)
     opti.minimize(torque_cost)
 
     # Forward progress & anchors
-    # opti.subject_to(xN[0] - x0[0] >= D_MIN)
     opti.subject_to(X[0, 0] == 0.0)
     opti.subject_to(X[1, 0] == 0.0)
 
@@ -188,11 +181,11 @@ def build_ocp():
     try:
         sol = opti.solve()
         print("=" * 60)
-        print("\n✓ OCP solved!\n")
+        print("\n* OCP solved!\n")
         extract_solution(sol, X, U, nq)
     except RuntimeError as e:
         print("=" * 60)
-        print(f"\n✗ Solver failed: {e}")
+        print(f"\n* Solver failed: {e}")
         print("  Extracting best iterate...\n")
         extract_solution(opti.debug, X, U, nq)
 
@@ -208,16 +201,16 @@ def extract_solution(sol, X, U, nq):
         f"  Base z range         = [{X_val[2, :].min():.4f}, {X_val[2, :].max():.4f}] m"
     )
     print(f"  Torque RMS           = {np.sqrt(np.mean(U_val**2)):.4f} Nm")
-    print(f"  Torque max |τ|       = {np.max(np.abs(U_val)):.4f} Nm")
-    print(f"  Cost (avg τ²/N)      = {np.sum(U_val**2) / N:.6f}")
+    print(f"  Torque max |tau|     = {np.max(np.abs(U_val)):.4f} Nm")
+    print(f"  Cost (avg tau^2/N)   = {np.sum(U_val**2) / N:.6f}")
 
     x0, xN = X_val[:, 0], X_val[:, -1]
     print("\n  Periodicity residuals:")
-    print(f"    Δq_y   = {xN[1] - x0[1]:.2e}")
-    print(f"    Δq_z   = {xN[2] - x0[2]:.2e}")
-    print(f"    Δquat  = {np.linalg.norm(xN[3:7] - x0[3:7]):.2e}")
-    print(f"    Δjoints= {np.linalg.norm(xN[7:nq] - x0[7:nq]):.2e}")
-    print(f"    Δv     = {np.linalg.norm(xN[nq:] - x0[nq:]):.2e}")
+    print(f"    dq_y   = {xN[1] - x0[1]:.2e}")
+    print(f"    dq_z   = {xN[2] - x0[2]:.2e}")
+    print(f"    dquat  = {np.linalg.norm(xN[3:7] - x0[3:7]):.2e}")
+    print(f"    djoints= {np.linalg.norm(xN[7:nq] - x0[7:nq]):.2e}")
+    print(f"    dv     = {np.linalg.norm(xN[nq:] - x0[nq:]):.2e}")
 
     np.savez("task3_solution.npz", T=T_FIXED, X=X_val, U=U_val, N=N, nq=nq)
     print("\n  Solution saved to task3_solution.npz")

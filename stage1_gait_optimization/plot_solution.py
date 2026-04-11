@@ -10,22 +10,19 @@ Produces:
 """
 
 import sys
+from pathlib import Path
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
-
 from hydro_model import QuadrupedRobot
 
-URDF_PATH = "urdf/amph.urdf"
+URDF_PATH = Path(__file__).parent.parent / "urdf" / "amph.urdf"
 SOL_PATH = "task3_solution.npz"
 
 if len(sys.argv) > 1:
     SOL_PATH = sys.argv[1]
 
-# Joint index mapping (within the 12 actuated joints, offset 7 in q)
-# Order: FL_side, FL_thigh, FL_calf, FR_side, FR_thigh, FR_calf,
-#        HL_side, HL_thigh, HL_calf, HR_side, HR_thigh, HR_calf
 LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
 JOINT_TYPES = ["Side", "Thigh", "Calf"]
 
@@ -36,14 +33,14 @@ def load_solution(path: str):
 
 
 def plot_joint_angles(X, T, N, nq):
-    """4×3 grid: one row per leg, one column per joint type."""
+    """4x3 grid: one row per leg, one column per joint type."""
     fig, axes = plt.subplots(4, 3, figsize=(14, 10), sharex=True)
     t = np.linspace(0, T, N + 1)
 
     for i, leg in enumerate(LEG_NAMES):
         for j, jtype in enumerate(JOINT_TYPES):
             ax = axes[i, j]
-            q_idx = 7 + i * 3 + j  # index into q vector
+            q_idx = 7 + i * 3 + j
             ax.plot(t, X[q_idx, :], "b-o", markersize=3, label="angle [rad]")
             ax.axhline(0, color="k", linewidth=0.5, linestyle=":")
             ax.set_ylabel("rad")
@@ -87,7 +84,7 @@ def plot_base_state(X, T, N, nq):
 
 
 def plot_foot_positions(robot, X, T, N, nq):
-    """Foot x/z trajectories over the cycle (subtract base x for relative motion)."""
+    """Foot x/z trajectories over the cycle."""
     t = np.linspace(0, T, N + 1)
 
     foot_traj = {leg: {"x": [], "y": [], "z": []} for leg in LEG_NAMES}
@@ -98,14 +95,13 @@ def plot_foot_positions(robot, X, T, N, nq):
         feet = robot.foot_positions()
         for leg in LEG_NAMES:
             pos = feet[leg]
-            # Express relative to base x so motion is visible
             foot_traj[leg]["x"].append(pos[0] - X[0, k])
             foot_traj[leg]["y"].append(pos[1])
             foot_traj[leg]["z"].append(pos[2])
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
-    ylabel = ["x − base_x [m]", "y [m]", "z [m]"]
+    ylabel = ["x - base_x [m]", "y [m]", "z [m]"]
 
     for i, leg in enumerate(LEG_NAMES):
         for ax, key, yl in zip(axes, ["x", "y", "z"], ylabel):
@@ -133,11 +129,6 @@ def plot_foot_positions(robot, X, T, N, nq):
 
 def animate_skeleton(robot, X, T, N, nq):
     """Animated 3D skeleton cycling through all N+1 poses."""
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
-    from hydro_model.robot import LEG_NAMES as _LEG_NAMES
-
-    # Pre-compute all joint positions
     frames = []
     for k in range(N + 1):
         q_k = X[:nq, k]
@@ -145,7 +136,7 @@ def animate_skeleton(robot, X, T, N, nq):
 
         base_pos = np.array(robot.data.oMi[1].translation)
         leg_data = {}
-        for leg in _LEG_NAMES:
+        for leg in LEG_NAMES:
             proj = robot.leg_centerline_positions(leg)
             leg_data[leg] = {
                 "side": proj["side"],
@@ -155,11 +146,10 @@ def animate_skeleton(robot, X, T, N, nq):
             }
         frames.append({"base": base_pos, "legs": leg_data})
 
-    # Compute axis limits from all frames
     all_pts = []
     for f in frames:
         all_pts.append(f["base"])
-        for leg in _LEG_NAMES:
+        for leg in LEG_NAMES:
             for v in f["legs"][leg].values():
                 all_pts.append(v)
     all_pts = np.array(all_pts)
@@ -187,7 +177,7 @@ def animate_skeleton(robot, X, T, N, nq):
         base = f["base"]
         ax.scatter(*base, s=60, c="k", zorder=5)
 
-        for i, leg in enumerate(_LEG_NAMES):
+        for i, leg in enumerate(LEG_NAMES):
             pts = f["legs"][leg]
             c = colors_leg[i]
             chain = [base, pts["side"], pts["thigh"], pts["calf"], pts["foot"]]
@@ -205,17 +195,18 @@ def animate_skeleton(robot, X, T, N, nq):
                 zorder=5,
             )
 
-        # Water surface reference
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
         xx, yy = np.meshgrid(xlim, ylim)
-        ax.plot_surface(xx, yy, np.zeros_like(xx), alpha=0.08, color="cyan", zorder=0)
+        ax.plot_surface(
+            xx, yy, np.zeros_like(xx), alpha=0.08, color="cyan", zorder=0
+        )
 
         from matplotlib.patches import Patch
 
         legend_elements = [
             Patch(facecolor=c, label=leg.replace("_", " "))
-            for c, leg in zip(colors_leg, _LEG_NAMES)
+            for c, leg in zip(colors_leg, LEG_NAMES)
         ]
         ax.legend(handles=legend_elements, loc="upper left", fontsize=8)
 
@@ -223,7 +214,7 @@ def animate_skeleton(robot, X, T, N, nq):
         fig,
         draw_frame,
         frames=N + 1,
-        interval=int(T / (N + 1) * 1000),  # ms per frame → real-time
+        interval=int(T / (N + 1) * 1000),
         repeat=True,
     )
     return fig, ani
@@ -242,7 +233,7 @@ def main():
     print(f"  Average speed    : {(X[0, -1] - X[0, 0]) / T:.4f} m/s")
     print(f"  Base z range     : [{X[2, :].min():.4f}, {X[2, :].max():.4f}] m")
     print(f"  Torque RMS       : {np.sqrt(np.mean(U**2)):.4f} Nm")
-    print(f"  Torque max |τ|   : {np.max(np.abs(U)):.4f} Nm")
+    print(f"  Torque max |tau| : {np.max(np.abs(U)):.4f} Nm")
     print()
 
     robot = QuadrupedRobot(URDF_PATH)

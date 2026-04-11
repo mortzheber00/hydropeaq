@@ -1,18 +1,17 @@
 """
-Initial guess for Task 3 OCP — paddling trajectory from Qu et al. 2025.
+Initial guess for the gait OCP — paddling trajectory from Qu et al. 2025.
 
 Qu, J. et al. "Amphibious robotic dog: design, paddling gait planning,
 and experimental characterization." Bioinspir. Biomim. 20, 036012 (2025).
 
 Public API:
   build_initial_guess(dyn, gait, N, T_FIXED, D_MIN, TAU_MAX)
-      → X_guess (nx, N+1), U_guess (n_act, N)
+      -> X_guess (nx, N+1), U_guess (n_act, N)
 """
 
 from __future__ import annotations
 
 import numpy as np
-
 from hydro_model import SymbolicDynamics
 
 # Supported gaits and their power-phase ratios
@@ -30,12 +29,10 @@ _LSPG_OFFSETS = np.array([0.25, 0.50, 0.00, 0.75])
 _TLPG_OFFSETS = np.array([0.00, 0.50, 0.50, 0.00])
 
 # Joint-angle mapping amplitudes — tune independently per leg type
-#   α1 ∈ [-1, +1] is multiplied by _THIGH_AMP to get the thigh joint offset from trim
-#   α2 ∈ [-1, +1] is multiplied by _CALF_AMP  to get the calf  joint offset from trim
-_FRONT_THIGH_AMP = 0.35  # rad — front thigh swing amplitude
-_FRONT_CALF_AMP = 0.8  # rad — front calf  swing amplitude
-_HIND_THIGH_AMP = 0.55  # rad — hind  thigh swing amplitude
-_HIND_CALF_AMP = 0.4  # rad — hind  calf  swing amplitude
+_FRONT_THIGH_AMP = 0.35  # rad
+_FRONT_CALF_AMP = 0.8  # rad
+_HIND_THIGH_AMP = 0.55  # rad
+_HIND_CALF_AMP = 0.4  # rad
 
 
 # ── Fourier trajectory ───────────────────────────────────────────────────────
@@ -43,16 +40,6 @@ _HIND_CALF_AMP = 0.4  # rad — hind  calf  swing amplitude
 
 def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
     """Fourier-series leg trajectory from Qu et al. 2025.
-
-    The cycle is defined by 12 keypoints: the four canonical postures
-    (PPIP, PPMP, PPEP, RPMP) plus two evenly-spaced intermediate points
-    between each consecutive pair.  A 3-harmonic Fourier series is fit by
-    least squares (matching the paper's supplementary material method).
-
-    Paper angle convention:
-      θ1 - thigh angle measured from the negative swimming axis (70° = vertical).
-            Larger = leg leaning forward; smaller = leaning backward.
-      θ2 - knee angle (0° = fully extended; larger = more bent).
 
     Parameters
     ----------
@@ -63,24 +50,23 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
 
     Returns
     -------
-    alpha1, alpha2 : callables  t → float|array, normalised angle ∈ [-1, 1]
-    dalpha1, dalpha2 : callables  t → float|array, d(alpha)/d(t_norm)
-    All callables accept normalised cycle time t ∈ [0, 1).
+    alpha1, alpha2 : callables  t -> float|array, normalised angle in [-1, 1]
+    dalpha1, dalpha2 : callables  t -> float|array, d(alpha)/d(t_norm)
+    All callables accept normalised cycle time t in [0, 1).
     """
-    # 12 keypoints (degrees):
-    #   PPIP, int1, int2, PPMP, int3, int4, PPEP=RPIP, int5, int6, RPMP, int7, int8
-    theta1_kp = np.array([100, 90, 80, 70, 60, 50, 40, 50, 60, 70, 80, 90], dtype=float)
+    theta1_kp = np.array(
+        [100, 90, 80, 70, 60, 50, 40, 50, 60, 70, 80, 90], dtype=float
+    )
     theta2_kp = np.array(
         [80, 60, 40, 20, 38.33, 56.67, 75, 86.67, 98.33, 110, 100, 90], dtype=float
     )
 
-    theta1_mean, theta1_half = 70.0, 30.0  # degrees
+    theta1_mean, theta1_half = 70.0, 30.0
     theta2_mean, theta2_half = 65.0, 45.0
 
-    alpha1_kp = (theta1_kp - theta1_mean) / theta1_half  # normalised ∈ [-1, 1]
+    alpha1_kp = (theta1_kp - theta1_mean) / theta1_half
     alpha2_kp = (theta2_kp - theta2_mean) / theta2_half
 
-    # Keypoint times: 6 evenly spaced in the power phase, 6 in recovery
     n_half = 6
     t_kp = np.concatenate(
         [
@@ -89,7 +75,6 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
         ]
     )
 
-    # Fourier design matrix (constant + n_harmonics cosine/sine pairs)
     n = len(t_kp)
     A = np.ones((n, 1 + 2 * n_harmonics))
     for h in range(1, n_harmonics + 1):
@@ -137,36 +122,10 @@ def build_initial_guess(
     hind_thigh_offset: float = 0.0,
     hind_calf_offset: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build (X_guess, U_guess) for the Task 3 OCP.
+    """Build (X_guess, U_guess) for the gait OCP.
 
     Kinematics follow the paddling trajectory of Qu et al. 2025.
     Torques are computed via inverse dynamics on the kinematic trajectory.
-
-    Parameters
-    ----------
-    dyn : SymbolicDynamics
-        Fully initialised symbolic dynamics object.
-    gait : str
-        One of "LSPG25", "LSPG33", "TLPG50".
-    N : int
-        Number of shooting intervals.
-    T_FIXED : float
-        Cycle period [s].
-    D_MIN : float
-        Minimum forward displacement per cycle [m].
-    TAU_MAX : float
-        Joint torque clipping limit [Nm].
-    hind_thigh_offset : float
-        Constant angle offset [rad] added to both hind thigh joints on top of
-        the Fourier trajectory.  Positive rotates the thigh forward.
-    hind_calf_offset : float
-        Constant angle offset [rad] added to both hind calf joints on top of
-        the Fourier trajectory.  Positive increases knee bend.
-
-    Returns
-    -------
-    X_guess : (nx, N+1) ndarray
-    U_guess : (n_act, N) ndarray
     """
     if gait not in GAITS:
         raise ValueError(f"Unknown gait '{gait}'. Choose from {list(GAITS)}")
@@ -184,13 +143,8 @@ def build_initial_guess(
     alpha1, alpha2, dalpha1, dalpha2 = paper_fourier_trajectory(pp_ratio)
 
     # ── Step 1: build joint trajectory ──────────────────────────────────
-    # Joint-angle mapping:
-    #   α1 = +1 (θ1=100°, leg forward) → front thigh at POSITIVE angle
-    #     (+thigh moves front foot in +x; +thigh moves hind foot in -x,
-    #      so s = -1 for hind compensates: q_trim + (-1)*a1 → hind foot +x ✓)
-    #   α2 = +1 (θ2=110°, knee bent)   → calf at s * POSITIVE angle
-    q_joints = np.zeros((n_act, N + 1))  # absolute joint angles
-    v_joints = np.zeros((n_act, N + 1))  # joint velocities
+    q_joints = np.zeros((n_act, N + 1))
+    v_joints = np.zeros((n_act, N + 1))
 
     for k in range(N + 1):
         t_norm = k / N
@@ -202,8 +156,8 @@ def build_initial_guess(
             da2 = float(dalpha2(t_leg)) / T_FIXED
 
             is_hind = i >= 2
-            s = -1 if is_hind else 1  # hind: sagittal plane is flipped
-            z = 1 if is_hind else -1  # hind: amplitude sign
+            s = -1 if is_hind else 1
+            z = 1 if is_hind else -1
             thigh_amp = _HIND_THIGH_AMP if is_hind else _FRONT_THIGH_AMP
             calf_amp = _HIND_CALF_AMP if is_hind else _FRONT_CALF_AMP
             b = i * 3
@@ -224,21 +178,12 @@ def build_initial_guess(
             v_joints[b + 1, k] = s * da1 * thigh_amp
             v_joints[b + 2, k] = z * s * da2 * calf_amp
 
-    # Joint accelerations via finite differences (used in base simulation)
-    a_joints = (v_joints[:, 1:] - v_joints[:, :-1]) / dt_val  # (n_act, N)
+    a_joints = (v_joints[:, 1:] - v_joints[:, :-1]) / dt_val
 
     # ── Step 2: simulate base DOF with prescribed joints ─────────────────
-    # Joints follow the Fourier trajectory exactly; only the 6 unactuated
-    # base DOF are integrated.  This gives a physically grounded base
-    # speed and position trajectory driven by the leg-water interaction.
     print("  Simulating base DOF (prescribed joint kinematics)...")
     q_base_traj, v_base_traj = _simulate_base_kinematics(
-        dyn,
-        q_joints,
-        v_joints,
-        a_joints,
-        q_trim,
-        dt_val,
+        dyn, q_joints, v_joints, a_joints, q_trim, dt_val
     )
 
     # ── Step 3: assemble full state trajectory ───────────────────────────
@@ -260,25 +205,16 @@ def build_initial_guess(
 
 def _simulate_base_kinematics(
     dyn: SymbolicDynamics,
-    q_joints: np.ndarray,  # (n_act, N+1)
-    v_joints: np.ndarray,  # (n_act, N+1)
-    a_joints: np.ndarray,  # (n_act, N)
+    q_joints: np.ndarray,
+    v_joints: np.ndarray,
+    a_joints: np.ndarray,
     q_trim: np.ndarray,
     dt: float,
     n_cycles: int = 20,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Simulate base DOF with prescribed joint trajectory.
 
-    Joints follow the Fourier trajectory exactly; only the 6 unactuated
-    base DOF are integrated using:
-
-        a_base = M_bb⁻¹ · (τ_hydro[:6] − C[:6,:]·v − g[:6] − M_bj·a_joints)
-
-    Runs for up to n_cycles periods.  x is reset to 0 at the start of each
-    cycle so the per-cycle forward distance can be tracked; y, z, quat, and
-    velocity carry over to capture the converging orbit.
-
-    Returns the last cycle's base trajectory.
+    Runs for up to n_cycles periods. Returns the last cycle's base trajectory.
     """
     N = q_joints.shape[1] - 1
 
@@ -290,13 +226,9 @@ def _simulate_base_kinematics(
     q_cycle = v_cycle = None
 
     for cycle in range(n_cycles):
-        # Reset position and orientation to trim each cycle so drift doesn't
-        # accumulate across cycles.  Only x velocity carries over (convergence
-        # of the forward cruise speed); angular/lateral/vertical velocities
-        # are reset to zero as they should be zero at periodic steady state.
-        q_base[1:7] = q_trim[1:7]  # y, z, quat back to trim
-        q_base[0] = 0.0  # reset x to measure per-cycle distance
-        v_base[1:] = 0.0  # reset non-forward velocity components
+        q_base[1:7] = q_trim[1:7]
+        q_base[0] = 0.0
+        v_base[1:] = 0.0
 
         q_cycle = np.zeros((7, N + 1))
         v_cycle = np.zeros((6, N + 1))
@@ -316,10 +248,8 @@ def _simulate_base_kinematics(
             rhs = tb[:6] + td[:6] - C[:6, :] @ v - g[:6] - M[:6, 6:] @ a_joints[:, k]
             a_base = np.linalg.solve(M[:6, :6], rhs)
 
-            # Forward Euler on base velocity
             v_base = v_base + a_base * dt
 
-            # SE3 position update (quaternion kinematics, scalar-last convention)
             qx, qy, qz, qw = q_base[3], q_base[4], q_base[5], q_base[6]
             vx, vy, vz = v_base[0], v_base[1], v_base[2]
             wx, wy, wz = v_base[3], v_base[4], v_base[5]
@@ -350,7 +280,7 @@ def _simulate_base_kinematics(
 
         dist = float(q_base[0])
         print(
-            f"    cycle {cycle + 1:2d}/{n_cycles}: Δx = {dist:.4f} m, "
+            f"    cycle {cycle + 1:2d}/{n_cycles}: dx = {dist:.4f} m, "
             f"mean vx = {np.mean(v_cycle[0]):.4f} m/s"
         )
 
