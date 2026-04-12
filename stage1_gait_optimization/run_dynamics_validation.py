@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from hydro_model import QuadrupedRobot, SymbolicDynamics
 
-URDF_PATH = Path(__file__).parent.parent / "urdf" / "amph.urdf"
+URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
 
 def main():

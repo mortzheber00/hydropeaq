@@ -1,0 +1,24 @@
+{
+  "Configuration": {
+    "timeStepSize": 0.001,
+    "sim2D": false,
+    "particleRadius": 0.01,
+    "simulationMethod": 4,       
+    "gravitation": [0, 0, -9.81],
+    "cflMethod": 1,
+    "cflFactor": 0.5,
+    "maxIterations": 100,
+    "maxError": 0.01,
+    "enableDivergenceSolver": true
+  },
+  "FluidBlocks": [
+    {
+      "denseMode": 0,
+      "start": [-0.5, -0.3, -0.2],   
+      "end":   [ 0.5,  0.3,  0.1],
+      "translation": [0, 0, 0],
+      "initialVelocity": [0, 0, 0]
+    }
+  ],
+  "RigidBodies": []  
+}

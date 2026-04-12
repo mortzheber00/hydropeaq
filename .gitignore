@@ -2,6 +2,13 @@
 .vscode/
 .claude/
 
+# ROS / catkin build artifacts
+devel/
+.catkin_workspace
+
+# Cloned at dev container creation time (postCreate.sh)
+splishsplash/
+
 # exported Images
 *.png
 *.gif

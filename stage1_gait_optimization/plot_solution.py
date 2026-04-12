@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from hydro_model import QuadrupedRobot
 
-URDF_PATH = Path(__file__).parent.parent / "urdf" / "amph.urdf"
+URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 SOL_PATH = "task3_solution.npz"
 
 if len(sys.argv) > 1:

@@ -13,7 +13,7 @@ import numpy as np
 from hydro_model import QuadrupedRobot, SymbolicDynamics
 from initial_guess import build_initial_guess
 
-URDF_PATH = Path(__file__).parent.parent / "urdf" / "amph.urdf"
+URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
 # ── OCP parameters ──────────────────────────────────────────────────────
 N = 15  # shooting intervals

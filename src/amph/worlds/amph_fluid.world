@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="fluid_world">
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- No ground_plane: the plugin iterates all world models and exports
+         their collision meshes as OBJ boundaries. The standard ground_plane
+         uses plane geometry whose export produces 0 triangles, causing a
+         segfault in Poisson disk sampling inside SPlisHSPlasH. -->
+
+    <!-- SPlisHSPlasH coupling plugin.
+         Configuration is read directly from SDF child elements — there is
+         no JSON scene file. fluidBlock coordinates are in metres. -->
+    <plugin name="gazebo_fluids" filename="libFluidSimulator.so">
+      <fluidConfiguration>
+        <timeStepSize>0.001</timeStepSize>
+        <particleRadius>0.01</particleRadius>
+        <outputPath>/home/ws/sph_output</outputPath>
+      </fluidConfiguration>
+
+      <!-- Water volume: x [-0.5, 0.5], y [-0.3, 0.3], z [-0.2, 0.1] -->
+      <fluidBlock>
+        <start>-0.5 -0.3 -0.2</start>
+        <end>0.5 0.3 0.1</end>
+        <translation>0 0 0</translation>
+        <initialVelocity>0 0 0</initialVelocity>
+      </fluidBlock>
+    </plugin>
+
+    <!-- Robot included directly so the fluid plugin sees it at Init() time -->
+    <include>
+      <uri>model://amph</uri>
+      <pose>0 0 0.05 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>
