@@ -1,0 +1,23 @@
+<launch>
+
+  <arg name="gui_required" default="true" />
+
+  <!-- Load URDF onto the parameter server -->
+  <param name="robot_description"
+         textfile="$(find amph)/urdf/amph.urdf" />
+
+  <!-- Start Gazebo with the swimming pool world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find amph)/worlds/swimming_pool.world" />
+    <arg name="paused"     value="false" />
+    <arg name="use_sim_time" value="true" />
+    <arg name="gui"        value="false" />
+  </include>
+
+  <group>
+    <node name="gazebo_gui" pkg="gazebo_ros" type="gzclient" respawn="false" args=" --verbose -g libFluidVisPlugin.so"
+    required="$(arg gui_required)"/>
+  </group>
+
+
+</launch>

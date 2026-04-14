@@ -8,6 +8,8 @@ devel/
 
 # Cloned at dev container creation time (postCreate.sh)
 splishsplash/
+nrp_gazebo/
+sph_output/
 
 # exported Images
 *.png

@@ -23,8 +23,8 @@
 
       <!-- Water volume: x [-0.5, 0.5], y [-0.3, 0.3], z [-0.2, 0.1] -->
       <fluidBlock>
-        <start>-0.5 -0.3 -0.2</start>
-        <end>0.5 0.3 0.1</end>
+        <start>-0.2 -0.2 -0.2</start>
+        <end>0.2 0.2 0.2</end>
         <translation>0 0 0</translation>
         <initialVelocity>0 0 0</initialVelocity>
       </fluidBlock>

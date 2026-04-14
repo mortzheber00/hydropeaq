@@ -30,6 +30,8 @@ RUN apt-get update && apt-get upgrade -y && \
         curl \
         ros-${ROS_DISTRO}-ros-control \
         ros-${ROS_DISTRO}-ros-controllers \
+        ros-${ROS_DISTRO}-polled-camera \
+        ros-${ROS_DISTRO}-camera-info-manager \
     && rm -rf /var/lib/apt/lists/*
 
 # Install build dependencies for NRP Gazebo and SPlisHSPlasH.
@@ -44,6 +46,7 @@ RUN apt-get update && apt-get install -y \
         libgdal-dev \
         libltdl-dev \
         libxml2-dev \
+        qtbase5-dev \
         libqwt-qt5-dev \
         libbullet-dev \
         libogre-1.9-dev \
@@ -67,6 +70,8 @@ RUN apt-get update && apt-get install -y \
         libignition-common3-dev \
         libignition-fuel-tools4-dev \
         libsdformat9-dev \
+        libccd-dev \
+        libusb-1.0-0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Miniforge and create a Python 3.8 env with pinocchio (incl. CasADi support)

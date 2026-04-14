@@ -5,12 +5,14 @@
          textfile="$(find amph)/urdf/amph.urdf" />
 
   <!-- Start Gazebo with the SPlisHSPlasH fluid world -->
+  <!-- gui:=false so we can start gzclient manually with the vis plugin -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
     <arg name="world_name" value="$(find amph)/worlds/amph_fluid.world" />
     <arg name="paused"     value="false" />
     <arg name="use_sim_time" value="true" />
     <arg name="gui"        value="true" />
   </include>
+
 
   <!-- Load controller configuration -->
   <rosparam file="$(find amph)/config/trajectory_controllers.yaml"

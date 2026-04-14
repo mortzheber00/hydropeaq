@@ -953,6 +953,138 @@
       xyz="0 0 0" />
   </joint>
 
+  <transmission name="Front_Left_Side_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Front_Left_Side_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Front_Left_Side_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Front_Left_Thigh_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Front_Left_Thigh_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Front_Left_Thigh_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Front_Left_Calf_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Front_Left_Calf_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Front_Left_Calf_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Front_Right_Side_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Front_Right_Side_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Front_Right_Side_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Front_Right_Thigh_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Front_Right_Thigh_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Front_Right_Thigh_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Front_Right_Calf_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Front_Right_Calf_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Front_Right_Calf_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Hind_Left_Side_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Hind_Left_Side_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Hind_Left_Side_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Hind_Left_Thigh_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Hind_Left_Thigh_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Hind_Left_Thigh_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Hind_Left_Calf_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Hind_Left_Calf_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Hind_Left_Calf_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Hind_Right_Side_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Hind_Right_Side_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Hind_Right_Side_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Hind_Right_Thigh_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Hind_Right_Thigh_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Hind_Right_Thigh_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Hind_Right_Calf_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Hind_Right_Calf_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Hind_Right_Calf_joint_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
   <gazebo>
     <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so">
       <robotNamespace>/amph</robotNamespace>
