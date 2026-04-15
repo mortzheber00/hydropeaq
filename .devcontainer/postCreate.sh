@@ -49,6 +49,7 @@ fi
 # Activate $HOME/.local for the remainder of this script
 export PATH="$LOCAL_PREFIX/bin:$SYSTEM_PATH"
 export LD_LIBRARY_PATH="$LOCAL_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export GAZEBO_PLUGIN_PATH="$LOCAL_PREFIX/lib${GAZEBO_PLUGIN_PATH:+:$GAZEBO_PLUGIN_PATH}"
 
 # ── 2. Clone NRP gazebo_ros_pkgs into the catkin workspace ───────────────────
