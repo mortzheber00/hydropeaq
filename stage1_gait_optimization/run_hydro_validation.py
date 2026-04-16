@@ -16,7 +16,7 @@ import numpy as np
 from hydro_model import QuadrupedRobot, SymbolicDynamics
 from hydro_model.visualization import visualize_robot, visualize_skeleton
 
-URDF_PATH = Path(__file__).parent.parent / "urdf" / "amph.urdf"
+URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
 
 def main():
