@@ -1,3 +1,6 @@
+#Folders
+stage2_gait_validation/sph_meshes/
+
 # Visual Studio Code
 .vscode/
 .claude/
