@@ -166,7 +166,7 @@ def generate_scene(
             "cflMethod":                  1,
             "cflFactor":                  1,
             "cflMaxTimeStepSize":         0.005,
-            "boundaryHandlingMethod":     0,
+            "boundaryHandlingMethod":     1,  # Koschier2017 volume maps — required for mapInvert + per-body force API
             "DFSPH": {
                 "minIterations":          2,
                 "maxIterations":          100,
