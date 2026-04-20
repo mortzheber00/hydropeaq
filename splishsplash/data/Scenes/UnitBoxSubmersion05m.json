@@ -1,0 +1,71 @@
+{
+	"Configuration": 
+	{
+		"cameraPosition": [0,2,5],
+		"cameraLookat": [0,0,0],
+		"particleRadius": 0.025,
+		"numberOfStepsPerRenderUpdate": 4,
+		"density0": 1000, 
+		"simulationMethod": 4,
+		"gravitation": [0,-9.81,0], 
+		"cflMethod": 1, 
+		"cflFactor": 1,
+		"cflMaxTimeStepSize": 0.005,
+		"maxIterations": 100,
+		"maxError": 0.05,
+		"maxIterationsV": 100,
+		"maxErrorV": 0.1,		
+		"stiffness": 50000,
+		"exponent": 7,
+		"velocityUpdateMethod": 0,
+		"enableDivergenceSolver": true,
+		"boundaryHandlingMethod": 2
+	},
+	"Materials": [
+		{
+			"id": "Fluid",
+			"viscosity": 0.01,
+			"viscosityMethod": 1,
+			"colorMapType": 1
+		}
+	],
+	"RigidBodies": [
+		{
+			"geometryFile": "../models/UnitBox.obj",
+			"translation": [0,3.0,0],
+			"rotationAxis": [1, 0, 0],
+			"rotationAngle": 0,
+			"scale": [3.1, 6.2, 3.1],
+			"color": [0.1, 0.4, 0.6, 1.0], 
+			"isDynamic": false,
+			"isWall": true,
+			"mapInvert": true, 
+			"mapThickness": 0.0,
+			"mapResolution": [25,25,25]
+		},
+{
+	    "density": 1000, 
+		"geometryFile": "../models/UnitBox.obj",
+		"translation": [0,1.90,0],
+		"rotationAxis": [1, 0, 0],
+		"rotationAngle": 0,
+		"scale": [0.5, 0.5, 0.5],
+		"color": [0.1, 0.4, 0.6, 1.0], 
+		"isDynamic": true,
+		"isWall": false,
+		"mapInvert": false, 
+		"mapThickness": 0.0,
+		"mapResolution": [25,25,25]
+	}
+	],
+	"FluidBlocks": [
+		{
+			"denseMode": 0,
+			"start": [-1.5, 0.0, -1.5],
+			"end": [1.5, 1.5, 1.5]
+		}
+	]
+}
+
+
+

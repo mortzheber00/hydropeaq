@@ -67,20 +67,7 @@ else
 fi
 sudo chown -R "$(id -u):$(id -g)" "$NRP_GAZEBO_ROS_DIR"
 
-# ── 3. Clone and build HBP SPlisHSPlasH (Gazebo fluid plugin) ────────────────
-# Per: https://bitbucket.org/hbpneurorobotics/neurorobotics-platform/src/master/fluid_simulation_install.md
-if [ ! -d "$SPLISHSPLASH_DIR/.git" ]; then
-    echo "==> Cloning HBP SPlisHSPlasH..."
-    git clone \
-        https://bitbucket.org/hbpneurorobotics/splishsplash.git \
-        "$SPLISHSPLASH_DIR"
-else
-    echo "==> SPlisHSPlasH already cloned, skipping."
-fi
-
-# Fix ownership in case a previous run cloned/built as root
-sudo chown -R "$(id -u):$(id -g)" "$SPLISHSPLASH_DIR"
-
+# ── 3. Build HBP SPlisHSPlasH (Gazebo fluid plugin) ──────────────────────────
 echo "==> Building SPlisHSPlasH + Gazebo fluid plugin..."
 mkdir -p "$SPLISHSPLASH_DIR/build"
 cd "$SPLISHSPLASH_DIR/build"

@@ -7,8 +7,9 @@ devel/
 .catkin_workspace
 
 # Cloned at dev container creation time (postCreate.sh)
-splishsplash/
 nrp_gazebo/
+splishsplash/build/
+splishsplash/extern/cuNSearch/
 sph_output/
 sph_boundaries/*
 !sph_boundaries/.gitkeep
