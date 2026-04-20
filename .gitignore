@@ -10,6 +10,8 @@ devel/
 splishsplash/
 nrp_gazebo/
 sph_output/
+sph_boundaries/*
+!sph_boundaries/.gitkeep
 
 # exported Images
 *.png
