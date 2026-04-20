@@ -17,9 +17,9 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
-# Install additional packages
-RUN apt-get update && apt-get upgrade -y && \
-    apt-get install -y \
+# Install additional packages (apt-get upgrade removed for build reproducibility)
+RUN apt-get update && \
+    apt-get install -y --fix-missing \
         python3-pip \
         python-is-python3 \
         python3-catkin-tools \
@@ -36,7 +36,7 @@ RUN apt-get update && apt-get upgrade -y && \
 
 # Install build dependencies for NRP Gazebo and SPlisHSPlasH.
 # These are compiled outside conda to avoid ABI conflicts.
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --fix-missing \
         build-essential \
         cmake \
         pkg-config \
@@ -72,7 +72,25 @@ RUN apt-get update && apt-get install -y \
         libsdformat9-dev \
         libccd-dev \
         libusb-1.0-0-dev \
+        libxrandr-dev \
+        libxinerama-dev \
+        libxcursor-dev \
+        libxi-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install CUDA toolkit for SPlisHSPlasH GPU neighborhood search (cuNSearch).
+# Match cuda-toolkit-XX-X to your host NVIDIA driver — check with: nvidia-smi
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wget ca-certificates && \
+    wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && \
+    rm cuda-keyring_1.1-1_all.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends cuda-toolkit-12-6 && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/local/cuda-12.6/bin:${PATH}"
+ENV CUDA_HOME="/usr/local/cuda-12.6"
 
 # Install Miniforge and create a Python 3.8 env with pinocchio (incl. CasADi support)
 # Using Python 3.8 keeps ABI compatibility with ROS Noetic's compiled extensions.
@@ -99,8 +117,7 @@ EOF
 ENV SHELL /bin/bash
 
 # Initialise conda shell functions and auto-activate the robot env.
-# This replaces the ENV PATH hack so that conda activate/deactivate work.
-RUN /opt/conda/bin/conda init bash \
+RUN echo '. /opt/conda/etc/profile.d/conda.sh' >> /home/$USERNAME/.bashrc \
     && echo "conda activate robot" >> /home/$USERNAME/.bashrc
 
 # Source ROS environment automatically and expose NRP Gazebo / SPlisHSPlasH
@@ -109,8 +126,10 @@ RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc \
     && echo "source /home/ws/devel/setup.bash 2>/dev/null || true" >> /home/$USERNAME/.bashrc \
     && echo "export PATH=\$HOME/.local/bin:\$PATH" >> /home/$USERNAME/.bashrc \
     && echo "export LD_LIBRARY_PATH=\$HOME/.local/lib:\$LD_LIBRARY_PATH" >> /home/$USERNAME/.bashrc \
+    && echo "export PKG_CONFIG_PATH=\$HOME/.local/lib/pkgconfig:\$PKG_CONFIG_PATH" >> /home/$USERNAME/.bashrc \
     && echo "export GAZEBO_PLUGIN_PATH=\$HOME/.local/lib/gazebo-11/plugins:\$HOME/.local/lib:\$GAZEBO_PLUGIN_PATH:/usr/local/lib/gazebo-11/plugins" >> /home/$USERNAME/.bashrc \
-    && echo "export GAZEBO_MODEL_PATH=\$GAZEBO_MODEL_PATH:/home/ws/src" >> /home/$USERNAME/.bashrc
+    && echo "export GAZEBO_MODEL_PATH=\$GAZEBO_MODEL_PATH:/home/ws/src" >> /home/$USERNAME/.bashrc \
+    && echo '[ -f $HOME/.local/share/gazebo/setup.sh ] && source $HOME/.local/share/gazebo/setup.sh' >> /home/$USERNAME/.bashrc
 
 # Set the default user
 USER $USERNAME

@@ -14,7 +14,7 @@ SPH_OUTPUT_DIR="/home/ws/sph_output"
 # The Dockerfile prepends the conda env to PATH globally; cmake must link
 # against system libraries and headers, not conda's incompatible variants.
 # We pass an explicit SYSTEM_PATH to every cmake/make invocation below.
-SYSTEM_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+SYSTEM_PATH="/usr/local/cuda-12.6/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 mkdir -p "$LOCAL_PREFIX/bin" "$LOCAL_PREFIX/lib"
 
@@ -93,7 +93,12 @@ env PATH="$SYSTEM_PATH" cmake .. \
     -DCMAKE_PREFIX_PATH="$LOCAL_PREFIX" \
     -Dgazebo_DIR="$LOCAL_PREFIX/lib/cmake/gazebo" \
     -DEIGEN3_VERSION_STRING=3.3.7 \
-    -DCMAKE_INSTALL_PREFIX="$LOCAL_PREFIX"
+    -DCMAKE_INSTALL_PREFIX="$LOCAL_PREFIX" \
+    -DUSE_OpenMP=ON \
+    -DUSE_GPU_NEIGHBORHOOD_SEARCH=ON \
+    -DUSE_AVX=ON \
+    -DCMAKE_CUDA_COMPILER="$(find /usr/local/cuda*/bin -name nvcc 2>/dev/null | head -1)"
+
 env PATH="$SYSTEM_PATH" make -j"$(nproc)"
 env PATH="$SYSTEM_PATH" make install
 echo "==> SPlisHSPlasH installed to $LOCAL_PREFIX"
