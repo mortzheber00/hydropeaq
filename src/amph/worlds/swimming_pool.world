@@ -16,8 +16,9 @@
          uses plane geometry whose export produces 0 triangles, causing a
          segfault in Poisson disk sampling inside SPlisHSPlasH. -->
 
-    <!-- Swimming pool structure: 3.1 x 3.1 m, 1.5 m deep walls.
-         Pool model is offset -0.05 in Z so the floor top surface sits at z=0. -->
+    <!-- Swimming pool structure: 3.1 x 2.1 m, 0.6 m deep walls.
+         Pool model is offset -0.05 in Z so the floor top surface sits at z=0.
+         Wall pose Z=0.35 (local) places wall bottom at floor top (world z=0) and top at world z=0.6. -->
     <model name="swimming_pool">
       <static>true</static>
       <pose>0.0 0.0 -0.05 0.0 0.0 0.0</pose>
@@ -30,10 +31,10 @@
           <inertia><ixx>0</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0</iyy><iyz>0</iyz><izz>0</izz></inertia>
         </inertial>
         <collision name="floor_collision">
-          <geometry><box><size>3.1 3.1 0.1</size></box></geometry>
+          <geometry><box><size>3.1 2.1 0.1</size></box></geometry>
         </collision>
         <visual name="floor_visual">
-          <geometry><box><size>3.1 3.1 0.1</size></box></geometry>
+          <geometry><box><size>3.1 2.1 0.1</size></box></geometry>
           <material>
             <ambient>0.6 0.6 0.6 1</ambient>
             <diffuse>0.6 0.6 0.6 1</diffuse>
@@ -43,16 +44,16 @@
 
       <!-- Wall -X -->
       <link name="side_x_neg">
-        <pose>-1.5505 0.0 1.0 0.0 0.0 0.0</pose>
+        <pose>-1.5505 0.0 0.35 0.0 0.0 0.0</pose>
         <inertial>
           <mass>0</mass>
           <inertia><ixx>0</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0</iyy><iyz>0</iyz><izz>0</izz></inertia>
         </inertial>
         <collision name="side_x_neg_collision">
-          <geometry><box><size>0.01 3.1 2.0</size></box></geometry>
+          <geometry><box><size>0.01 2.1 0.6</size></box></geometry>
         </collision>
         <visual name="vis">
-          <geometry><box><size>0.01 3.1 2.0</size></box></geometry>
+          <geometry><box><size>0.01 2.1 0.6</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.8 1</ambient>
             <diffuse>0.7 0.7 0.8 1</diffuse>
@@ -62,16 +63,16 @@
 
       <!-- Wall +X -->
       <link name="side_x_pos">
-        <pose>1.5505 0.0 1.0 0.0 0.0 0.0</pose>
+        <pose>1.5505 0.0 0.35 0.0 0.0 0.0</pose>
         <inertial>
           <mass>0</mass>
           <inertia><ixx>0</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0</iyy><iyz>0</iyz><izz>0</izz></inertia>
         </inertial>
         <collision name="side_x_pos_collision">
-          <geometry><box><size>0.01 3.1 2.0</size></box></geometry>
+          <geometry><box><size>0.01 2.1 0.6</size></box></geometry>
         </collision>
         <visual name="vis">
-          <geometry><box><size>0.01 3.1 2.0</size></box></geometry>
+          <geometry><box><size>0.01 2.1 0.6</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.8 1</ambient>
             <diffuse>0.7 0.7 0.8 1</diffuse>
@@ -81,16 +82,16 @@
 
       <!-- Wall +Y -->
       <link name="side_y_pos">
-        <pose>0.0 1.5505 1.0 0.0 0.0 0.0</pose>
+        <pose>0.0 1.0505 0.35 0.0 0.0 0.0</pose>
         <inertial>
           <mass>0</mass>
           <inertia><ixx>0</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0</iyy><iyz>0</iyz><izz>0</izz></inertia>
         </inertial>
         <collision name="side_y_pos_collision">
-          <geometry><box><size>3.1 0.01 2.0</size></box></geometry>
+          <geometry><box><size>3.1 0.01 0.6</size></box></geometry>
         </collision>
         <visual name="vis">
-          <geometry><box><size>3.1 0.01 2.0</size></box></geometry>
+          <geometry><box><size>3.1 0.01 0.6</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.8 1</ambient>
             <diffuse>0.7 0.7 0.8 1</diffuse>
@@ -100,16 +101,16 @@
 
       <!-- Wall -Y -->
       <link name="side_y_neg">
-        <pose>0.0 -1.5505 1.0 0.0 0.0 0.0</pose>
+        <pose>0.0 -1.0505 0.35 0.0 0.0 0.0</pose>
         <inertial>
           <mass>0</mass>
           <inertia><ixx>0</ixx><ixy>0</ixy><ixz>0</ixz><iyy>0</iyy><iyz>0</iyz><izz>0</izz></inertia>
         </inertial>
         <collision name="side_y_neg_collision">
-          <geometry><box><size>3.1 0.01 2.0</size></box></geometry>
+          <geometry><box><size>3.1 0.01 0.6</size></box></geometry>
         </collision>
         <visual name="vis">
-          <geometry><box><size>3.1 0.01 2.0</size></box></geometry>
+          <geometry><box><size>3.1 0.01 0.6</size></box></geometry>
           <material>
             <ambient>0.7 0.7 0.8 1</ambient>
             <diffuse>0.7 0.7 0.8 1</diffuse>
@@ -121,7 +122,7 @@
     <plugin name="gazebo_fluids" filename="libFluidSimulator.so">
       <fluidConfiguration>
         <timeStepSize>0.001</timeStepSize>
-        <particleRadius>0.025</particleRadius>
+        <particleRadius>0.01</particleRadius>
         <simulationMethod>4</simulationMethod>
         <gravitation>0 0 -9.81</gravitation>
         <cflMethod>0</cflMethod>
@@ -140,7 +141,7 @@
       </fluidConfiguration>
 
       <fluid>
-        <viscosity>0.01</viscosity>
+        <viscosity>0.001</viscosity>
         <viscosityMethod>1</viscosityMethod>
       </fluid>
 
@@ -150,8 +151,8 @@
            initialVelocity 0 0 0 → stationary at t=0. -->
       <fluidBlock>
         <denseMode>0</denseMode>
-        <start>-1.5 -1.5 0.0</start>
-        <end>1.5 1.5 0.5</end>
+        <start>-1.5 -1.0 0.0</start>
+        <end>1.5 1.0 0.5</end>
         <initialVelocity>0 0 0</initialVelocity>
       </fluidBlock>
     </plugin>
