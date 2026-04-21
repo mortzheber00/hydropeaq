@@ -11,6 +11,9 @@ for amph robot</p>
   <license>BSD</license>
   <buildtool_depend>catkin</buildtool_depend>
   <depend>roslaunch</depend>
+  <depend>roscpp</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>gazebo_ros</depend>
   <depend>robot_state_publisher</depend>
   <depend>rviz</depend>
   <depend>joint_state_publisher_gui</depend>
