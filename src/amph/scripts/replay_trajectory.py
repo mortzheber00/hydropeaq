@@ -2,6 +2,7 @@
 import os
 import numpy as np
 import rospy
+from tqdm import tqdm
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from gazebo_msgs.msg import ModelState
 from gazebo_msgs.srv import SetModelState
@@ -88,7 +89,17 @@ def main():
     traj_pub.publish(init_traj)
     rospy.loginfo('Initial joint positions sent.')
 
-    rospy.sleep(2.0)
+    try:
+        init_tick = 0.01
+        init_steps = int(1.5 / init_tick)
+        with tqdm(total=init_steps, desc='Initializing', unit='step',
+                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+            for _ in range(init_steps):
+                rospy.sleep(init_tick)
+                pbar.update(1)
+    except rospy.exceptions.ROSInterruptException:
+        return
+
     # ── Build trajectory repeated n_repeat times ──────────────────────────
     traj = JointTrajectory()
     traj.header.stamp = rospy.Time.now()
@@ -111,7 +122,18 @@ def main():
     rospy.loginfo('JointTrajectory published (%d waypoints, %.2fs, %d repeat(s)).',
                   len(traj.points), T_full, n_repeat)
 
-    rospy.sleep(T_full + 0.5)
+    tick = 0.01
+    steps = int(T_full / tick)
+    try:
+        with tqdm(total=steps, desc='Replaying', unit='step',
+                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+            for _ in range(steps):
+                rospy.sleep(tick)
+                pbar.update(1)
+    except rospy.exceptions.ROSInterruptException:
+        return
+
+    rospy.sleep(0.2)
     rospy.loginfo('Trajectory finished, shutting down.')
     os.system('pkill -SIGINT -f roslaunch')
 

@@ -122,10 +122,10 @@
     <plugin name="gazebo_fluids" filename="libFluidSimulator.so">
       <fluidConfiguration>
         <timeStepSize>0.001</timeStepSize>
-        <particleRadius>0.006</particleRadius>
+        <particleRadius>0.024</particleRadius>
         <simulationMethod>4</simulationMethod>
         <gravitation>0 0 -9.81</gravitation>
-        <cflMethod>1</cflMethod>
+        <cflMethod>0</cflMethod>
         <cflFactor>1.0</cflFactor>
         <cflMaxTimeStepSize>0.005</cflMaxTimeStepSize>
         <maxIterations>100</maxIterations>
@@ -139,8 +139,8 @@
       </fluidConfiguration>
 
       <fluid>
+        <viscosityMethod>2</viscosityMethod>
         <viscosity>0.001</viscosity>
-        <viscosityMethod>1</viscosityMethod>
       </fluid>
 
       <!-- Water volume fills the full pool floor-to-surface (z: 0.0 → 0.5 m).
@@ -149,8 +149,8 @@
            initialVelocity 0 0 0 → stationary at t=0. -->
       <fluidBlock>
         <denseMode>0</denseMode>
-        <start>-1.0 -0.5 0.0</start>
-        <end>1.0 0.5 0.35</end>
+        <start>-0.98 -0.48 0.0</start>
+        <end>0.98 0.48 0.35</end>
         <initialVelocity>0 0 0</initialVelocity>
       </fluidBlock>
     </plugin>

@@ -7,6 +7,7 @@
 #include "SPlisHSPlasH/EmitterSystem.h"
 #include "SPlisHSPlasH/Simulation.h"
 #include "SPlisHSPlasH/Vorticity/MicropolarModel_Bender2017.h"
+#include "SPlisHSPlasH/Viscosity/ViscosityBase.h"
 #include "NumericParameter.h"
 #include "Utilities/Logger.h"
 #include "Utilities/Timing.h"
@@ -192,6 +193,48 @@ void GazeboSimulatorBase::initSimulation()
 		LOG_INFO << "Number of boundary particles: " << nBoundaryParticles;
 	}
 	readParameters();
+
+	TimeStep *ts = sim->getTimeStep();
+	LOG_INFO << "=== SPlisHSPlasH loaded parameters ===";
+	LOG_INFO << "  particleRadius:         " << sim->getParticleRadius();
+	LOG_INFO << "  timeStepSize:           " << TimeManager::getCurrent()->getTimeStepSize();
+	LOG_INFO << "  simulationMethod:       " << sim->getSimulationMethod();
+	LOG_INFO << "  boundaryHandlingMethod: " << static_cast<int>(sim->getBoundaryHandlingMethod());
+	LOG_INFO << "  outputPath:             " << scene.outputPath;
+	if (ts)
+	{
+		LOG_INFO << "  maxIterations:          " << ts->getValue<unsigned int>(TimeStep::MAX_ITERATIONS);
+		LOG_INFO << "  maxError:               " << ts->getValue<Real>(TimeStep::MAX_ERROR);
+	}
+	LOG_INFO << "  fluidBlocks:            " << scene.fluidBlocks.size();
+	for (unsigned int i = 0; i < scene.fluidBlocks.size(); i++)
+	{
+		LOG_INFO << "    [" << i << "] start: ["
+				 << scene.fluidBlocks[i]->box.m_minX[0] << ", "
+				 << scene.fluidBlocks[i]->box.m_minX[1] << ", "
+				 << scene.fluidBlocks[i]->box.m_minX[2] << "]  end: ["
+				 << scene.fluidBlocks[i]->box.m_maxX[0] << ", "
+				 << scene.fluidBlocks[i]->box.m_maxX[1] << ", "
+				 << scene.fluidBlocks[i]->box.m_maxX[2] << "]";
+	}
+	for (unsigned int i = 0; i < sim->numberOfFluidModels(); i++)
+	{
+		FluidModel *model = sim->getFluidModel(i);
+		ViscosityBase *visc = model->getViscosityBase();
+		LOG_INFO << "  fluidModel[" << i << "] id=" << model->getId()
+				 << "  density0=" << model->getDensity0()
+				 << "  viscosityMethod=" << model->getViscosityMethod()
+				 << "  viscosity=" << (visc ? visc->getValue<Real>(ViscosityBase::VISCOSITY_COEFFICIENT) : 0.0)
+				 << "  surfaceTensionMethod=" << model->getSurfaceTensionMethod()
+				 << "  particles=" << model->numActiveParticles();
+	}
+	LOG_INFO << "  boundaryModels: " << scene.boundaryModels.size();
+	for (unsigned int i = 0; i < scene.boundaryModels.size(); i++)
+	{
+		LOG_INFO << "    [" << i << "] dynamic=" << scene.boundaryModels[i]->dynamic
+				 << "  file=" << scene.boundaryModels[i]->objFilePath;
+	}
+	LOG_INFO << "=== end SPlisHSPlasH parameters ===";
 }
 
 void GazeboSimulatorBase::initBoundaryData()

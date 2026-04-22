@@ -1091,4 +1091,10 @@
     </plugin>
   </gazebo>
 
+  <gazebo>
+    <plugin name="trajectory_replay" filename="libtrajectory_replay_plugin.so">
+      <topic>/amph/joint_trajectory_replay</topic>
+    </plugin>
+  </gazebo>
+
 </robot>

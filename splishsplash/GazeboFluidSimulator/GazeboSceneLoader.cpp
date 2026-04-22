@@ -122,7 +122,7 @@ void GazeboSceneLoader::processFluidBlocks(Scene &scene, const sdf::ElementPtr &
 			block->box.m_maxX[1] = scale[1] * maxX[1] + translation[1];
 			block->box.m_maxX[2] = scale[2] * maxX[2] + translation[2];
 
-			//getSDFParameter<std::string>(fluidBlockElement, block->id, "id", "Fluid");
+			getSDFParameter<std::string>(fluidBlockElement, block->id, "id", "fluid");
 			//getSDFParameter<unsigned char>(fluidBlockElement, block->mode, "denseMode", 0);
 			getVector3rParameter(fluidBlockElement, block->initialVelocity, "initialVelocity", Vector3r::Zero());
 			

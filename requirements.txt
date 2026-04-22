@@ -4,3 +4,4 @@ matplotlib
 casadi
 ruff
 pre-commit
+tqdm
