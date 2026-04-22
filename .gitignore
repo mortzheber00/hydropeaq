@@ -37,6 +37,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!splishsplash/extern/partio/src/lib/
 lib64/
 parts/
 sdist/
