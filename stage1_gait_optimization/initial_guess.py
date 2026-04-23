@@ -1,12 +1,16 @@
 """
-Initial guess for the gait OCP — paddling trajectory from Qu et al. 2025.
+Initial guess for the gait OCP.
 
-Qu, J. et al. "Amphibious robotic dog: design, paddling gait planning,
-and experimental characterization." Bioinspir. Biomim. 20, 036012 (2025).
+Two strategies are provided:
 
-Public API:
-  build_initial_guess(dyn, gait, N, T_FIXED, D_MIN, TAU_MAX)
-      -> X_guess (nx, N+1), U_guess (n_act, N)
+1. Fourier-series paddling trajectory (Qu et al. 2025):
+   build_initial_guess(dyn, gait, N, T_FIXED, D_MIN, TAU_MAX)
+
+2. Robot firmware IK gait — mirrors Robot_Swim_Task_IK from the embedded C
+   firmware (4-phase state machine: recovery → strike → power → lift):
+   build_robot_ik_initial_guess(dyn, N, T_FIXED, D_MIN, TAU_MAX, ...)
+
+Both return  (X_guess (nx, N+1),  U_guess (n_act, N)).
 """
 
 from __future__ import annotations
@@ -194,6 +198,230 @@ def build_initial_guess(
         X_guess[:, k] = np.concatenate([q_k, v_k])
 
     # ── Step 4: torque guess via inverse dynamics ────────────────────────
+    U_guess = np.zeros((n_act, N))
+    for k in range(N):
+        a_k = (X_guess[nq:, k + 1] - X_guess[nq:, k]) / dt_val
+        tau_id = dyn.eval_inverse_dynamics(X_guess[:nq, k], X_guess[nq:, k], a_k)
+        U_guess[:, k] = np.clip(tau_id[6:], -TAU_MAX, TAU_MAX)
+
+    return X_guess, U_guess
+
+
+# ── Robot firmware IK gait ────────────────────────────────────────────────────
+
+_FW_LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
+
+
+def _firmware_foot_target(
+    t_in_cycle: float,
+    T_c: float,
+    r_rec: float,
+    r_str: float,
+    r_pow: float,
+    x_front: float,
+    x_back: float,
+    dz_surface: float,
+    dz_deep: float,
+) -> tuple[float, float]:
+    """Compute (Δx, Δz) foot offsets from trim at time t_in_cycle ∈ [0, T_c).
+
+    z convention: positive = higher in world frame (= less deep in water).
+    Phases: recovery (forward swing) → strike (descend) → power (backward) → lift (ascend).
+    """
+    t_r = r_rec * T_c
+    t_s = r_str * T_c
+    t_p = r_pow * T_c
+
+    if t_in_cycle < t_r:
+        progress = t_in_cycle / t_r if t_r > 0 else 1.0
+        return x_back + (x_front - x_back) * progress, dz_surface
+    elif t_in_cycle < t_r + t_s:
+        progress = (t_in_cycle - t_r) / t_s if t_s > 0 else 1.0
+        return x_front, dz_surface + (dz_deep - dz_surface) * progress
+    elif t_in_cycle < t_r + t_s + t_p:
+        progress = (t_in_cycle - t_r - t_s) / t_p if t_p > 0 else 1.0
+        return x_front + (x_back - x_front) * progress, dz_deep
+    else:
+        t_l = T_c - (t_r + t_s + t_p)
+        progress = (t_in_cycle - t_r - t_s - t_p) / t_l if t_l > 0 else 1.0
+        return x_back, dz_deep + (dz_surface - dz_deep) * progress
+
+
+def _solve_leg_ik(
+    robot,
+    q_context: np.ndarray,
+    leg_idx: int,
+    foot_target: np.ndarray,
+    q_trim: np.ndarray | None = None,
+) -> np.ndarray:
+    """Find the 3 joint angles (side, thigh, calf) that place the foot at foot_target.
+
+    Uses Levenberg-Marquardt (least_squares) which handles near-singular
+    Jacobians via adaptive damping.  Falls back to q_trim when the primary
+    warm-start fails, so phase transitions are rescued without causing branch
+    switches during smooth within-phase motion.
+    """
+    from scipy.optimize import least_squares
+
+    _IK_TOL = 1e-4  # acceptable foot-position error [m]
+
+    js = 7 + leg_idx * 3
+    name = _FW_LEG_NAMES[leg_idx]
+
+    def residual(q_leg: np.ndarray) -> np.ndarray:
+        q = q_context.copy()
+        q[js : js + 3] = q_leg
+        robot.forward_kinematics(q)
+        return np.array(robot.foot_positions()[name]) - foot_target
+
+    def _solve(q0: np.ndarray) -> tuple[np.ndarray, float]:
+        res = least_squares(residual, q0, method="lm")
+        return res.x, float(np.linalg.norm(residual(res.x)))
+
+    q0_primary = q_context[js : js + 3].copy()
+    sol, err = _solve(q0_primary)
+    if err < _IK_TOL:
+        return sol
+
+    # Primary warm-start failed — try neutral (trim) configuration.
+    if q_trim is not None:
+        q0_trim = q_trim[js : js + 3].copy()
+        sol_trim, err_trim = _solve(q0_trim)
+        if err_trim < err:
+            return sol_trim
+
+    return sol
+
+
+def build_robot_ik_initial_guess(
+    dyn: SymbolicDynamics,
+    N: int,
+    T_FIXED: float,
+    D_MIN: float,
+    TAU_MAX: float,
+    *,
+    ratio_recovery: float = 0.4,
+    ratio_strike: float = 0.1,
+    ratio_power: float = 0.4,
+    ratio_lift: float = 0.1,
+    stroke_len: float = 0.03,
+    stand_h: float = 0.14,
+    depth_surface: float = 0.14,
+    depth_deep: float = 0.18,
+    center_x_front: float = 0.0,
+    center_x_rear: float = 0.0,
+    n_cycles: float = 1.0,
+    diagonal_phase_offset: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build (X_guess, U_guess) from the robot firmware IK-based swim gait.
+
+    Mirrors Robot_Swim_Task_IK from the embedded C firmware.  The gait is a
+    4-phase state machine (recovery → strike → power → lift) timed by the
+    four ratio_* parameters (which must sum to 1).  Foot Cartesian targets are
+    converted to joint angles via Pinocchio IK at each shooting node.
+
+    Gait phasing: FL and HR start at the beginning of recovery; FR and HL are
+    shifted back by ``ratio_recovery / 2`` cycles — this matches the firmware's
+    ``swim_timer[FR/HL] = -t_recovery / 2`` diagonal phase offset.
+
+    Parameters
+    ----------
+    ratio_recovery / ratio_strike / ratio_power / ratio_lift : float
+        Fraction of the cycle period spent in each phase.  Must sum to 1.
+    stroke_len : float
+        Half-stroke length in the forward (x) direction [m].
+    stand_h : float
+        Nominal foot depth below the hip at rest [m].
+        Equivalent to the C firmware's ``stand_h`` (14 cm → 0.14 m).
+    depth_surface : float
+        Foot depth during the recovery / surface phase [m].
+        Use ``≈ stand_h`` to keep the foot at nominal height during swing.
+    depth_deep : float
+        Foot depth during the power stroke [m].  Must be ≥ stand_h; larger
+        values push the foot deeper and increase hydrodynamic thrust.
+    center_x_front / center_x_rear : float
+        Forward offset of the stroke x-centre from the trim foot position,
+        for front / rear legs [m].
+    n_cycles : float
+        Number of complete gait cycles contained in T_FIXED (default 1.0).
+    diagonal_phase_offset : float
+        Fractional cycle offset between the two diagonal pairs (FL+HR vs
+        FR+HL).  Default 0.5 gives a trot-like gait where each pair is in
+        its power stroke while the other is recovering, keeping at least one
+        pair producing thrust throughout 80 % of the cycle.
+
+        The C firmware uses ``ratio_recovery / 2`` (≈ 0.2 with default
+        ratios), which creates a 40 % dead zone per cycle — fine for
+        continuous multi-cycle swimming but causes the robot to coast to a
+        stop halfway through a single-period OCP initial guess.
+    """
+    robot = dyn.robot
+    nq, nv = robot.nq, robot.nv
+    nx = nq + nv
+    n_act = robot.n_actuated
+    dt_val = T_FIXED / N
+
+    q_trim = dyn.find_trim_state()
+    robot.forward_kinematics(q_trim)
+    trim_feet = robot.foot_positions()  # leg_name -> (3,) world-frame position
+
+    T_c = T_FIXED / n_cycles
+
+    # FR (i=1) and HL (i=2) are offset by diagonal_phase_offset relative to FL/HR.
+    phase_offsets = [0.0, diagonal_phase_offset, diagonal_phase_offset, 0.0]
+
+    # Vertical deviation from trim foot z (world frame, z-up):
+    #   C code z is positive-downward so deeper → smaller world z → negative dz.
+    dz_surface = -(depth_surface - stand_h)
+    dz_deep = -(depth_deep - stand_h)
+
+    # ── Solve IK for all legs at every shooting node ─────────────────────
+    q_joints = np.zeros((n_act, N + 1))
+    q_ctx = q_trim.copy()  # IK context — base stays at trim throughout
+
+    for k in range(N + 1):
+        t = k * dt_val
+        for i in range(4):
+            cx = center_x_front if i < 2 else center_x_rear
+            p_ref = trim_feet[_FW_LEG_NAMES[i]]
+
+            t_cyc = (t + phase_offsets[i] * T_c) % T_c
+            dx, dz = _firmware_foot_target(
+                t_cyc, T_c,
+                ratio_recovery, ratio_strike, ratio_power,
+                cx + stroke_len, cx - stroke_len,
+                dz_surface, dz_deep,
+            )
+
+            target = np.array([p_ref[0] + dx, p_ref[1], p_ref[2] + dz])
+            q_sol = _solve_leg_ik(robot, q_ctx, i, target, q_trim)
+
+            js = 7 + i * 3
+            q_ctx[js : js + 3] = q_sol           # warm-start next leg / timestep
+            q_joints[i * 3 : (i + 1) * 3, k] = q_sol
+
+    # ── Velocities via central differences ───────────────────────────────
+    v_joints = np.zeros((n_act, N + 1))
+    v_joints[:, 1:-1] = (q_joints[:, 2:] - q_joints[:, :-2]) / (2.0 * dt_val)
+    v_joints[:, 0] = (q_joints[:, 1] - q_joints[:, 0]) / dt_val
+    v_joints[:, -1] = (q_joints[:, -1] - q_joints[:, -2]) / dt_val
+
+    a_joints = (v_joints[:, 1:] - v_joints[:, :-1]) / dt_val
+
+    # ── Simulate base DOF with prescribed joint kinematics ───────────────
+    print("  Simulating base DOF (firmware IK trajectory)...")
+    q_base_traj, v_base_traj = _simulate_base_kinematics(
+        dyn, q_joints, v_joints, a_joints, q_trim, dt_val
+    )
+
+    # ── Assemble full state trajectory ───────────────────────────────────
+    X_guess = np.zeros((nx, N + 1))
+    for k in range(N + 1):
+        q_k = np.concatenate([q_base_traj[:, k], q_joints[:, k]])
+        v_k = np.concatenate([v_base_traj[:, k], v_joints[:, k]])
+        X_guess[:, k] = np.concatenate([q_k, v_k])
+
+    # ── Torque guess via inverse dynamics ────────────────────────────────
     U_guess = np.zeros((n_act, N))
     for k in range(N):
         a_k = (X_guess[nq:, k + 1] - X_guess[nq:, k]) / dt_val
