@@ -11,7 +11,7 @@ from pathlib import Path
 import casadi as ca
 import numpy as np
 from hydro_model import QuadrupedRobot, SymbolicDynamics
-from initial_guess import build_initial_guess
+from initial_guess import build_initial_guess, build_robot_ik_initial_guess
 
 URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
@@ -90,6 +90,15 @@ def build_ocp():
         hind_thigh_offset=HIND_THIGH_OFFSET,
         hind_calf_offset=HIND_CALF_OFFSET,
     )
+    
+    X_guess, U_guess = build_robot_ik_initial_guess(
+        dyn,
+        N,
+        T_FIXED,
+        D_MIN,
+        TAU_MAX
+    )
+
 
     print(f"  Torque guess RMS = {np.sqrt(np.mean(U_guess**2)):.3f} Nm")
     print(f"  Torque guess max = {np.max(np.abs(U_guess)):.3f} Nm")

@@ -304,14 +304,14 @@ def build_robot_ik_initial_guess(
     ratio_strike: float = 0.1,
     ratio_power: float = 0.4,
     ratio_lift: float = 0.1,
-    stroke_len: float = 0.03,
+    stroke_len: float = 0.05,
     stand_h: float = 0.14,
     depth_surface: float = 0.14,
-    depth_deep: float = 0.18,
+    depth_deep: float = 0.20,
     center_x_front: float = 0.0,
     center_x_rear: float = 0.0,
     n_cycles: float = 1.0,
-    diagonal_phase_offset: float = 0.5,
+    diagonal_phase_offset: float = 0.2,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build (X_guess, U_guess) from the robot firmware IK-based swim gait.
 
