@@ -9,6 +9,7 @@ Period T is fixed to avoid symbolic dt ill-conditioning.
 from pathlib import Path
 
 import casadi as ca
+import mlflow
 import numpy as np
 from hydro_model import QuadrupedRobot, SymbolicDynamics
 from initial_guess import build_initial_guess, build_robot_ik_initial_guess
@@ -16,9 +17,9 @@ from initial_guess import build_initial_guess, build_robot_ik_initial_guess
 URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
 # ── OCP parameters ──────────────────────────────────────────────────────
-N = 15  # shooting intervals
+N = 30  # shooting intervals
 T_FIXED = 1.0  # fixed cycle period [s]
-D_MIN = 0.001  # minimum forward distance per cycle [m] (avoids trivial solution)
+D_TARGET = 0.0825  # forward distance per cycle [m]
 TAU_MAX = 3.5  # joint torque limit [Nm]
 W_PERIODIC = 10.0  # weight for soft periodicity terms (y, z, quat, base vel)
 W_DIST = 1.0  # weight for forward distance reward (tune relative to W_torque=1)
@@ -27,7 +28,8 @@ W_DIST = 1.0  # weight for forward distance reward (tune relative to W_torque=1)
 # "LSPG25" : lateral-sequence paddling, 25 % power phase
 # "LSPG33" : lateral-sequence paddling, 33 % power phase (fastest in paper)
 # "TLPG50" : trot-like paddling,        50 % power phase (most stable)
-GAIT = "TLPG50"
+# "Prototype" : hand-tuned trot-like paddling)
+GAIT = "Prototype"
 
 # Constant angle offsets [rad] added to both hind leg joints in the initial guess.
 HIND_THIGH_OFFSET = 0.0  # [rad]
@@ -52,6 +54,17 @@ def build_rk4_integrator(f_xdot: ca.Function, nq: int, nv: int, dt: float):
 
 
 def build_ocp():
+    mlflow.set_tracking_uri("http://localhost:5000")
+    mlflow.set_experiment("gait_ocp")
+    mlflow.start_run(tags={"initial gait": GAIT})
+    mlflow.log_params({
+        "N": N,
+        "T_FIXED": T_FIXED,
+        "TAU_MAX": TAU_MAX,
+        "GAIT": GAIT,
+        "D_TARGET": D_TARGET,
+    })
+
     # ── 1. Robot & dynamics ─────────────────────────────────────────────
     print("Building robot and symbolic dynamics...")
     robot = QuadrupedRobot(URDF_PATH)
@@ -80,34 +93,39 @@ def build_ocp():
 
     # ── 4. Kinematic initial guess (Qu et al. 2025) ────────────────────
     print(f"Building initial guess from paper trajectory ({GAIT})...")
-    X_guess, U_guess = build_initial_guess(
-        dyn,
-        GAIT,
-        N,
-        T_FIXED,
-        D_MIN,
-        TAU_MAX,
-        hind_thigh_offset=HIND_THIGH_OFFSET,
-        hind_calf_offset=HIND_CALF_OFFSET,
-    )
     
-    X_guess, U_guess = build_robot_ik_initial_guess(
-        dyn,
-        N,
-        T_FIXED,
-        D_MIN,
-        TAU_MAX
-    )
+    if GAIT in ["LSPG25", "LSPG33", "TLPG50"]:
+        X_guess, U_guess = build_initial_guess(
+            dyn,
+            GAIT,
+            N,
+            T_FIXED,
+            TAU_MAX,
+            hind_thigh_offset=HIND_THIGH_OFFSET,
+            hind_calf_offset=HIND_CALF_OFFSET,
+        )
+    elif GAIT == "Prototype":
+        X_guess, U_guess = build_robot_ik_initial_guess(
+            dyn,
+            N,
+            T_FIXED,
+            TAU_MAX
+        )
+    else:
+        raise ValueError(f"Unknown GAIT: {GAIT}")
 
 
     print(f"  Torque guess RMS = {np.sqrt(np.mean(U_guess**2)):.3f} Nm")
     print(f"  Torque guess max = {np.max(np.abs(U_guess)):.3f} Nm")
     np.savez("task3_guess.npz", T=T_FIXED, X=X_guess, U=U_guess, N=N, nq=nq)
+    mlflow.log_artifact("task3_guess.npz")
     print("  Initial guess saved to task3_guess.npz")
     print()
 
     save = input("Stop optimization after initial guess? [y/N] ").strip().lower()
     if save == "y":
+        mlflow.log_param("solver_status", "guess_only")
+        mlflow.end_run()
         return
 
     # ── 5. NLP setup ───────────────────────────────────────────────────
@@ -156,7 +174,7 @@ def build_ocp():
     opti.subject_to(xN[3:7] == x0[3:7])
 
     dist = xN[0] - x0[0]
-    opti.subject_to(dist == 0.0325)
+    opti.subject_to(dist == D_TARGET)
     opti.minimize(torque_cost)
 
     # Forward progress & anchors
@@ -191,12 +209,16 @@ def build_ocp():
         sol = opti.solve()
         print("=" * 60)
         print("\n* OCP solved!\n")
+        mlflow.log_param("solver_status", "optimal")
         extract_solution(sol, X, U, nq)
     except RuntimeError as e:
         print("=" * 60)
         print(f"\n* Solver failed: {e}")
         print("  Extracting best iterate...\n")
+        mlflow.log_param("solver_status", "failed")
         extract_solution(opti.debug, X, U, nq)
+    finally:
+        mlflow.end_run()
 
 
 def extract_solution(sol, X, U, nq):
@@ -222,6 +244,16 @@ def extract_solution(sol, X, U, nq):
     print(f"    dv     = {np.linalg.norm(xN[nq:] - x0[nq:]):.2e}")
 
     np.savez("task3_solution.npz", T=T_FIXED, X=X_val, U=U_val, N=N, nq=nq)
+    mlflow.log_metrics({
+        "forward_dist": float(X_val[0, -1] - X_val[0, 0]),
+        "forward_vel":  float((X_val[0, -1] - X_val[0, 0]) / T_FIXED),
+        "torque_rms":   float(np.sqrt(np.mean(U_val**2))),
+        "torque_max":   float(np.max(np.abs(U_val))),
+        "cost":         float(np.sum(U_val**2) / N),
+        "base_z_min":   float(X_val[2, :].min()),
+        "base_z_max":   float(X_val[2, :].max()),
+    })
+    mlflow.log_artifact("task3_solution.npz")
     print("\n  Solution saved to task3_solution.npz")
 
 

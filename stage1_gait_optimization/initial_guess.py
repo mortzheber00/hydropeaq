@@ -4,11 +4,11 @@ Initial guess for the gait OCP.
 Two strategies are provided:
 
 1. Fourier-series paddling trajectory (Qu et al. 2025):
-   build_initial_guess(dyn, gait, N, T_FIXED, D_MIN, TAU_MAX)
+   build_initial_guess(dyn, gait, N, T_FIXED, TAU_MAX)
 
 2. Robot firmware IK gait — mirrors Robot_Swim_Task_IK from the embedded C
    firmware (4-phase state machine: recovery → strike → power → lift):
-   build_robot_ik_initial_guess(dyn, N, T_FIXED, D_MIN, TAU_MAX, ...)
+   build_robot_ik_initial_guess(dyn, N, T_FIXED, TAU_MAX, ...)
 
 Both return  (X_guess (nx, N+1),  U_guess (n_act, N)).
 """
@@ -121,7 +121,6 @@ def build_initial_guess(
     gait: str,
     N: int,
     T_FIXED: float,
-    D_MIN: float,
     TAU_MAX: float,
     hind_thigh_offset: float = 0.0,
     hind_calf_offset: float = 0.0,
@@ -297,7 +296,6 @@ def build_robot_ik_initial_guess(
     dyn: SymbolicDynamics,
     N: int,
     T_FIXED: float,
-    D_MIN: float,
     TAU_MAX: float,
     *,
     ratio_recovery: float = 0.4,
