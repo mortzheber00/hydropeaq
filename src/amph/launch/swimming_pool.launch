@@ -16,9 +16,9 @@
     <arg name="gui"        value="false" />
   </include>
 
-  <group>
-    <node name="gazebo_gui" pkg="gazebo_ros" type="gzclient" respawn="false" args=" --verbose -g libFluidVisPlugin.so"
-    required="$(arg gui_required)"/>
+  <group if="$(arg gui_required)">
+    <node name="gazebo_gui" pkg="gazebo_ros" type="gzclient" respawn="false" required="true"
+          args=" --verbose -g libFluidVisPlugin.so"/>
   </group>
 
   <!-- joint_state_controller for TF/state publishing -->

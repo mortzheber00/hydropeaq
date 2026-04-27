@@ -44,8 +44,9 @@
         "ROS_LOCALHOST_ONLY": "1",
         "ROS_DOMAIN_ID": "42",
         "QT_X11_NO_MITSHM": "1",
-        "XAUTHORITY": "${localEnv:XAUTHORITY}",
-        "NVIDIA_DRIVER_CAPABILITIES": "all"
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "__GLX_VENDOR_LIBRARY_NAME": "mesa",
+        "LIBGL_ALWAYS_SOFTWARE": "1"
     },
     "runArgs": [
         "--net=host",
@@ -56,8 +57,7 @@
     "mounts": [
         "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
         "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
-        "source=${localEnv:HOME}/.ssh,target=/home/${localEnv:USER}/.ssh,type=bind",
-        "source=${localEnv:XAUTHORITY},target=${localEnv:XAUTHORITY},type=bind,consistency=cached"
+        "source=${localEnv:HOME}/.ssh,target=/home/${localEnv:USER}/.ssh,type=bind"
     ],
     "initializeCommand": "sh ./.devcontainer/initialize.sh",
     "postCreateCommand": "bash ./.devcontainer/postCreate.sh"
