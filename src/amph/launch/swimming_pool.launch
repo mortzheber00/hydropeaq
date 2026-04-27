@@ -3,6 +3,7 @@
   <arg name="gui_required" default="true" />
   <arg name="npz_path"    default="/home/ws/task3_guess.npz" />
   <arg name="n_repeat"    default="3" />
+  <arg name="bag_path"    default="/home/ws/sim_log.bag" />
 
   <!-- Load URDF onto the parameter server -->
   <param name="robot_description"
@@ -33,6 +34,12 @@
         type="robot_state_publisher" output="screen">
     <param name="publish_frequency" value="100.0" />
   </node>
+
+  <!-- Record robot state topics to a bag file (set bag_path:='' to disable) -->
+  <node if="$(eval arg('bag_path') != '')"
+        name="rosbag_record" pkg="rosbag" type="record"
+        args="-O $(arg bag_path) /amph/joint_states /gazebo/model_states"
+        output="screen" />
 
   <!-- Start trajectory replay 2 s after launch (wall-clock, for Gazebo init) -->
   <node if="$(eval arg('npz_path') != '')"
