@@ -19,10 +19,12 @@ URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 # ── OCP parameters ──────────────────────────────────────────────────────
 N = 30  # shooting intervals
 T_FIXED = 1.0  # fixed cycle period [s]
-D_TARGET = 0.0825  # forward distance per cycle [m]
+D_TARGET = 0.2  # forward distance per cycle [m]
 TAU_MAX = 3.5  # joint torque limit [Nm]
 W_PERIODIC = 10.0  # weight for soft periodicity terms (y, z, quat, base vel)
 W_DIST = 1.0  # weight for forward distance reward (tune relative to W_torque=1)
+W_VEL_SMOOTH = 1.0  # weight for velocity smoothing
+W_DRIFT = 1.0  # weight for drift penalty
 
 # ── Initial guess gait (Qu et al. 2025) ─────────────────────────────────
 # "LSPG25" : lateral-sequence paddling, 25 % power phase
@@ -140,6 +142,19 @@ def build_ocp():
     for k in range(N):
         torque_cost += ca.sumsqr(U[:, k])
     torque_cost /= N
+    
+    dist_cost = -W_DIST * ((X[0, -1] - X[0, 0]))/T_FIXED  # reward forward distance
+    
+    vel_smooth_cost = 0
+    for k in range(N):
+        vel_smooth_cost += ca.sumsqr(X[nq:nq+6, k+1] - X[nq:nq+6, k])
+    vel_smooth_cost /= N
+    
+    drift_cost = 0
+    for k in range(N + 1):
+        drift_cost += X[1, k]**2              # y: anchored to 0 at k=0
+        drift_cost += (X[2, k] - X[2, 0])**2  # z: relative to initial height
+    drift_cost /= (N + 1)
 
     # Dynamics for multiple shooting
     for k in range(N):
@@ -174,8 +189,8 @@ def build_ocp():
     opti.subject_to(xN[3:7] == x0[3:7])
 
     dist = xN[0] - x0[0]
-    opti.subject_to(dist == D_TARGET)
-    opti.minimize(torque_cost)
+    opti.subject_to(dist >= D_TARGET)
+    opti.minimize(torque_cost + dist_cost + W_VEL_SMOOTH * vel_smooth_cost + W_DRIFT * drift_cost)
 
     # Forward progress & anchors
     opti.subject_to(X[0, 0] == 0.0)
@@ -210,15 +225,32 @@ def build_ocp():
         print("=" * 60)
         print("\n* OCP solved!\n")
         mlflow.log_param("solver_status", "optimal")
+        _log_solver_stats(opti.stats())
         extract_solution(sol, X, U, nq)
     except RuntimeError as e:
         print("=" * 60)
         print(f"\n* Solver failed: {e}")
         print("  Extracting best iterate...\n")
         mlflow.log_param("solver_status", "failed")
+        _log_solver_stats(opti.stats())
         extract_solution(opti.debug, X, U, nq)
     finally:
         mlflow.end_run()
+
+
+def _log_solver_stats(stats: dict) -> None:
+    mlflow.log_metrics({
+        "cpu_time_s":  stats.get("t_proc_total", 0.0),
+        "wall_time_s": stats.get("t_wall_total", 0.0),
+        "iterations":  float(stats.get("iter_count", 0)),
+    })
+    iters = stats.get("iterations", {})
+    for step, (obj, inf_pr, inf_du) in enumerate(zip(
+        iters.get("obj", []),
+        iters.get("inf_pr", []),
+        iters.get("inf_du", []),
+    )):
+        mlflow.log_metrics({"convergence_obj": obj, "inf_pr": inf_pr, "inf_du": inf_du}, step=step)
 
 
 def extract_solution(sol, X, U, nq):

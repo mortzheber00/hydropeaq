@@ -31,3 +31,8 @@ pkill -f "mlflow server"
 # if that fails:
 ps aux | grep mlflow | grep -v grep | awk '{print $2}' | xargs kill -9
 ```
+To delete artifacts after you deleted the run in ml flow use:
+
+```bash
+mlflow gc --backend-store-uri sqlite:///experiment_results/mlflow.db
+```

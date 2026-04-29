@@ -5,3 +5,4 @@ casadi
 ruff
 pre-commit
 tqdm
+mlflow
