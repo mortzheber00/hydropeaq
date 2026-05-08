@@ -6,3 +6,5 @@ ruff
 pre-commit
 tqdm
 mlflow
+trimesh
+pytransform3d

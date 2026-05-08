@@ -91,12 +91,12 @@ class SymbolicHydrodynamicModel:
         v_sym: ca.SX,
         nv: int,
         rho: float = RHO_WATER,
-        Cd_transverse: float = 1.0,
-        Cd_axial: float = 0.8,
-        Ca_transverse: float = 1.0,
-        Ca_axial: float = 0.1,
+        Cd_transverse: float = 0.764,
+        Cd_axial: float = 0.1,
+        Ca_transverse: float = 0.8776,
+        Ca_axial: float = 0.3,
         z_surface: float = 0.0,
-        v_linear_threshold: float = 0.2,
+        v_linear_threshold: float = 0.005,
     ):
         self.robot = robot
         self.cmodel = cmodel
@@ -155,17 +155,26 @@ class SymbolicHydrodynamicModel:
         self,
         cyl: CylinderPrimitive,
         alpha: ca.SX,
+        axis_sym: ca.SX,
         R_sym: ca.SX,
     ) -> ca.SX:
         """Symbolic 6D buoyancy wrench [F; r x F] at the frame origin.
 
-        The force acts at the cylinder center of buoyancy.  The wrench is
-        expressed at the frame origin for use with the LOCAL_WORLD_ALIGNED
-        Jacobian convention.
+        The force acts at the center of buoyancy (COB), which for partial
+        submersion lies at the centroid of the submerged volume — shifted from
+        the cylinder midpoint toward the submerged end by (alpha-1)/2 * L.
         """
-        F_buoy = ca.vertcat(0.0, 0.0, alpha * self.rho * GRAVITY * cyl.volume)
-        r_offset = R_sym @ ca.SX(cyl.center_local)
-        return ca.vertcat(F_buoy, ca.cross(r_offset, F_buoy))
+        F_buoy = ca.vertcat(0.0, 0.0, alpha * self.rho * GRAVITY * cyl.volume_displaced)
+
+        # Shift COB along the cylinder axis toward the submerged (lower) end.
+        # up_sign is +1 if axis_sym points upward, -1 if downward.
+        axis_z = axis_sym[2]
+        up_sign = axis_z / ca.sqrt(axis_z**2 + _EPS)
+        cob_local = ca.SX(cyl.center_local) + (
+            (alpha - 1.0) / 2.0 * cyl.length * up_sign
+        ) * ca.SX(cyl.axis_local)
+        r_cob = R_sym @ cob_local
+        return ca.vertcat(F_buoy, ca.cross(r_cob, F_buoy))
 
     def drag_force(
         self,
@@ -218,7 +227,7 @@ class SymbolicHydrodynamicModel:
         where M_A_cartesian = ma_t*I + (ma_a - ma_t)*(a x a^T).
         """
         rho = self.rho
-        V = cyl.volume
+        V = cyl.volume_displaced
         ma_t = self.Ca_transverse * rho * V
         ma_a = self.Ca_axial * rho * V
 
@@ -272,7 +281,7 @@ class SymbolicHydrodynamicModel:
             alpha = self.submersion_ratio(cyl, axis_sym, oMf, R_sym)
 
             # Buoyancy
-            wrench_buoy = self.buoyancy_wrench(cyl, alpha, R_sym)
+            wrench_buoy = self.buoyancy_wrench(cyl, alpha, axis_sym, R_sym)
             tau_buoyancy += J_full.T @ wrench_buoy
 
             # Drag

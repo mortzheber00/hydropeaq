@@ -14,7 +14,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from hydro_model import QuadrupedRobot, SymbolicDynamics
-from hydro_model.visualization import visualize_robot, visualize_skeleton
+from hydro_model.visualization import visualize_robot, visualize_robot_comparison, visualize_skeleton
 
 URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
@@ -93,6 +93,13 @@ def main():
         q,
         title="AMPH — Cylinder Approximation (Neutral Pose)",
         save_path="robot_cylinder_approximation.png",
+    )
+
+    visualize_robot_comparison(
+        robot,
+        q,
+        title="AMPH — Geometry Comparison (Neutral Pose)",
+        save_path="robot_geometry_comparison.png",
     )
     plt.show()
 

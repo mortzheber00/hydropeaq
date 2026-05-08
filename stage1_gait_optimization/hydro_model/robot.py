@@ -3,7 +3,8 @@ Quadruped robot model built on Pinocchio with cylinder-primitive approximations.
 
 Pinocchio handles URDF parsing, kinematic tree, forward kinematics, and
 Jacobians.  On top of that, each link is approximated as a solid cylinder
-(dimensions inferred from the URDF inertia tensor) for the hydrodynamic model.
+(radius = mesh RMS radius, length = joint-to-joint distance) for the
+hydrodynamic model.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pinocchio as pin
+import trimesh
 
 # ---------------------------------------------------------------------------
 # Geometric primitive
@@ -24,8 +26,8 @@ class CylinderPrimitive:
     """Solid-cylinder approximation of a robot link.
 
     For leg links the cylinder spans between two skeleton joints
-    (centerline-projected).  The radius is derived from the smallest
-    principal moment of inertia: I_sym = m*r^2/2  →  r = sqrt(2*I_sym/m).
+    (centerline-projected).  The radius is the RMS perpendicular distance of
+    mesh vertices from the cylinder axis.
 
     ``center_local`` is the offset of the cylinder midpoint from the link's
     BODY-frame origin, expressed in the link LOCAL frame.  It is populated by
@@ -35,17 +37,14 @@ class CylinderPrimitive:
         p_center_world = R_link @ center_local + t_link_world
     """
 
-    radius: float  # [m]
+    radius: float  # [m] — mesh RMS radius, drives drag areas
     length: float  # [m]
+    volume_displaced: float  # [m^3] actual displaced water — drives buoyancy and added mass
     center: np.ndarray  # midpoint of the cylinder in world frame [m]
     axis_world: np.ndarray  # unit vector along the cylinder axis (world frame)
     axis_local: np.ndarray  # same axis expressed in the link body frame
     center_local: np.ndarray = field(default_factory=lambda: np.zeros(3))
     # offset of cylinder midpoint from link frame origin, in link LOCAL frame
-
-    @property
-    def volume(self) -> float:
-        return np.pi * self.radius**2 * self.length
 
     @property
     def cross_section_axial(self) -> float:
@@ -57,28 +56,20 @@ class CylinderPrimitive:
         """Projected area for flow perpendicular to the cylinder axis."""
         return 2.0 * self.radius * self.length
 
-    @staticmethod
-    def radius_from_inertia(mass: float, inertia: np.ndarray) -> float:
-        """Estimate cylinder radius from the smallest principal inertia.
-
-        I_sym = m * r^2 / 2  →  r = sqrt(2 * I_min / m)
-        """
-        I_min = np.linalg.eigvalsh(inertia).min()
-        return np.sqrt(max(2.0 * I_min / mass, 1e-10))
-
     @classmethod
     def from_segment(
         cls,
         p_start: np.ndarray,
         p_end: np.ndarray,
-        mass: float,
-        inertia: np.ndarray,
+        radius: float,
         R_frame: np.ndarray,
+        volume_displaced: float,
     ) -> CylinderPrimitive:
         """Build a cylinder spanning from p_start to p_end (world frame).
 
         Length = distance between the two points.
-        Radius = derived from the inertia tensor.
+        radius: mesh RMS radius (pre-computed by the caller).
+        volume_displaced: actual mesh volume used for buoyancy and added mass.
         R_frame : 3x3 rotation of the link frame at build time (body to world frame).
         """
         diff = p_end - p_start
@@ -87,46 +78,10 @@ class CylinderPrimitive:
         axis_world = diff / length
         axis_local = R_frame.T @ axis_world
         center = (p_start + p_end) / 2.0
-        # TODO: avoid hard coded radius reduction
-        radius = cls.radius_from_inertia(mass, inertia) - 0.02
         return cls(
             radius=radius,
             length=length,
-            center=center,
-            axis_world=axis_world,
-            axis_local=axis_local,
-        )
-
-    @classmethod
-    def from_inertia_only(
-        cls,
-        mass: float,
-        inertia: np.ndarray,
-        center: np.ndarray,
-        R_world: np.ndarray,
-    ) -> CylinderPrimitive:
-        """Fallback for links without a clear joint-to-joint segment (e.g. base).
-
-        Axis and length are inferred from the inertia tensor eigenvalues.
-        """
-        eigvals, eigvecs = np.linalg.eigh(inertia)
-        idx_min = np.argmin(eigvals)
-        I_sym = eigvals[idx_min]
-        I_trans = np.mean([eigvals[i] for i in range(3) if i != idx_min])
-
-        # For a solid cylinder, the inertia about the central axis is I_sym = m*r^2/2,
-        # and the inertia about any transverse axis is I_trans = m*(3*r^2 + h^2)/12.
-        r_sq = 2.0 * I_sym / mass
-        # TODO: avoid hard coded radius reduction
-        radius = np.sqrt(max(r_sq, 1e-10)) - 0.02
-        h_sq = 12.0 * I_trans / mass - 3.0 * r_sq
-        length = np.sqrt(max(h_sq, 1e-10))
-
-        axis_local = eigvecs[:, idx_min]
-        axis_world = R_world @ axis_local
-        return cls(
-            radius=radius,
-            length=length,
+            volume_displaced=volume_displaced,
             center=center,
             axis_world=axis_world,
             axis_local=axis_local,
@@ -134,7 +89,7 @@ class CylinderPrimitive:
 
 
 # ---------------------------------------------------------------------------
-# Per-link data combining Pinocchio inertia with cylinder geometry
+# Per-link data combining Pinocchio kinematics with cylinder geometry
 # ---------------------------------------------------------------------------
 
 
@@ -147,7 +102,6 @@ class LinkData:
     parent_joint: int  # Pinocchio joint index that moves this link
     mass: float  # [kg]
     com_local: np.ndarray  # center of mass in joint frame [m]
-    inertia: np.ndarray  # 3x3 inertia tensor at CoM, joint frame
     cylinder: CylinderPrimitive | None = field(default=None, init=False)
 
 
@@ -188,6 +142,26 @@ class QuadrupedRobot:
         )
         self._recenter_base_y()
         self.data: pin.Data = self.model.createData()
+
+        # Build mesh-volume map: link_name -> displaced volume [m^3] from STL meshes.
+        # Geometry object names have a numeric suffix (e.g. "base_link_0"); strip it.
+        _geom_model = pin.GeometryModel()
+        pin.buildGeomFromUrdf(
+            self.model,
+            str(self.urdf_path),
+            pin.GeometryType.COLLISION,
+            _geom_model,
+            [str(self.urdf_path.parent.parent)],
+        )
+        self.link_mesh_volumes: dict[str, float] = {}
+        self.link_geom_objects: dict[str, pin.GeometryObject] = {}
+        for go in _geom_model.geometryObjects:
+            link_name = go.name.rsplit("_", 1)[0]
+            _m = trimesh.load(go.meshPath)
+            # Non-watertight meshes (e.g. base_link has an open surface) fall back to
+            # convex hull so the displaced volume is a sensible upper bound.
+            self.link_mesh_volumes[link_name] = float(_m.volume if _m.is_watertight else _m.convex_hull.volume)
+            self.link_geom_objects[link_name] = go
 
         # Extract per-link data from Pinocchio frames
         self.links: dict[str, LinkData] = {}
@@ -242,7 +216,7 @@ class QuadrupedRobot:
         self.model.inertias[base_jid].lever[1] = 0.0
 
     def _extract_links(self):
-        """Pull mass, CoM, and inertia from Pinocchio BODY frames."""
+        """Pull mass and CoM from Pinocchio BODY frames."""
         for frame in self.model.frames:
             if frame.type != pin.FrameType.BODY:
                 continue
@@ -256,17 +230,12 @@ class QuadrupedRobot:
             if mass < 1e-8:
                 continue
 
-            com_local = np.array(inertia_pin.lever)  # CoM in joint frame
-            # Inertia tensor at CoM, expressed in joint frame
-            I_matrix = np.array(inertia_pin.inertia)
-
             self.links[name] = LinkData(
                 name=name,
                 frame_id=self.model.getFrameId(name),
                 parent_joint=joint_id,
                 mass=mass,
-                com_local=com_local,
-                inertia=I_matrix,
+                com_local=np.array(inertia_pin.lever),
             )
 
     def _build_joint_order(self):
@@ -379,35 +348,70 @@ class QuadrupedRobot:
     # Cylinder primitives (skeleton-aligned)
     # ------------------------------------------------------------------
 
+    def _mesh_rms_radius(self, link_name: str, center: np.ndarray, axis_world: np.ndarray) -> float:
+        """RMS perpendicular distance of mesh vertices from the cylinder axis.
+
+        Vertices are transformed to world frame using the current FK and the
+        geometry object's placement, then projected perpendicular to axis_world.
+        """
+        go = self.link_geom_objects.get(link_name)
+        if go is None:
+            raise ValueError(f"No geometry object for link {link_name!r}")
+
+        oMj = self.data.oMi[go.parentJoint]
+        T = oMj * go.placement  # geometry local frame → world
+        R = np.array(T.rotation)
+        t = np.array(T.translation)
+
+        verts_local = np.array([go.geometry.vertex(i) for i in range(go.geometry.num_vertices)])
+        verts_world = verts_local @ R.T + t  # (N, 3)
+
+        v_rel = verts_world - center[None, :]  # (N, 3)
+        perp = v_rel - (v_rel @ axis_world)[:, None] * axis_world[None, :]  # (N, 3)
+        return float(np.sqrt(np.mean(np.sum(perp**2, axis=1))))
+
     def build_cylinders(self):
         """Assign a CylinderPrimitive to every link (call FK first).
 
         Leg links get cylinders spanning between centerline-projected joint
-        positions.  The base link uses an inertia-only fallback.  Foot links
-        share their calf link's radius with a short nominal length.
+        positions.  The base link uses inertia eigenvectors for axis/length.
+        Foot links share their calf link's axis with a short nominal length.
 
         This mapping decides which skeleton segment each link belongs to:
           - Side link  → side joint  → thigh joint
           - Thigh link → thigh joint → calf joint
           - Calf link  → calf joint  → foot frame
           - Foot link  → same as calf (thin cap at the foot)
-          - Base link   → inertia-only fallback
+          - Base link   → inertia eigenvectors for axis/length
         """
         # -- Base link (no joint-to-joint segment) --
         base = self.links.get("base_link")
         if base is not None:
-            # joint placement in world frame 4x4 transformation (populated by FK)
             oMj = self.data.oMi[base.parent_joint]
-            # CoM in world frame = joint translation + rotated local CoM offset
-            com_world = (
-                np.array(oMj.translation) + np.array(oMj.rotation) @ base.com_local
-            )
-            # Geometry from inertia alone (no clear axis from joint-to-joint segment since it's the root link)
-            base.cylinder = CylinderPrimitive.from_inertia_only(
-                base.mass,
-                base.inertia,
-                com_world,
-                np.array(oMj.rotation),
+            R_world = np.array(oMj.rotation)
+            com_world = np.array(oMj.translation) + R_world @ base.com_local
+
+            # Axis and length from inertia eigenvectors (no joint-to-joint segment for the root link).
+            # For a solid cylinder: I_axial = m*r^2/2, I_transverse = m*(3*r^2 + h^2)/12.
+            inertia = np.array(self.model.inertias[base.parent_joint].inertia)
+            eigvals, eigvecs = np.linalg.eigh(inertia)
+            idx_min = int(np.argmin(eigvals))
+            I_sym = eigvals[idx_min]
+            I_trans = float(np.mean([eigvals[i] for i in range(3) if i != idx_min]))
+            r_sq = 2.0 * I_sym / base.mass
+            h_sq = 12.0 * I_trans / base.mass - 3.0 * r_sq
+            length = np.sqrt(max(h_sq, 1e-10))
+            axis_local = eigvecs[:, idx_min]
+            axis_world = R_world @ axis_local
+
+            r_rms = self._mesh_rms_radius("base_link", com_world, axis_world)
+            base.cylinder = CylinderPrimitive(
+                radius=r_rms,
+                length=length,
+                volume_displaced=self.link_mesh_volumes.get("base_link", 0.0),
+                center=com_world,
+                axis_world=axis_world,
+                axis_local=axis_local,
             )
             self._set_center_local(base)
 
@@ -426,13 +430,14 @@ class QuadrupedRobot:
                 link = self.links.get(link_name)
                 if link is None:
                     continue
+                diff = p_end - p_start
+                axis_world = diff / max(float(np.linalg.norm(diff)), 1e-6)
+                center = (p_start + p_end) / 2.0
+                r_rms = self._mesh_rms_radius(link_name, center, axis_world)
                 R_frame = np.array(self.data.oMf[link.frame_id].rotation)
                 link.cylinder = CylinderPrimitive.from_segment(
-                    p_start,
-                    p_end,
-                    link.mass,
-                    link.inertia,
-                    R_frame,
+                    p_start, p_end, r_rms, R_frame,
+                    volume_displaced=self.link_mesh_volumes.get(link_name, 0.0),
                 )
                 self._set_center_local(link)
 
@@ -447,9 +452,13 @@ class QuadrupedRobot:
                 and calf_link.cylinder is not None
             ):
                 foot_pos = proj["foot"]
+                foot_vol = self.link_mesh_volumes.get(foot_name, 0.0)
+                foot_length = 0.01  # nominal thin cap
+                r_rms = self._mesh_rms_radius(foot_name, foot_pos, calf_link.cylinder.axis_world)
                 foot_link.cylinder = CylinderPrimitive(
-                    radius=calf_link.cylinder.radius,
-                    length=0.01,  # nominal thin cap
+                    radius=r_rms,
+                    length=foot_length,
+                    volume_displaced=foot_vol,
                     center=foot_pos,
                     axis_world=calf_link.cylinder.axis_world,
                     axis_local=calf_link.cylinder.axis_local,

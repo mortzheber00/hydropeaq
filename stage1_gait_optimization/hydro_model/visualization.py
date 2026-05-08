@@ -350,3 +350,146 @@ def visualize_robot(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Three-panel geometry comparison
+# ---------------------------------------------------------------------------
+
+
+def _make_urdf_transform_manager(robot: QuadrupedRobot):
+    """Load the robot URDF into a pytransform3d UrdfTransformManager."""
+    from pytransform3d.urdf import UrdfTransformManager
+
+    # package_dir replaces 'package://' in mesh filenames, so it needs a
+    # trailing slash: 'package://amph/meshes/x.STL' -> '<pkg_root>/amph/meshes/x.STL'
+    package_dir = str(robot.urdf_path.parent.parent.parent) + "/"
+    with open(robot.urdf_path) as f:
+        urdf_str = f.read()
+    tm = UrdfTransformManager()
+    tm.load_urdf(urdf_str, package_dir=package_dir)
+    return tm
+
+
+def _draw_cylinder(ax, center, axis_world, radius, length, color, alpha=0.6, n=16, edgecolor="k"):
+    """Draw a single cylinder on ax, returning its surface points."""
+    X, Y, Z = _cylinder_mesh(radius, length, n_facets=n)
+    R_cyl = _rotation_align_z_to(axis_world)
+    pts = []
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            p = R_cyl @ np.array([X[i, j], Y[i, j], Z[i, j]]) + center
+            X[i, j], Y[i, j], Z[i, j] = p
+            pts.append(p)
+    ax.plot_surface(X, Y, Z, alpha=alpha, color=color, edgecolor=edgecolor, linewidth=0.3)
+    return pts
+
+
+def visualize_robot_comparison(
+    robot: QuadrupedRobot,
+    q: np.ndarray | None = None,
+    title: str = "Robot Geometry Comparison",
+    elev: float = 25.0,
+    azim: float = -60.0,
+    figsize: tuple[float, float] = (16, 13),
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Four-panel comparison: STL meshes | drag cylinders | buoyancy cylinders | all overlaid.
+
+    Panel 1 — STL mesh (actual displaced geometry).
+    Panel 2 — Drag cylinder: radius = RMS mesh-vertex distance from axis.
+    Panel 3 — Buoyancy/added-mass cylinder: radius = sqrt(V_disp / (π·L)),
+               same displaced volume as the mesh.
+    Panel 4 — All three representations overlaid in one view.
+    """
+    import warnings
+
+    if q is None:
+        q = np.zeros(robot.nq)
+
+    robot.forward_kinematics(q)
+    robot.build_cylinders()
+
+    # --- Panel 1: pytransform3d mesh rendering ---
+    tm = _make_urdf_transform_manager(robot)
+    for i, jname in enumerate(robot.actuated_joint_names):
+        tm.set_joint(jname, float(q[7 + i]))
+
+    # Override URDF material colors (mostly white) with our link color scheme
+    import matplotlib.colors as mcolors
+    for v in tm.visuals:
+        # frame name format: "visual:<link_name>/0"
+        link_name = v.frame.split("visual:")[1].rsplit("/", 1)[0]
+        v.color = list(mcolors.to_rgba(_link_color(link_name)))
+
+    fig = plt.figure(figsize=figsize)
+    axes = [fig.add_subplot(2, 2, i + 1, projection="3d") for i in range(4)]
+    subtitles = [
+        "STL mesh",
+        "Drag cylinder\n(r = RMS vertex distance from axis)",
+        "Buoyancy / added-mass cylinder\n(r = √(V_disp / πL))",
+        "All representations overlaid\n(mesh | drag | buoyancy)",
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tm.plot_visuals("base_link", ax=axes[0], alpha=0.7, wireframe=False, convex_hull_of_mesh=True)
+        tm.plot_visuals("base_link", ax=axes[3], alpha=0.45, wireframe=False, convex_hull_of_mesh=True)
+
+    # --- Panels 2, 3 & 4: cylinder approximations ---
+    # Also collect mesh vertex points for a shared bounding box
+    all_pts: list[np.ndarray] = []
+
+    for name, link in robot.links.items():
+        cyl = link.cylinder
+        if cyl is None:
+            continue
+
+        color = _link_color(name)
+        r_vol = np.sqrt(max(cyl.volume_displaced / (np.pi * cyl.length), 1e-8))
+
+        # Panel 2: drag cylinder (RMS radius)
+        pts = _draw_cylinder(axes[1], cyl.center, cyl.axis_world, cyl.radius, cyl.length, color)
+        all_pts.extend(pts)
+
+        # Panel 3: buoyancy/added-mass cylinder (volume-matched radius)
+        _draw_cylinder(axes[2], cyl.center, cyl.axis_world, r_vol, cyl.length, color)
+
+        # Panel 4: all overlaid — drag cylinder in link color, buoyancy as dark outline
+        _draw_cylinder(axes[3], cyl.center, cyl.axis_world, cyl.radius, cyl.length, color, alpha=0.30, edgecolor="#1a1a6e")
+        _draw_cylinder(axes[3], cyl.center, cyl.axis_world, r_vol, cyl.length, color, alpha=0.18, edgecolor="#6e1a1a")
+
+        go = robot.link_geom_objects.get(name)
+        if go is not None:
+            oMj = robot.data.oMi[go.parentJoint]
+            T = oMj * go.placement
+            R, t = np.array(T.rotation), np.array(T.translation)
+            g = go.geometry
+            verts = np.array([g.vertex(i) for i in range(g.num_vertices)]) @ R.T + t
+            all_pts.extend(verts[::20].tolist())
+
+    all_pts_arr = np.array(all_pts)
+    legend_elements = [
+        Patch(facecolor=c, edgecolor="k", label=n.capitalize())
+        for n, c in LINK_COLORS.items()
+    ]
+    overlay_legend = legend_elements + [
+        Patch(facecolor="white", edgecolor="#1a1a6e", label="Drag cyl. edge"),
+        Patch(facecolor="white", edgecolor="#6e1a1a", label="Buoyancy cyl. edge"),
+    ]
+
+    for i, (ax, subtitle) in enumerate(zip(axes, subtitles)):
+        _set_equal_aspect(ax, all_pts_arr)
+        ax.set_xlabel("X [m]", fontsize=8)
+        ax.set_ylabel("Y [m]", fontsize=8)
+        ax.set_zlabel("Z [m]", fontsize=8)
+        ax.set_title(subtitle, fontsize=9)
+        ax.view_init(elev=elev, azim=azim)
+        handles = overlay_legend if i == 3 else legend_elements
+        ax.legend(handles=handles, loc="upper left", fontsize=6)
+
+    fig.suptitle(title, fontsize=12, y=1.01)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
