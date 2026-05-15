@@ -169,6 +169,9 @@ def build_ocp():
         opti.subject_to(ca.dot(quat_k, quat_k) == 1.0)
         # Leg joint angle limits
         opti.subject_to(opti.bounded(q_lb, X[7:nq, k], q_ub))
+        # Limit Side Joint angles to near zero (indices 7, 10, 13, 16)
+        #for side_idx in range(7, nq, 3):
+        #    opti.subject_to(opti.bounded(-0.001, X[side_idx, k], 0.001))
         # Leg joint velocity limits
         opti.subject_to(opti.bounded(v_lb, X[nq + 6 :, k], v_ub))
         # Base velocity limits to avoid unrealistic speeds
