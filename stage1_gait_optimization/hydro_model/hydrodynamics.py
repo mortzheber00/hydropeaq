@@ -43,6 +43,15 @@ GRAVITY = 9.81  # gravitational acceleration [m/s^2]
 _EPS = 1e-8
 
 
+def _skew(v: ca.SX) -> ca.SX:
+    """3×3 skew-symmetric matrix such that _skew(a) @ b == a × b."""
+    return ca.vertcat(
+        ca.horzcat(     0, -v[2],  v[1]),
+        ca.horzcat(  v[2],     0, -v[0]),
+        ca.horzcat( -v[1],  v[0],     0),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Symbolic hydrodynamic model
 # ---------------------------------------------------------------------------
@@ -91,10 +100,10 @@ class SymbolicHydrodynamicModel:
         v_sym: ca.SX,
         nv: int,
         rho: float = RHO_WATER,
-        Cd_transverse: float = 0.764,
-        Cd_axial: float = 0.1,
-        Ca_transverse: float = 0.8776,
-        Ca_axial: float = 0.3,
+        Cd_transverse: float = 1.0,
+        Cd_axial: float = 0.8,
+        Ca_transverse: float = 1.0,
+        Ca_axial: float = 0.1,
         z_surface: float = 0.0,
         v_linear_threshold: float = 0.005,
     ):
@@ -133,22 +142,31 @@ class SymbolicHydrodynamicModel:
         """Symbolic submersion ratio alpha(q) in [0, 1] for one cylinder.
 
         Reconstructs the cylinder midpoint from FK and computes the fraction
-        of the cylinder below the water surface using smooth clamping.
+        of the cylinder below the water surface using a smooth clamp.
+
+        The clamp uses sqrt(x^2 + eps) approximations of fmax(0, x) so the
+        ratio is C^1 everywhere, avoiding the gradient kinks that fmin/fmax
+        introduce at alpha = 0 and alpha = 1.
         """
         p_center = oMf.translation + R_sym @ ca.SX(cyl.center_local)
         z_center = p_center[2]
 
-        axis_z_abs = ca.fabs(axis_sym[2])
+        # Smooth |axis_z| and sqrt(1 - axis_z^2) so dz_half stays C^1.
+        axis_z_abs = ca.sqrt(axis_sym[2] ** 2 + _EPS)
         dz_axial = 0.5 * cyl.length * axis_z_abs
-        dz_radial = cyl.radius * ca.sqrt(ca.fmax(1.0 - axis_sym[2] ** 2, 0.0))
+        dz_radial = cyl.radius * ca.sqrt(ca.fmax(1.0 - axis_sym[2] ** 2, 0.0) + _EPS)
         dz_half = dz_axial + dz_radial
 
         z_top = z_center + dz_half
         z_bottom = z_center - dz_half
 
-        return ca.fmin(
-            1.0,
-            ca.fmax(0.0, (self.z_surface - z_bottom) / (z_top - z_bottom + 1e-6)),
+        x = (self.z_surface - z_bottom) / (z_top - z_bottom + 1e-6)
+        # Smooth clamp to [0,1]: clamp01(x) = max(0,x) - max(0,x-1),
+        # with max(0,x) ~ 0.5*(sqrt(x^2+e) + x).  Linear on [0,1], saturates
+        # outside; eps controls the corner radius.
+        eps = 1e-4
+        return 0.5 * (
+            ca.sqrt(x ** 2 + eps) - ca.sqrt((x - 1.0) ** 2 + eps) + 1.0
         )
 
     def buoyancy_wrench(
@@ -163,15 +181,18 @@ class SymbolicHydrodynamicModel:
         The force acts at the center of buoyancy (COB), which for partial
         submersion lies at the centroid of the submerged volume — shifted from
         the cylinder midpoint toward the submerged end by (alpha-1)/2 * L.
+
+        The "which end is down" factor uses tanh(k*axis_z) instead of a
+        smooth-sign, so the shift goes smoothly through zero as the cylinder
+        crosses horizontal (no gradient discontinuity at axis_z = 0).
         """
         F_buoy = ca.vertcat(0.0, 0.0, alpha * self.rho * GRAVITY * cyl.volume_displaced)
 
-        # Shift COB along the cylinder axis toward the submerged (lower) end.
-        # up_sign is +1 if axis_sym points upward, -1 if downward.
-        axis_z = axis_sym[2]
-        up_sign = axis_z / ca.sqrt(axis_z**2 + _EPS)
+        # Smooth orientation factor in (-1, 1): -1 if axis points down,
+        # +1 if up, 0 (no axial shift) when the cylinder is horizontal.
+        down_factor = ca.tanh(10.0 * axis_sym[2])
         cob_local = ca.SX(cyl.center_local) + (
-            (alpha - 1.0) / 2.0 * cyl.length * up_sign
+            (alpha - 1.0) / 2.0 * cyl.length * down_factor
         ) * ca.SX(cyl.axis_local)
         r_cob = R_sym @ cob_local
         return ca.vertcat(F_buoy, ca.cross(r_cob, F_buoy))
@@ -270,7 +291,15 @@ class SymbolicHydrodynamicModel:
                 fid,
                 pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
             )
-            Jv = J_full[:3, :]
+
+            # Velocity at the cylinder midpoint, not the frame origin.
+            # The frame origin is at the parent joint (the rotation pivot), so
+            # J_full[:3,:] @ v == 0 there for any rotation about that joint.
+            # The correct velocity is:  v_mid = v_origin + omega × r_offset
+            #   = (J_lin - skew(r_offset) @ J_ang) @ v
+            # where r_offset = R @ center_local is the joint-to-midpoint vector.
+            r_offset = R_sym @ ca.SX(cyl.center_local)
+            Jv = J_full[:3, :] - _skew(r_offset) @ J_full[3:, :]
             v_link = Jv @ v
 
             # Cylinder axis in world frame (symbolic)
@@ -286,7 +315,6 @@ class SymbolicHydrodynamicModel:
 
             # Drag
             F_drag = self.drag_force(cyl, alpha, axis_sym, v_link)
-            r_offset = R_sym @ ca.SX(cyl.center_local)
             wrench_drag = ca.vertcat(F_drag, ca.cross(r_offset, F_drag))
             tau_drag += J_full.T @ wrench_drag
 

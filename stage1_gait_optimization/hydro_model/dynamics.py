@@ -52,7 +52,7 @@ class SymbolicDynamics:
         Ca_t: float = 1.0,
         Ca_a: float = 0.1,
         z_surface: float = 0.0,
-        v_linear_threshold: float = 0.2,
+        v_linear_threshold: float = 0.005,
     ):
         self.robot = robot
         self.nq = robot.nq
