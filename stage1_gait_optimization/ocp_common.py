@@ -1,6 +1,44 @@
 import casadi as ca
 import mlflow
 import numpy as np
+import pinocchio as pin
+
+
+def legacy_to_tangent(
+    X_legacy: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model
+) -> np.ndarray:
+    """Convert (nq+nv, K) state with base quaternion to (2*nv, K) with a
+    3-vector base tangent ``phi`` around ``q_ref_quat`` (scalar-last)."""
+    nq, nv = model.nq, model.nv
+    n_act = nv - 6
+    q_ref_full = np.zeros(nq); q_ref_full[3:7] = q_ref_quat
+    X_tan = np.zeros((2 * nv, X_legacy.shape[1]))
+    for k in range(X_legacy.shape[1]):
+        q_k = q_ref_full.copy(); q_k[3:7] = X_legacy[3:7, k]
+        phi = pin.difference(model, q_ref_full, q_k)[3:6]
+        X_tan[0:3, k]            = X_legacy[0:3, k]
+        X_tan[3:6, k]            = phi
+        X_tan[6 : 6 + n_act, k]  = X_legacy[7:nq, k]
+        X_tan[6 + n_act :, k]    = X_legacy[nq:, k]
+    return X_tan
+
+
+def tangent_to_legacy(
+    X_tan: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model
+) -> np.ndarray:
+    """Inverse of ``legacy_to_tangent``."""
+    nq, nv = model.nq, model.nv
+    n_act = nv - 6
+    q_ref_full = np.zeros(nq); q_ref_full[3:7] = q_ref_quat
+    X_leg = np.zeros((nq + nv, X_tan.shape[1]))
+    for k in range(X_tan.shape[1]):
+        dv = np.zeros(nv); dv[3:6] = X_tan[3:6, k]
+        q_int = pin.integrate(model, q_ref_full, dv)
+        X_leg[0:3, k]   = X_tan[0:3, k]
+        X_leg[3:7, k]   = q_int[3:7]
+        X_leg[7:nq, k]  = X_tan[6 : 6 + n_act, k]
+        X_leg[nq:, k]   = X_tan[6 + n_act :, k]
+    return X_leg
 
 
 def diagnose_initial_guess(
@@ -154,10 +192,7 @@ def _log_solver_stats(stats: dict) -> None:
         mlflow.log_metrics({"convergence_obj": obj, "inf_pr": inf_pr, "inf_du": inf_du}, step=step)
 
 
-def extract_solution(sol, X, U, nq: int, N: int, T_FIXED: float) -> None:
-    X_val = sol.value(X)
-    U_val = sol.value(U)
-
+def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
     print(f"  Cycle period T       = {T_FIXED:.4f} s")
     print(f"  Forward distance     = {X_val[0, -1] - X_val[0, 0]:.4f} m")
     print(f"  Average forward vel  = {(X_val[0, -1] - X_val[0, 0]) / T_FIXED:.4f} m/s")

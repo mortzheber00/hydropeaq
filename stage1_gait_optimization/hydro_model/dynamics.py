@@ -303,6 +303,65 @@ class SymbolicDynamics:
         )
 
     # ==================================================================
+    # Tangent-space (reduced) state-space ODE
+    # ==================================================================
+
+    def build_tangent_dynamics(
+        self, q_ref_quat: np.ndarray
+    ) -> tuple[ca.Function, ca.Function]:
+        """Return ``(f_kin, f_inv_dyn)`` for the tangent state representation.
+
+        Reduced state layout (dim = 2*nv = 36 here):
+            xt[0:3]                base position (world)
+            xt[3:6]                base rotation tangent phi  (around q_ref)
+            xt[6 : 6+n_act]        joint positions
+            xt[6+n_act:]           Pinocchio velocity v (18-dim, body frame)
+
+        Small-angle approx dphi/dt ≈ ω_body.
+
+        Use in collocation with v̇_poly_j = (1/dt)·Σ_i C[i,j]·v_all[i]:
+            f_kin(x_j) · dt          == xp[:6+n_act]      (kinematic rows)
+            f_inv_dyn(x_j, v̇_poly_j) == τ_j_full           (dynamic rows)
+
+        The dynamic constraint is the inverse-dynamics equality
+        ``M(q)·a + C·v + g − τ_hydro = τ``
+        """
+        n_act = self.nv - 6
+        xt = ca.SX.sym("xt", 2 * self.nv)
+        a = ca.SX.sym("a", self.nv)
+        pos, phi, joints = xt[0:3], xt[3:6], xt[6 : 6 + n_act]
+        v = xt[6 + n_act :]
+
+        # Recover quaternion from tangent vector:
+        #   q_base = q_ref ⊗ exp_SO3(φ),  exp_SO3(φ) = [sin(‖φ‖/2)·φ/‖φ‖, cos(‖φ‖/2)]
+        # cpin.integrate implements q_ref ⊞ dv on the Lie group; setting dv[3:6]=φ
+        # selects only the rotational DOF so position and joints stay at zero.
+        q_ref_full = ca.SX.zeros(self.nq)
+        q_ref_full[3:7] = ca.SX(q_ref_quat)
+        dv = ca.SX.zeros(self.nv)
+        dv[3:6] = phi
+        q_base = cpin.integrate(self.cmodel, q_ref_full, dv)[3:7]
+        q_pin = ca.vertcat(pos, q_base, joints)
+
+        # Kinematic time derivatives of the position block:
+        #   ṗ       = R(q_base) · v_lin          (body→world rotation of linear velocity)
+        #   φ̇       ≈ ω_body = v[3:6]            (small-angle: tangent rate ≈ body angular vel.)
+        #   q̇_joints = v_joints = v[6:]           (revolute joints: trivial)
+        dp = self._dq_dt(q_pin, v)[0:3]
+        xt_kin = ca.vertcat(dp, v[3:6], v[6:])              # 6 + n_act rows
+
+        # Inverse dynamics:  τ = (M_rb + M_a)·a + C_rb·v + g − τ_buoy − τ_drag
+        tau = self.f_inverse_dynamics(q_pin, v, a)          # nv rows
+
+        f_kin = ca.Function(
+            "kin_tangent", [xt], [xt_kin], ["xt"], ["xtkin"]
+        )
+        f_inv_dyn = ca.Function(
+            "inv_dyn_tangent", [xt, a], [tau], ["xt", "a"], ["tau"]
+        )
+        return f_kin, f_inv_dyn
+
+    # ==================================================================
     # Public convenience methods
     # ==================================================================
 
