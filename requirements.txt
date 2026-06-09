@@ -8,3 +8,4 @@ tqdm
 mlflow
 trimesh
 pytransform3d
+meshcat

@@ -47,7 +47,7 @@ def diagnose_initial_guess(
     nq: int,
     N: int,
     T_FIXED: float,
-    W_TORQUE: float,
+    W_POWER: float,
     W_DIST: float,
     W_VEL_SMOOTH: float,
     W_DRIFT: float,
@@ -87,7 +87,11 @@ def diagnose_initial_guess(
         })
 
     # ── Cost-term breakdown ──────────────────────────────────────────────
-    torque_cost = float(np.sum(U_guess ** 2)) / N
+    # Per-joint mechanical power (τ_j · q̇_j); legacy state stores joint
+    # velocities at [nq+6 : nq+6+n_act]. Match U_guess width (N).
+    n_act = U_guess.shape[0]
+    joint_vels = X_guess[nq + 6 : nq + 6 + n_act, :N]
+    power_cost = float(np.sum((U_guess * joint_vels) ** 2)) / N
     forward = float(X_guess[0, -1] - X_guess[0, 0])
     dist_cost_raw = -forward / T_FIXED                       # negated: reward
     dv = X_guess[nq : nq + 6, 1:] - X_guess[nq : nq + 6, :-1]
@@ -97,7 +101,7 @@ def diagnose_initial_guess(
     drift = (drift_y + drift_z) / (N + 1)
 
     terms = [
-        ("torque",    torque_cost,    W_TORQUE),
+        ("power",     power_cost,     W_POWER),
         ("dist",      dist_cost_raw,  W_DIST),
         ("vel_smooth", vel_smooth,    W_VEL_SMOOTH),
         ("drift",     drift,          W_DRIFT),
@@ -106,20 +110,20 @@ def diagnose_initial_guess(
     for name, raw, w in terms:
         print(f"    {name:<11s}{raw:>14.4e}{w:>10.2f}{w * raw:>14.4e}")
 
-    # Flag terms whose weighted magnitude is more than 5x off from torque.
-    # Skip when W_TORQUE == 0 (feasibility stage) — reference is meaningless.
-    if W_TORQUE > 0:
+    # Flag terms whose weighted magnitude is more than 5x off from power.
+    # Skip when W_POWER == 0 (feasibility stage) — reference is meaningless.
+    if W_POWER > 0:
         ref = abs(terms[0][2] * terms[0][1]) + 1e-30
         for name, raw, w in terms[1:]:
             ratio = abs(w * raw) / ref
             if ratio > 5.0 or ratio < 0.05:
                 print(
                     f"    (warn) '{name}' weighted contribution is {ratio:.1f}x "
-                    f"torque — consider rebalancing W_{name.upper()}"
+                    f"power — consider rebalancing W_{name.upper()}"
                 )
 
     mlflow.log_metrics({
-        "guess_cost_torque":      torque_cost,
+        "guess_cost_power":       power_cost,
         "guess_cost_dist":        dist_cost_raw,
         "guess_cost_vel_smooth":  vel_smooth,
         "guess_cost_drift":       drift,

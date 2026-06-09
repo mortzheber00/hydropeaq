@@ -38,7 +38,11 @@ class SymbolicDynamics:
     rho : float
         Fluid density [kg/m^3].
     Cd_t, Cd_a : float
-        Transverse / axial drag coefficients.
+        Transverse / axial quadratic form-drag coefficients.
+    Cd_lin_t, Cd_lin_a : float, optional
+        Independent linear (skin-friction) damping coefficients — Fossen's D_S.
+        Default None falls back to Cd_t / Cd_a.  Tune together with
+        v_linear_threshold.
     Ca_t, Ca_a : float
         Transverse / axial added-mass coefficients.
     """
@@ -47,12 +51,15 @@ class SymbolicDynamics:
         self,
         robot: QuadrupedRobot,
         rho: float = RHO_WATER,
-        Cd_t: float = 1.0,
-        Cd_a: float = 0.8,
-        Ca_t: float = 1.0,
-        Ca_a: float = 0.1,
+        Cd_t: float = 0.7,
+        Cd_a: float = 0.275,
+        Cd_lin_t: float = 0.1,
+        Cd_lin_a: float = 0.5,
+        Ca_t: float = 1.3,
+        Ca_a: float = 0.3,
         z_surface: float = 0.0,
-        v_linear_threshold: float = 0.005,
+        v_linear_threshold: float = 0.7,
+        leg_thrust_scale: float = 1.0,
     ):
         self.robot = robot
         self.nq = robot.nq
@@ -66,10 +73,13 @@ class SymbolicDynamics:
         self.rho = rho
         self.Cd_t = Cd_t
         self.Cd_a = Cd_a
+        self.Cd_lin_t = Cd_lin_t
+        self.Cd_lin_a = Cd_lin_a
         self.Ca_t = Ca_t
         self.Ca_a = Ca_a
         self.z_surface = z_surface
         self.v_linear_threshold = v_linear_threshold
+        self.leg_thrust_scale = leg_thrust_scale
 
         # Symbolic state variables
         self.q = ca.SX.sym("q", self.nq)
@@ -171,14 +181,59 @@ class SymbolicDynamics:
             rho=self.rho,
             Cd_transverse=self.Cd_t,
             Cd_axial=self.Cd_a,
+            Cd_lin_transverse=self.Cd_lin_t,
+            Cd_lin_axial=self.Cd_lin_a,
             Ca_transverse=self.Ca_t,
             Ca_axial=self.Ca_a,
             z_surface=self.z_surface,
             v_linear_threshold=self.v_linear_threshold,
+            leg_thrust_scale=self.leg_thrust_scale,
         )
         self.f_tau_buoyancy = hydro.f_tau_buoyancy
         self.f_tau_drag = hydro.f_tau_drag
         self.f_M_added = hydro.f_M_added
+        self._build_added_mass_coriolis(hydro.M_added_expr)
+
+    def _build_added_mass_coriolis(self, M_A_expr: ca.SX):
+        """Build the added-mass Coriolis vector  C_A · v  symbolically.
+
+        For a configuration-dependent added-mass matrix M_A(q), the
+        Christoffel-consistent Coriolis term is (Echeandia & Wensing 2021,
+        Section 1; Fossen 2011, Ch. 6):
+
+            C_A · v  =  Ṁ_A · v  −  ½ · ∂(v^T M_A v)/∂ξ
+
+        where ξ is the tangent-space coordinate (dim nv), Ṁ_A is the time
+        derivative ∂M_A/∂q · q̇, and ∂q/∂ξ is the configuration derivative
+        matrix that maps tangent-space velocity to nq-space velocity
+        (built by _dq_dt for our floating-base + revolute layout).
+        """
+        q, v = self.q, self.v
+        nv = self.nv
+
+        # ∂q/∂ξ as the Jacobian of dq/dt w.r.t. v.  This is the matrix B(q)
+        # such that q̇ = B(q) · v.  We use it twice:
+        #   - dq = B(q) v   (for the directional derivative Ṁ_A = ∂M_A/∂q · q̇)
+        #   - B(q)^T projects nq-space gradients to tangent space.
+        dq = self._dq_dt(q, v)
+        B_q = ca.jacobian(dq, v)
+
+        # Ṁ_A · v  via directional derivative ∂M_A/∂q · q̇.
+        M_A_flat = ca.reshape(M_A_expr, -1, 1)
+        M_A_dot_flat = ca.jtimes(M_A_flat, q, dq)
+        M_A_dot = ca.reshape(M_A_dot_flat, nv, nv)
+        M_A_dot_v = M_A_dot @ v
+
+        # ½ · ∂(v^T M_A v)/∂ξ  via gradient in q-space, projected to tangent.
+        T_A = 0.5 * v.T @ M_A_expr @ v
+        grad_q_T_A = ca.gradient(T_A, q)
+        grad_xi_T_A = B_q.T @ grad_q_T_A
+
+        C_A_v = M_A_dot_v - 0.5 * grad_xi_T_A
+
+        self.f_C_A_v = ca.Function(
+            "C_A_v", [q, v], [C_A_v], ["q", "v"], ["C_A_v"]
+        )
 
     # ==================================================================
     # SE(3) configuration time derivative
@@ -240,10 +295,11 @@ class SymbolicDynamics:
     def _build_eom(self):
         """Assemble the complete EoM as CasADi Functions.
 
-        [M_rb(q) + M_A(q)] * vdot  +  C_rb(q,v) * v  +  g_rb(q)
+        [M_rb(q) + M_A(q)] * vdot  +  [C_rb(q,v) + C_A(q,v)] * v  +  g_rb(q)
             = tau  +  tau_buoyancy(q)  +  tau_drag(q, v)
 
-        The added-mass Coriolis term C_A is neglected (small for slow motion).
+        The added-mass Coriolis  C_A·v  is built in _build_added_mass_coriolis
+        via Christoffel symbols on M_A(q).
 
         State-space ODE:
           x  = [q (19); v (18)]           dim = 37
@@ -260,9 +316,11 @@ class SymbolicDynamics:
         M_A = self.f_M_added(q)
         tau_b = self.f_tau_buoyancy(q)
         tau_d = self.f_tau_drag(q, v)
+        C_A_v = self.f_C_A_v(q, v)
 
         M_total = M_rb + M_A
-        rhs = tau + tau_b + tau_d - C_rb @ v - g_rb
+        rhs = tau + tau_b + tau_d - C_rb @ v - C_A_v - g_rb
+        #rhs = tau + tau_b + tau_d - C_rb @ v - g_rb
 
         # Forward dynamics: vdot = M_total \ rhs   (nv = 18)
         a_expr = ca.solve(M_total, rhs)
@@ -275,11 +333,12 @@ class SymbolicDynamics:
             ["a"],
         )
 
-        # Inverse dynamics: tau = M_total * vdot + C*v + g - tau_hydro
+        # Inverse dynamics: tau = M_total * vdot + (C_rb + C_A)·v + g − tau_hydro
         a = self.a
         tau_id = (
             (self.f_M_rb(q) + self.f_M_added(q)) @ a
             + self.f_C_rb(q, v) @ v
+            + self.f_C_A_v(q, v)
             + self.f_g_rb(q)
             - self.f_tau_buoyancy(q)
             - self.f_tau_drag(q, v)

@@ -25,15 +25,17 @@ from ocp_common import (
 URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
 # ── OCP parameters ──────────────────────────────────────────────────────
-N = 30          # collocation intervals
+N = 32          # collocation intervals
 T_FIXED = 1.0   # fixed cycle period [s]
-D_TARGET = 0.15  # forward distance per cycle [m]
+D_TARGET = 0.1  # forward distance per cycle [m]
 TAU_MAX = 3.5   # joint torque limit [Nm]
-W_TORQUE = 1.0   # weight for sum-of-squared-torques
+F_C = 20.0      # actuator bandwidth [Hz] — first-order filter cutoff
+W_POWER = 2.0    # weight for sum-of-squared per-joint mechanical power (τ·q̇)²
 W_DIST = 0.5    # weight for forward distance reward
-W_VEL_SMOOTH = 0.01  # weight for velocity smoothing
-W_DRIFT = 1.0   # weight for drift penalty
+W_VEL_SMOOTH = 1.0  # weight for velocity smoothing
+W_DRIFT = 10.0   # weight for drift penalty
 HEADING_TOL = 0.05  # max yaw angle at endpoint (radians)
+ENFORCE_SYMMETRY = False  # LSPG: q_right(t) = q_left(t + T/2) for thigh & calf
 
 D_COLLOC = 3    # polynomial degree (Radau collocation points)
 
@@ -62,7 +64,8 @@ def build_ocp():
     mlflow.log_params({
         "N": N, "T_FIXED": T_FIXED, "TAU_MAX": TAU_MAX,
         "GAIT": GAIT, "D_TARGET": D_TARGET, "D_COLLOC": D_COLLOC,
-        "HEADING_TOL": HEADING_TOL,
+        "HEADING_TOL": HEADING_TOL, "F_C": F_C,
+        "ENFORCE_SYMMETRY": ENFORCE_SYMMETRY,
     })
 
     # ── 1. Robot & dynamics ─────────────────────────────────────────────
@@ -131,7 +134,7 @@ def build_ocp():
     # against; the cost-term breakdown is still useful for weight tuning.
     diagnose_initial_guess(
         X_guess, U_guess, nq, N, T_FIXED,
-        W_TORQUE, W_DIST, W_VEL_SMOOTH, W_DRIFT, F=None,
+        W_POWER, W_DIST, W_VEL_SMOOTH, W_DRIFT, F=None,
     )
 
     save = input("Stop optimization after initial guess? [y/N] ").strip().lower()
@@ -157,7 +160,9 @@ def build_ocp():
     U = opti.variable(n_act, N)         # controls (piecewise constant)
 
     # Cost terms
-    torque_cost = sum(ca.sumsqr(U[:, k]) for k in range(N)) / N
+    # Per-joint mechanical power: τ_j · q̇_j (element-wise). Summed-of-squares so
+    # that high power on any single joint is penalized regardless of others.
+    power_cost = sum(ca.sumsqr(U[:, k] * X[V_J, k]) for k in range(N)) / N
     dist_cost = -W_DIST * (X[0, -1] - X[0, 0]) / T_FIXED
     vel_smooth_cost = sum(ca.sumsqr(X[V_B, k + 1] - X[V_B, k]) for k in range(N)) / N
     drift_cost = sum(X[1, k]**2 + (X[2, k] - X[2, 0])**2 for k in range(N + 1)) / (N + 1)
@@ -212,6 +217,23 @@ def build_ocp():
     for k in range(N):
         opti.subject_to(opti.bounded(tau_lb, U[:, k], tau_ub))
 
+    # Torque-rate (bandwidth) constraints — paper §3.2 eq. 14-15.
+    # First-order filter: u_k ∈ [(1-α)u_{k-1} + α·u̲, (1-α)u_{k-1} + α·ū]
+    alpha = 2 * np.pi * dt_val * F_C / (2 * np.pi * dt_val * F_C + 1)
+    mlflow.log_param("bandwidth_alpha", round(alpha, 4))
+    for k in range(1, N):
+        opti.subject_to(opti.bounded(
+            (1 - alpha) * U[:, k - 1] + alpha * tau_lb,
+            U[:, k],
+            (1 - alpha) * U[:, k - 1] + alpha * tau_ub,
+        ))
+    # Wrap-around for cyclic gait: U[:,0] is constrained by U[:,N-1]
+    opti.subject_to(opti.bounded(
+        (1 - alpha) * U[:, N - 1] + alpha * tau_lb,
+        U[:, 0],
+        (1 - alpha) * U[:, N - 1] + alpha * tau_ub,
+    ))
+
     # Periodicity constraints
     x0, xN = X[:, 0], X[:, N]
     opti.subject_to(xN[Q_J] == x0[Q_J])             # joints
@@ -230,7 +252,27 @@ def build_ocp():
     # x0[5] = 0 by anchor above just bound the endpoint.
     opti.subject_to(opti.bounded(-HEADING_TOL, xN[5], HEADING_TOL))
 
-    opti.minimize(W_TORQUE * torque_cost + dist_cost + W_VEL_SMOOTH * vel_smooth_cost + W_DRIFT * drift_cost)
+    # ── Left–right symmetry (LSPG) ──────────────────────────────────────
+    # Right-leg joints at time t equal left-leg joints at t + T/2.
+    # T/2 lands on grid point k + N//2 (needs even N). Periodicity makes the
+    # reverse pairing automatic, so one direction per leg pair suffices.
+    # Side joints are pinned to 0 (sign-flip under reflection), so only the
+    # sagittal-plane thigh/calf positions are constrained — the matching joint
+    # velocities follow from the kinematic collocation constraint (q̇ = v), so
+    # constraining them too would be redundant and over-determine the NLP.
+    if ENFORCE_SYMMETRY:
+        assert N % 2 == 0, "LSPG symmetry needs even N so T/2 lands on a grid point"
+        half = N // 2
+        qj0 = 6           # first joint-position row in tangent state
+        # Leg order is [FL, FR, HL, HR]; (right_leg, left_leg) pairs:
+        sym_pairs = [(1, 0), (3, 2)]   # FR↔FL, HR↔HL
+        for k in range(N):
+            kp = (k + half) % N
+            for r_leg, l_leg in sym_pairs:
+                for off in (1, 2):     # thigh, calf
+                    opti.subject_to(X[qj0 + 3 * r_leg + off, k] == X[qj0 + 3 * l_leg + off, kp])
+
+    opti.minimize(W_POWER * power_cost + dist_cost + W_VEL_SMOOTH * vel_smooth_cost + W_DRIFT * drift_cost)
 
     # Initial guess
     for k in range(N + 1):
@@ -245,7 +287,9 @@ def build_ocp():
     # ── 5. Solve ───────────────────────────────────────────────────────
     opti.solver(
         "ipopt",
-        {"expand": False},
+        {
+            "expand": False,
+        },
         {
             "max_iter": 3000,
             "tol": 1e-4,

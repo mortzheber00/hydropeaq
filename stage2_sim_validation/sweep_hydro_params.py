@@ -2,13 +2,17 @@
 """
 Hydrodynamic parameter sweep to match SPH simulation.
 
-Builds four unit-coefficient CasADi functions once (Cd_t, Cd_a, Ca_t, Ca_a
-each set to 1 in isolation), then evaluates any parameter combination cheaply
-at rollout time by scaling and summing the pre-compiled components.
+Builds six unit-coefficient CasADi functions once (quadratic drag Cd_t/Cd_a,
+linear drag Cd_lin_t/Cd_lin_a, added mass Ca_t/Ca_a, each set to 1 in
+isolation), then evaluates any parameter combination cheaply at rollout time
+by scaling and summing the pre-compiled components.
 
-This works because drag forces are linear in Cd and added mass is linear in Ca:
-    tau_drag  = Cd_t * tau_drag_t(q,v) + Cd_a * tau_drag_a(q,v)
-    M_added   = Ca_t * M_added_t(q)   + Ca_a * M_added_a(q)
+This works because every force is linear in its coefficient. The quadratic
+and linear drag terms are independently linear (the linear-drag unit
+components keep the model default v_linear_threshold):
+    tau_drag  = Cd_t * tau_drag_t(q,v)     + Cd_a * tau_drag_a(q,v)
+              + Cd_lin_t * tau_drag_lin_t(q,v) + Cd_lin_a * tau_drag_lin_a(q,v)
+    M_added   = Ca_t * M_added_t(q)        + Ca_a * M_added_a(q)
 
 Usage:
     python3 sweep_hydro_params.py [--ocp PATH] [--bag PATH] [--start T]
@@ -42,12 +46,14 @@ from stage1_gait_optimization.hydro_model.hydrodynamics import (
 
 # ── Realistic parameter bounds [lower, upper] ─────────────────────────────────
 # Based on cylinder theory:
-#   Cd_t: cross-flow cylinder drag         0.7 – 1.5
-#   Cd_a: axial blunt-body drag            0.1 – 0.8
-#   Ca_t: transverse added mass (~1 for ∞ cylinder)  0.5 – 1.3
-#   Ca_a: axial added mass (tiny for elongated body) 0.02 – 0.30
-BOUNDS = [(0.7, 1.5), (0.1, 0.8), (0.5, 1.3), (0.02, 0.30)]
-PARAM_NAMES = ["Cd_t", "Cd_a", "Ca_t", "Ca_a"]
+#   Cd_t:     cross-flow cylinder drag         0.7 – 1.5
+#   Cd_a:     axial blunt-body drag            0.1 – 0.8
+#   Ca_t:     transverse added mass (~1 for ∞ cylinder)  0.5 – 1.3
+#   Ca_a:     axial added mass (tiny for elongated body) 0.02 – 0.30
+#   Cd_lin_t: transverse linear (skin-friction) damping  0.0 – 2.0
+#   Cd_lin_a: axial linear damping                       0.0 – 2.0
+BOUNDS = [(0.7, 1.5), (0.1, 0.8), (0.5, 1.3), (0.02, 0.30), (0.0, 2.0), (0.0, 2.0)]
+PARAM_NAMES = ["Cd_t", "Cd_a", "Ca_t", "Ca_a", "Cd_lin_t", "Cd_lin_a"]
 
 # Objective weights for (x, y, z) RMSE
 W_XYZ = np.array([1.0, 0.5, 0.5])
@@ -64,10 +70,12 @@ def build_components(robot):
         Built with all hydro coefficients = 0.
         Provides f_M_rb, f_C_rb, f_g_rb, f_tau_buoyancy.
     components : dict
-        "drag_t"  -> SymbolicHydrodynamicModel  (Cd_t=1, others=0)
-        "drag_a"  -> SymbolicHydrodynamicModel  (Cd_a=1, others=0)
-        "added_t" -> SymbolicHydrodynamicModel  (Ca_t=1, others=0)
-        "added_a" -> SymbolicHydrodynamicModel  (Ca_a=1, others=0)
+        "drag_t"     -> SymbolicHydrodynamicModel  (Cd_t=1, others=0)
+        "drag_a"     -> SymbolicHydrodynamicModel  (Cd_a=1, others=0)
+        "drag_lin_t" -> SymbolicHydrodynamicModel  (Cd_lin_t=1, others=0)
+        "drag_lin_a" -> SymbolicHydrodynamicModel  (Cd_lin_a=1, others=0)
+        "added_t"    -> SymbolicHydrodynamicModel  (Ca_t=1, others=0)
+        "added_a"    -> SymbolicHydrodynamicModel  (Ca_a=1, others=0)
     """
     print("Building base dynamics (no hydro) …")
     t0 = time.time()
@@ -75,11 +83,22 @@ def build_components(robot):
     print(f"  Done in {time.time() - t0:.1f}s\n")
 
     # FK was already set up in base_dyn; reuse cmodel/cdata/q/v for unit models.
+    # Quadratic-drag units set Cd_lin_*=0 explicitly so the linear damping is
+    # carried only by the dedicated drag_lin_* units (otherwise Cd_lin_*
+    # defaults to the quadratic Cd and would double-count).
     unit_specs = [
-        ("drag_t",  dict(Cd_transverse=1, Cd_axial=0, Ca_transverse=0, Ca_axial=0)),
-        ("drag_a",  dict(Cd_transverse=0, Cd_axial=1, Ca_transverse=0, Ca_axial=0)),
-        ("added_t", dict(Cd_transverse=0, Cd_axial=0, Ca_transverse=1, Ca_axial=0)),
-        ("added_a", dict(Cd_transverse=0, Cd_axial=0, Ca_transverse=0, Ca_axial=1)),
+        ("drag_t",     dict(Cd_transverse=1, Cd_axial=0, Cd_lin_transverse=0,
+                            Cd_lin_axial=0, Ca_transverse=0, Ca_axial=0)),
+        ("drag_a",     dict(Cd_transverse=0, Cd_axial=1, Cd_lin_transverse=0,
+                            Cd_lin_axial=0, Ca_transverse=0, Ca_axial=0)),
+        ("drag_lin_t", dict(Cd_transverse=0, Cd_axial=0, Cd_lin_transverse=1,
+                            Cd_lin_axial=0, Ca_transverse=0, Ca_axial=0)),
+        ("drag_lin_a", dict(Cd_transverse=0, Cd_axial=0, Cd_lin_transverse=0,
+                            Cd_lin_axial=1, Ca_transverse=0, Ca_axial=0)),
+        ("added_t",    dict(Cd_transverse=0, Cd_axial=0, Cd_lin_transverse=0,
+                            Cd_lin_axial=0, Ca_transverse=1, Ca_axial=0)),
+        ("added_a",    dict(Cd_transverse=0, Cd_axial=0, Cd_lin_transverse=0,
+                            Cd_lin_axial=0, Ca_transverse=0, Ca_axial=1)),
     ]
 
     components = {}
@@ -103,12 +122,14 @@ def build_components(robot):
 
 
 def make_eval_fd(base_dyn, components):
-    """Return a forward-dynamics callable parametrised by (Cd_t, Cd_a, Ca_t, Ca_a).
+    """Return a forward-dynamics callable parametrised by
+    (Cd_t, Cd_a, Ca_t, Ca_a, Cd_lin_t, Cd_lin_a).
 
     Assembles:
         M   = M_rb + Ca_t * M_added_t + Ca_a * M_added_a
         rhs = tau + tau_buoyancy
               + Cd_t * tau_drag_t + Cd_a * tau_drag_a
+              + Cd_lin_t * tau_drag_lin_t + Cd_lin_a * tau_drag_lin_a
               - C_rb @ v - g_rb
         qdd = solve(M, rhs)
     """
@@ -118,10 +139,12 @@ def make_eval_fd(base_dyn, components):
     f_tau_b = base_dyn.f_tau_buoyancy
     f_dt    = components["drag_t"].f_tau_drag
     f_da    = components["drag_a"].f_tau_drag
+    f_lt    = components["drag_lin_t"].f_tau_drag
+    f_la    = components["drag_lin_a"].f_tau_drag
     f_at    = components["added_t"].f_M_added
     f_aa    = components["added_a"].f_M_added
 
-    def eval_fd(q, v, tau, Cd_t, Cd_a, Ca_t, Ca_a):
+    def eval_fd(q, v, tau, Cd_t, Cd_a, Ca_t, Ca_a, Cd_lin_t, Cd_lin_a):
         M = (np.array(f_M_rb(q))
              + Ca_t * np.array(f_at(q))
              + Ca_a * np.array(f_aa(q)))
@@ -129,7 +152,9 @@ def make_eval_fd(base_dyn, components):
         g = np.array(f_g_rb(q)).flatten()
         tau_b = np.array(f_tau_b(q)).flatten()
         tau_d = (Cd_t * np.array(f_dt(q, v)).flatten()
-                 + Cd_a * np.array(f_da(q, v)).flatten())
+                 + Cd_a * np.array(f_da(q, v)).flatten()
+                 + Cd_lin_t * np.array(f_lt(q, v)).flatten()
+                 + Cd_lin_a * np.array(f_la(q, v)).flatten())
         rhs = tau + tau_b + tau_d - C @ v - g
         return np.linalg.solve(M, rhs)
 
@@ -156,7 +181,8 @@ def _dq_base_dt(q_base, v_base):
     return np.concatenate([dp, dquat])
 
 
-def rollout_fast(X_ocp, U, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a):
+def rollout_fast(X_ocp, U, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a,
+                 Cd_lin_t, Cd_lin_a):
     """RK4 base rollout with prescribed joints and parametric hydro.
 
     Returns xyz : (3, N+1) world-frame base position.
@@ -178,7 +204,8 @@ def rollout_fast(X_ocp, U, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a):
         def f(qb, vb):
             q_full = np.concatenate([qb, q_joints])
             v_full = np.concatenate([vb, v_joints])
-            qdd = eval_fd(q_full, v_full, tau_full, Cd_t, Cd_a, Ca_t, Ca_a)
+            qdd = eval_fd(q_full, v_full, tau_full, Cd_t, Cd_a, Ca_t, Ca_a,
+                          Cd_lin_t, Cd_lin_a)
             return _dq_base_dt(qb, vb), qdd[:nv_base]
 
         dq1, dv1 = f(q_base, v_base)
@@ -248,8 +275,9 @@ def make_objective(X_ocp, U, eval_fd, T, N, nq, xyz_ref):
     eval_count = [0]
 
     def objective(params):
-        Cd_t, Cd_a, Ca_t, Ca_a = params
-        xyz = rollout_fast(X_ocp, U, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a)
+        Cd_t, Cd_a, Ca_t, Ca_a, Cd_lin_t, Cd_lin_a = params
+        xyz = rollout_fast(X_ocp, U, eval_fd, T, N, nq,
+                           Cd_t, Cd_a, Ca_t, Ca_a, Cd_lin_t, Cd_lin_a)
         xyz -= xyz[:, [0]]
         rmse = np.sqrt(np.mean((xyz - xyz_ref_rel)**2, axis=1))  # (3,)
         loss = float(W_XYZ @ rmse)
@@ -257,7 +285,8 @@ def make_objective(X_ocp, U, eval_fd, T, N, nq, xyz_ref):
         if eval_count[0] % 10 == 0:
             print(f"  eval {eval_count[0]:4d}: "
                   f"Cd_t={Cd_t:.3f} Cd_a={Cd_a:.3f} "
-                  f"Ca_t={Ca_t:.3f} Ca_a={Ca_a:.3f}  "
+                  f"Ca_t={Ca_t:.3f} Ca_a={Ca_a:.3f} "
+                  f"Cd_lin_t={Cd_lin_t:.3f} Cd_lin_a={Cd_lin_a:.3f}  "
                   f"rmse x={rmse[0]:.4f} y={rmse[1]:.4f} z={rmse[2]:.4f}  "
                   f"loss={loss:.5f}")
         return loss
@@ -324,7 +353,8 @@ def main():
 
     else:  # grid
         n = args.grid_n
-        print(f"Grid sweep: {n}^4 = {n**4} evaluations …\n")
+        ndim = len(BOUNDS)
+        print(f"Grid sweep: {n}^{ndim} = {n**ndim} evaluations …\n")
         grids = [np.linspace(lo, hi, n) for (lo, hi) in BOUNDS]
         mesh = np.meshgrid(*grids, indexing="ij")
         shape = mesh[0].shape
@@ -333,7 +363,7 @@ def main():
         all_losses = np.array([objective(p) for p in all_params])
         losses = all_losses.reshape(shape)
         best_idx = np.unravel_index(np.argmin(losses), shape)
-        best = np.array([mesh[i][best_idx] for i in range(4)])
+        best = np.array([mesh[i][best_idx] for i in range(ndim)])
         best_loss = float(losses[best_idx])
 
 

@@ -54,8 +54,12 @@ def build_dynamics(args) -> SymbolicDynamics:
         robot,
         Cd_t=args.Cd_t,
         Cd_a=args.Cd_a,
+        Cd_lin_t=args.Cd_lin_t,
+        Cd_lin_a=args.Cd_lin_a,
         Ca_t=args.Ca_t,
         Ca_a=args.Ca_a,
+        v_linear_threshold=args.v_lin,
+        leg_thrust_scale=args.leg_thrust_scale,
     )
     print(f"  Done in {time.time() - t0:.1f}s")
     return dyn
@@ -123,13 +127,16 @@ def rk4_base_step(
 
 # ── Rollout ───────────────────────────────────────────────────────────────────
 
-def rollout(X_ocp: np.ndarray, U: np.ndarray, dyn: SymbolicDynamics, T: float, N: int):
-    """Prescribed-joint rollout.
+def rollout(
+    X_ocp: np.ndarray,
+    U: np.ndarray,
+    dyn: SymbolicDynamics,
+    T: float,
+    N: int,
+):
+    """Prescribed-joint rollout: joints follow X_ocp; only the base is integrated.
 
-    Joints follow X_ocp exactly; only the base (x,y,z + orientation +
-    base velocity) is integrated forward.
-
-    Returns X_sim : (nq+nv, N+1) — base from rollout, joints from OCP.
+    Returns X_sim : (nq+nv, N+1).
     """
     nq, nv = dyn.nq, dyn.nv
     dt = T / N
@@ -142,12 +149,11 @@ def rollout(X_ocp: np.ndarray, U: np.ndarray, dyn: SymbolicDynamics, T: float, N
     X_sim = np.zeros((nq + nv, N + 1))
     X_sim[:, 0] = X_ocp[:, 0]
 
-    q_base = X_ocp[:7, 0].copy()
-    v_base = X_ocp[nq:i_vbase_end, 0].copy()
-
-    print(f"Rolling out {N} steps (dt={dt:.4f}s, T={T:.3f}s) …")
+    print(f"Rolling out {N} steps (dt={dt:.4f}s, T={T:.3f}s, mode=prescribed-joint) …")
     t0 = time.time()
 
+    q_base = X_ocp[:7, 0].copy()
+    v_base = X_ocp[nq:i_vbase_end, 0].copy()
     for k in range(N):
         q_joints = X_ocp[7:nq, k]
         v_joints = X_ocp[i_vbase_end:, k]
@@ -157,11 +163,10 @@ def rollout(X_ocp: np.ndarray, U: np.ndarray, dyn: SymbolicDynamics, T: float, N
             q_base, v_base, q_joints, v_joints, tau_full, dyn, dt
         )
 
-        # Assemble full state: base from rollout, joints from OCP reference
-        X_sim[:7, k+1]           = q_base
-        X_sim[7:nq, k+1]         = X_ocp[7:nq, k+1]
+        X_sim[:7, k+1]             = q_base
+        X_sim[7:nq, k+1]           = X_ocp[7:nq, k+1]
         X_sim[nq:i_vbase_end, k+1] = v_base
-        X_sim[i_vbase_end:, k+1] = X_ocp[i_vbase_end:, k+1]
+        X_sim[i_vbase_end:, k+1]   = X_ocp[i_vbase_end:, k+1]
 
         if (k + 1) % 10 == 0 or k == N - 1:
             print(f"  step {k+1:3d}/{N}  x={q_base[0]:.4f}  z={q_base[2]:.4f}")
@@ -184,6 +189,15 @@ def main():
     parser.add_argument("--Cd_a", type=float, default=0.8)
     parser.add_argument("--Ca_t", type=float, default=1.0)
     parser.add_argument("--Ca_a", type=float, default=0.1)
+    parser.add_argument("--Cd_lin_t", type=float, default=None,
+                        help="Linear transverse damping coeff (Fossen D_S; default: = Cd_t)")
+    parser.add_argument("--Cd_lin_a", type=float, default=None,
+                        help="Linear axial damping coeff (Fossen D_S; default: = Cd_a)")
+    parser.add_argument("--v_lin", type=float, default=0.7,
+                        help="Linear-damping velocity scale [m/s]: speed about which "
+                             "the quadratic drag is linearized (D_S = 0.5*rho*Cd_lin*A*v_lin)")
+    parser.add_argument("--leg_thrust_scale", type=float, default=1.0,
+                        help="Scale factor on drag for non-trunk links (wake slip)")
     args = parser.parse_args()
 
     ocp_path = Path(args.ocp)
@@ -196,7 +210,10 @@ def main():
     print(f"  X: {X_ocp.shape}, U: {U.shape}, T={T:.3f}s, N={N}, nq={nq}")
 
     print("\nHydrodynamic parameters:")
-    print(f"  Cd_t={args.Cd_t}, Cd_a={args.Cd_a}, Ca_t={args.Ca_t}, Ca_a={args.Ca_a}")
+    print(f"  Cd_t={args.Cd_t}, Cd_a={args.Cd_a}, Ca_t={args.Ca_t}, Ca_a={args.Ca_a}, "
+          f"leg_thrust_scale={args.leg_thrust_scale}")
+    print(f"  Cd_lin_t={args.Cd_lin_t}, Cd_lin_a={args.Cd_lin_a}, v_lin={args.v_lin} "
+          f"(linear damping)")
 
     dyn = build_dynamics(args)
     X_sim = rollout(X_ocp, U, dyn, T, N)
