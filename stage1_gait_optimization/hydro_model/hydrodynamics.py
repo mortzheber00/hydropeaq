@@ -27,6 +27,7 @@ References
 from __future__ import annotations
 
 import casadi as ca
+import numpy as np
 import pinocchio as pin
 import pinocchio.casadi as cpin
 
@@ -71,19 +72,21 @@ class SymbolicHydrodynamicModel:
     accumulates joint-space contributions, and wraps the results as
     ``ca.Function`` objects.
 
-    **Important:** call ``cpin.forwardKinematics`` and
-    ``cpin.updateFramePlacements`` on (cmodel, cdata, q_sym) before
-    calling ``build``.
+    ``build`` runs ``cpin.forwardKinematics(q, v, a)`` and
+    ``cpin.updateFramePlacements`` itself so that frame velocities and
+    accelerations (needed for the added-mass force) are available.
 
     Parameters
     ----------
     robot : QuadrupedRobot
         Pinocchio-backed robot with cylinder-approximated links.
     cmodel : pinocchio.casadi.Model
-    cdata : pinocchio.casadi.Data (FK already computed)
+    cdata : pinocchio.casadi.Data
     q_sym : ca.SX (nq,) configuration symbol
     v_sym : ca.SX (nv,) velocity symbol
     nv : int
+    a_sym : ca.SX (nv,) acceleration symbol, optional
+        Used by ``f_tau_added``.  A fresh symbol is created if omitted.
     rho : float
         Fluid density [kg/m^3].
     Cd_transverse, Cd_axial : float
@@ -109,6 +112,7 @@ class SymbolicHydrodynamicModel:
         q_sym: ca.SX,
         v_sym: ca.SX,
         nv: int,
+        a_sym: ca.SX | None = None,
         rho: float = RHO_WATER,
         Cd_transverse: float = 0.7,
         Cd_axial: float = 0.275,
@@ -125,6 +129,7 @@ class SymbolicHydrodynamicModel:
         self.cdata = cdata
         self.q = q_sym
         self.v = v_sym
+        self.a = ca.SX.sym("a", nv) if a_sym is None else a_sym
         self.nv = nv
 
         self.rho = rho
@@ -144,7 +149,7 @@ class SymbolicHydrodynamicModel:
         self.f_tau_buoyancy: ca.Function | None = None
         self.f_tau_drag: ca.Function | None = None
         self.f_M_added: ca.Function | None = None
-        self.M_added_expr: ca.SX | None = None  # set in build(), used by SymbolicDynamics
+        self.f_tau_added: ca.Function | None = None
 
         self.build()
 
@@ -379,6 +384,73 @@ class SymbolicHydrodynamicModel:
 
         return Jv.T @ M_A_lin @ Jv + Jw.T @ M_A_rot @ Jw
 
+    def added_mass_force(
+        self,
+        cyl: CylinderPrimitive,
+        alpha: ca.SX,
+        fid: int,
+        J_local: ca.SX,
+    ) -> ca.SX:
+        """Joint-space added-mass force  τ_A = J^T (M_A·ν̇ + C_A(ν)·ν)  for one link.
+
+        Kirchhoff's equations in the link's LOCAL frame at the cylinder
+        midpoint, where the added-mass matrix is *constant* (axis_local and
+        center_local are body-fixed):
+
+            F = M_lin·v̇ + ω × (M_lin·v)
+            M = M_rot·ω̇ + ω × (M_rot·ω) + v × (M_lin·v)
+
+        with M_lin = ma_t·I + (ma_a − ma_t)·(â â^T) and
+        M_rot = I_a_perp·(I − â â^T) as in ``added_mass_matrix``.
+
+        This is the Fossen C_A(ν) formulation: it avoids differentiating the
+        joint-space M_A(q) (Christoffel symbols), which keeps the symbolic
+        graph — and especially its NLP derivatives — small.  The submersion
+        ratio alpha is treated as frozen (∂α/∂q Coriolis terms neglected);
+        exact for fully submerged links.
+
+        The acceleration part satisfies
+        τ_A(q,v,a) − τ_A(q,v,0) == (J^T α M_A J)·a, i.e. it is consistent
+        with ``added_mass_matrix``.
+        """
+        rho = self.rho
+        V = cyl.volume_displaced
+        L = cyl.length
+
+        ma_t = self.Ca_transverse * rho * V
+        ma_a = self.Ca_axial * rho * V
+        I_a_perp = (1.0 / 12.0) * self.Ca_transverse * rho * V * L ** 2
+
+        ax = cyl.axis_local / np.linalg.norm(cyl.axis_local)
+        ax = ca.SX(ax)
+        c_loc = ca.SX(cyl.center_local)
+
+        # Frame spatial velocity/acceleration in LOCAL frame, shifted to the
+        # cylinder midpoint (spatial shift law; component derivatives in the
+        # body frame equal the LOCAL spatial acceleration).
+        v_f = cpin.getFrameVelocity(
+            self.cmodel, self.cdata, fid, pin.ReferenceFrame.LOCAL
+        )
+        a_f = cpin.getFrameAcceleration(
+            self.cmodel, self.cdata, fid, pin.ReferenceFrame.LOCAL
+        )
+        omega = v_f.angular
+        domega = a_f.angular
+        v_mid = v_f.linear + ca.cross(omega, c_loc)
+        a_mid = a_f.linear + ca.cross(domega, c_loc)
+
+        # M_lin·x = ma_t·x + (ma_a − ma_t)·(â·x)·â ;  M_rot·x = I_perp·(x − (â·x)·â)
+        Mlin_v = ma_t * v_mid + (ma_a - ma_t) * ca.dot(ax, v_mid) * ax
+        Mlin_a = ma_t * a_mid + (ma_a - ma_t) * ca.dot(ax, a_mid) * ax
+        Mrot_w = I_a_perp * (omega - ca.dot(ax, omega) * ax)
+        Mrot_dw = I_a_perp * (domega - ca.dot(ax, domega) * ax)
+
+        F_A = Mlin_a + ca.cross(omega, Mlin_v)
+        M_A = Mrot_dw + ca.cross(omega, Mrot_w) + ca.cross(v_mid, Mlin_v)
+
+        Jv_mid = J_local[:3, :] - _skew(c_loc) @ J_local[3:, :]
+        return alpha * (Jv_mid.T @ F_A + J_local[3:, :].T @ M_A)
+
     # ------------------------------------------------------------------
     # Build: accumulate over all links and wrap as ca.Function
     # ------------------------------------------------------------------
@@ -390,12 +462,19 @@ class SymbolicHydrodynamicModel:
           - ``self.f_tau_buoyancy`` : (q) -> tau  [nv x 1]
           - ``self.f_tau_drag``     : (q, v) -> tau  [nv x 1]
           - ``self.f_M_added``      : (q) -> M  [nv x nv]
+          - ``self.f_tau_added``    : (q, v, a) -> tau  [nv x 1]
         """
-        q, v, nv = self.q, self.v, self.nv
+        q, v, a, nv = self.q, self.v, self.a, self.nv
+
+        # FK with velocity and acceleration so frame velocities/accelerations
+        # are available for the added-mass (Kirchhoff) force.
+        cpin.forwardKinematics(self.cmodel, self.cdata, q, v, a)
+        cpin.updateFramePlacements(self.cmodel, self.cdata)
 
         tau_buoyancy = ca.SX.zeros(nv, 1)
         tau_drag = ca.SX.zeros(nv, 1)
         M_added = ca.SX.zeros(nv, nv)
+        tau_added = ca.SX.zeros(nv, 1)
 
         for link in self.robot.links.values():
             cyl = link.cylinder
@@ -447,9 +526,12 @@ class SymbolicHydrodynamicModel:
             # Added mass (translational + rotational)
             M_added += self.added_mass_matrix(cyl, alpha, axis_sym, Jv, Jw)
 
-        # Expose the symbolic M_added expression so SymbolicDynamics can build
-        # an added-mass Coriolis term C_A·v via Christoffel symbols on M_A(q).
-        self.M_added_expr = M_added
+            # Added-mass force M_A·ν̇ + C_A(ν)·ν via per-link Kirchhoff
+            # equations (constant body-frame added mass).
+            J_local = cpin.computeFrameJacobian(
+                self.cmodel, self.cdata, q, fid, pin.ReferenceFrame.LOCAL
+            )
+            tau_added += self.added_mass_force(cyl, alpha, fid, J_local)
 
         # Wrap as CasADi Functions
         self.f_tau_buoyancy = ca.Function(
@@ -460,4 +542,7 @@ class SymbolicHydrodynamicModel:
         )
         self.f_M_added = ca.Function(
             "M_added", [q], [M_added], ["q"], ["M"]
+        )
+        self.f_tau_added = ca.Function(
+            "tau_added", [q, v, a], [tau_added], ["q", "v", "a"], ["tau"]
         )

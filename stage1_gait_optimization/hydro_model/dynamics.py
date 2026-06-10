@@ -177,6 +177,7 @@ class SymbolicDynamics:
             cdata=self.cdata,
             q_sym=self.q,
             v_sym=self.v,
+            a_sym=self.a,
             nv=self.nv,
             rho=self.rho,
             Cd_transverse=self.Cd_t,
@@ -192,47 +193,18 @@ class SymbolicDynamics:
         self.f_tau_buoyancy = hydro.f_tau_buoyancy
         self.f_tau_drag = hydro.f_tau_drag
         self.f_M_added = hydro.f_M_added
-        self._build_added_mass_coriolis(hydro.M_added_expr)
+        self.f_tau_added = hydro.f_tau_added
 
-    def _build_added_mass_coriolis(self, M_A_expr: ca.SX):
-        """Build the added-mass Coriolis vector  C_A · v  symbolically.
-
-        For a configuration-dependent added-mass matrix M_A(q), the
-        Christoffel-consistent Coriolis term is (Echeandia & Wensing 2021,
-        Section 1; Fossen 2011, Ch. 6):
-
-            C_A · v  =  Ṁ_A · v  −  ½ · ∂(v^T M_A v)/∂ξ
-
-        where ξ is the tangent-space coordinate (dim nv), Ṁ_A is the time
-        derivative ∂M_A/∂q · q̇, and ∂q/∂ξ is the configuration derivative
-        matrix that maps tangent-space velocity to nq-space velocity
-        (built by _dq_dt for our floating-base + revolute layout).
-        """
-        q, v = self.q, self.v
-        nv = self.nv
-
-        # ∂q/∂ξ as the Jacobian of dq/dt w.r.t. v.  This is the matrix B(q)
-        # such that q̇ = B(q) · v.  We use it twice:
-        #   - dq = B(q) v   (for the directional derivative Ṁ_A = ∂M_A/∂q · q̇)
-        #   - B(q)^T projects nq-space gradients to tangent space.
-        dq = self._dq_dt(q, v)
-        B_q = ca.jacobian(dq, v)
-
-        # Ṁ_A · v  via directional derivative ∂M_A/∂q · q̇.
-        M_A_flat = ca.reshape(M_A_expr, -1, 1)
-        M_A_dot_flat = ca.jtimes(M_A_flat, q, dq)
-        M_A_dot = ca.reshape(M_A_dot_flat, nv, nv)
-        M_A_dot_v = M_A_dot @ v
-
-        # ½ · ∂(v^T M_A v)/∂ξ  via gradient in q-space, projected to tangent.
-        T_A = 0.5 * v.T @ M_A_expr @ v
-        grad_q_T_A = ca.gradient(T_A, q)
-        grad_xi_T_A = B_q.T @ grad_q_T_A
-
-        C_A_v = M_A_dot_v - 0.5 * grad_xi_T_A
-
+        # Added-mass Coriolis  C_A·v  from the per-link Kirchhoff force at
+        # zero acceleration: tau_added is linear in a
+        # (tau_added = M_A(q)·a + C_A(q,v)·v), so a = 0 isolates C_A·v.
+        # Replaces the Christoffel-symbol construction on the joint-space
+        # M_A(q), whose symbolic derivatives were prohibitively large in the
+        # NLP; the only neglected physics is the ∂α/∂q (submersion-ratio)
+        # Coriolis contribution.
+        C_A_v = hydro.f_tau_added(self.q, self.v, ca.SX.zeros(self.nv))
         self.f_C_A_v = ca.Function(
-            "C_A_v", [q, v], [C_A_v], ["q", "v"], ["C_A_v"]
+            "C_A_v", [self.q, self.v], [C_A_v], ["q", "v"], ["C_A_v"]
         )
 
     # ==================================================================
@@ -298,8 +270,8 @@ class SymbolicDynamics:
         [M_rb(q) + M_A(q)] * vdot  +  [C_rb(q,v) + C_A(q,v)] * v  +  g_rb(q)
             = tau  +  tau_buoyancy(q)  +  tau_drag(q, v)
 
-        The added-mass Coriolis  C_A·v  is built in _build_added_mass_coriolis
-        via Christoffel symbols on M_A(q).
+        The added-mass terms M_A·vdot + C_A·v come from the per-link
+        Kirchhoff force tau_added(q, v, a) built in the hydro model.
 
         State-space ODE:
           x  = [q (19); v (18)]           dim = 37
@@ -334,12 +306,14 @@ class SymbolicDynamics:
         )
 
         # Inverse dynamics: tau = M_total * vdot + (C_rb + C_A)·v + g − tau_hydro
+        # Rigid-body part via RNEA — a single O(n) recursion for
+        # M_rb·a + C_rb·v + g_rb with a much smaller symbolic graph than
+        # assembling M_rb and C_rb explicitly.  Added-mass part via the
+        # per-link Kirchhoff force tau_added = M_A·a + C_A·v.
         a = self.a
         tau_id = (
-            (self.f_M_rb(q) + self.f_M_added(q)) @ a
-            + self.f_C_rb(q, v) @ v
-            + self.f_C_A_v(q, v)
-            + self.f_g_rb(q)
+            cpin.rnea(self.cmodel, self.cdata, q, v, a)
+            + self.f_tau_added(q, v, a)
             - self.f_tau_buoyancy(q)
             - self.f_tau_drag(q, v)
         )

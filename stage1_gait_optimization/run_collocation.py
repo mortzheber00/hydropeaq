@@ -4,7 +4,9 @@ Direct collocation OCP for efficient swimming gait.
 
 Uses degree-3 Radau collocation within each interval.
 Minimises squared joint torques over a periodic swim cycle.
-Period T is fixed to avoid symbolic dt ill-conditioning.
+The cycle period T is a free optimization variable; the performance
+target is an average forward speed (distance / T), not distance per
+cycle, so the optimizer can pick the most efficient stride frequency.
 """
 
 from pathlib import Path
@@ -26,13 +28,16 @@ URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
 # ── OCP parameters ──────────────────────────────────────────────────────
 N = 32          # collocation intervals
-T_FIXED = 1.0   # fixed cycle period [s]
-D_TARGET = 0.1  # forward distance per cycle [m]
+T_INIT = 1.0    # initial-guess cycle period [s] (warm start; T is now free)
+T_MIN = 1.0     # cycle-period bounds [s]
+T_MAX = 1.0
+D_TARGET = 0.1  # forward distance per nominal cycle [m]
+V_TARGET = D_TARGET / T_INIT  # required average forward speed [m/s]
 TAU_MAX = 3.5   # joint torque limit [Nm]
 F_C = 20.0      # actuator bandwidth [Hz] — first-order filter cutoff
 W_POWER = 2.0    # weight for sum-of-squared per-joint mechanical power (τ·q̇)²
 W_DIST = 0.5    # weight for forward distance reward
-W_VEL_SMOOTH = 1.0  # weight for velocity smoothing
+W_VEL_SMOOTH = 20.0  # weight for velocity smoothing
 W_DRIFT = 10.0   # weight for drift penalty
 HEADING_TOL = 0.05  # max yaw angle at endpoint (radians)
 ENFORCE_SYMMETRY = False  # LSPG: q_right(t) = q_left(t + T/2) for thigh & calf
@@ -62,9 +67,9 @@ def build_ocp():
     mlflow.set_experiment("gait_ocp")
     mlflow.start_run(tags={"initial gait": GAIT, "method": "collocation"})
     mlflow.log_params({
-        "N": N, "T_FIXED": T_FIXED, "TAU_MAX": TAU_MAX,
-        "GAIT": GAIT, "D_TARGET": D_TARGET, "D_COLLOC": D_COLLOC,
-        "HEADING_TOL": HEADING_TOL, "F_C": F_C,
+        "N": N, "T_INIT": T_INIT, "T_MIN": T_MIN, "T_MAX": T_MAX,
+        "TAU_MAX": TAU_MAX, "GAIT": GAIT, "V_TARGET": V_TARGET,
+        "D_COLLOC": D_COLLOC, "HEADING_TOL": HEADING_TOL, "F_C": F_C,
         "ENFORCE_SYMMETRY": ENFORCE_SYMMETRY,
     })
 
@@ -104,8 +109,6 @@ def build_ocp():
     v_ub = robot.model.velocityLimit[6:]
     tau_lb = -robot.model.effortLimit[6:]
     tau_ub = robot.model.effortLimit[6:]
-    
-    dt_val = T_FIXED / N
 
     # ── 2. Collocation coefficients ────────────────────────────────────
     tau_root, C, D = _collocation_coefficients(D_COLLOC)
@@ -115,25 +118,25 @@ def build_ocp():
     print(f"Building initial guess from paper trajectory ({GAIT})...")
     if GAIT in ["LSPG25", "LSPG33", "TLPG50"]:
         X_guess, U_guess = build_initial_guess(
-            dyn, GAIT, N, T_FIXED, TAU_MAX,
+            dyn, GAIT, N, T_INIT, TAU_MAX,
             hind_thigh_offset=HIND_THIGH_OFFSET,
             hind_calf_offset=HIND_CALF_OFFSET,
         )
     elif GAIT == "Prototype":
-        X_guess, U_guess = build_robot_ik_initial_guess(dyn, N, T_FIXED, TAU_MAX)
+        X_guess, U_guess = build_robot_ik_initial_guess(dyn, N, T_INIT, TAU_MAX)
     else:
         raise ValueError(f"Unknown GAIT: {GAIT}")
 
     print(f"  Torque guess RMS = {np.sqrt(np.mean(U_guess**2)):.3f} Nm")
     print(f"  Torque guess max = {np.max(np.abs(U_guess)):.3f} Nm")
-    np.savez("task3_guess.npz", T=T_FIXED, X=X_guess, U=U_guess, N=N, nq=nq)
+    np.savez("task3_guess.npz", T=T_INIT, X=X_guess, U=U_guess, N=N, nq=nq)
     mlflow.log_artifact("task3_guess.npz")
     print("  Initial guess saved to task3_guess.npz")
 
     # F=None: collocation has no single-step integrator to check defects
     # against; the cost-term breakdown is still useful for weight tuning.
     diagnose_initial_guess(
-        X_guess, U_guess, nq, N, T_FIXED,
+        X_guess, U_guess, nq, N, T_INIT,
         W_POWER, W_DIST, W_VEL_SMOOTH, W_DRIFT, F=None,
     )
 
@@ -159,11 +162,19 @@ def build_ocp():
     Xc = opti.variable(nx, N * d)       # tangent states at collocation points
     U = opti.variable(n_act, N)         # controls (piecewise constant)
 
+    # Free cycle period. dt is now symbolic (appears as a multiplier in the
+    # kinematic defects and a divisor in the dynamic defects); bound T and warm
+    # start at T_INIT to keep the NLP well-conditioned.
+    T = opti.variable()
+    dt = T / N
+    opti.subject_to(opti.bounded(T_MIN, T, T_MAX))
+    opti.set_initial(T, T_INIT)
+
     # Cost terms
     # Per-joint mechanical power: τ_j · q̇_j (element-wise). Summed-of-squares so
     # that high power on any single joint is penalized regardless of others.
     power_cost = sum(ca.sumsqr(U[:, k] * X[V_J, k]) for k in range(N)) / N
-    dist_cost = -W_DIST * (X[0, -1] - X[0, 0]) / T_FIXED
+    dist_cost = -W_DIST * (X[0, -1] - X[0, 0]) / T
     vel_smooth_cost = sum(ca.sumsqr(X[V_B, k + 1] - X[V_B, k]) for k in range(N)) / N
     drift_cost = sum(X[1, k]**2 + (X[2, k] - X[2, 0])**2 for k in range(N + 1)) / (N + 1)
 
@@ -181,11 +192,11 @@ def build_ocp():
             
             # Kinematic: dq/dt from R(q)·v_lin etc. equals polynomial deriv.
             # Multiply by dt because xp is derivative w.r.t. interval tau ∈ [0, 1]
-            opti.subject_to(dt_val * f_kin(x_all[j]) == xp[:n_kin])
-            
+            opti.subject_to(dt * f_kin(x_all[j]) == xp[:n_kin])
+
             # Dynamic: τ = M(q)·v̇ + C·v + g − τ_hydro with v̇ from polynomial.
             # Velocity rows of xp divided by dt give a
-            a_poly = xp[n_kin:] / dt_val
+            a_poly = xp[n_kin:] / dt
             # inverse dynamics must equal full control input
             opti.subject_to(f_inv_dyn(x_all[j], a_poly) == uk_full)
 
@@ -219,8 +230,7 @@ def build_ocp():
 
     # Torque-rate (bandwidth) constraints — paper §3.2 eq. 14-15.
     # First-order filter: u_k ∈ [(1-α)u_{k-1} + α·u̲, (1-α)u_{k-1} + α·ū]
-    alpha = 2 * np.pi * dt_val * F_C / (2 * np.pi * dt_val * F_C + 1)
-    mlflow.log_param("bandwidth_alpha", round(alpha, 4))
+    alpha = 2 * np.pi * dt * F_C / (2 * np.pi * dt * F_C + 1)  # symbolic in T
     for k in range(1, N):
         opti.subject_to(opti.bounded(
             (1 - alpha) * U[:, k - 1] + alpha * tau_lb,
@@ -246,7 +256,9 @@ def build_ocp():
     opti.subject_to(X[0, 0] == 0.0)
     opti.subject_to(X[1, 0] == 0.0)
     opti.subject_to(X[3:6, 0] == 0.0)               # anchor phi at q_ref
-    opti.subject_to(xN[0] - x0[0] >= D_TARGET)
+    # Average forward speed floor (distance / T >= V_TARGET), written linearly
+    # in T to stay well-scaled.
+    opti.subject_to(xN[0] - x0[0] >= V_TARGET * T)
 
     # Heading: phi[2] ≈ yaw angle for small tangent rotations.
     # x0[5] = 0 by anchor above just bound the endpoint.
@@ -279,8 +291,8 @@ def build_ocp():
         opti.set_initial(X[:, k], Xt_guess[:, k])
     for k in range(N):
         for j in range(d):
-            alpha = tau_root[j + 1]
-            x_interp = (1 - alpha) * Xt_guess[:, k] + alpha * Xt_guess[:, k + 1]
+            tau_j = tau_root[j + 1]
+            x_interp = (1 - tau_j) * Xt_guess[:, k] + tau_j * Xt_guess[:, k + 1]
             opti.set_initial(Xc[:, k * d + j], x_interp)
         opti.set_initial(U[:, k], U_guess[:, k])
 
@@ -308,10 +320,13 @@ def build_ocp():
     print("Solving OCP...")
     print("=" * 60)
     def _save(src):
+        T_val = float(src.value(T))
         Xt_val = src.value(X)
         U_val = src.value(U)
+        mlflow.log_param("T_solved", round(T_val, 4))
+        mlflow.log_param("bandwidth_alpha", round(float(src.value(alpha)), 4))
         X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model)
-        extract_solution(X_val, U_val, nq, N, T_FIXED)
+        extract_solution(X_val, U_val, nq, N, T_val)
 
     try:
         sol = opti.solve()
