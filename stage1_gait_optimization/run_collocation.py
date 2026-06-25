@@ -31,7 +31,7 @@ N = 32          # collocation intervals
 T_INIT = 1.0    # initial-guess cycle period [s] (warm start; T is now free)
 T_MIN = 1.0     # cycle-period bounds [s]
 T_MAX = 1.0
-D_TARGET = 0.1  # forward distance per nominal cycle [m]
+D_TARGET = 0.2  # forward distance per nominal cycle [m]
 V_TARGET = D_TARGET / T_INIT  # required average forward speed [m/s]
 TAU_MAX = 3.5   # joint torque limit [Nm]
 F_C = 20.0      # actuator bandwidth [Hz] — first-order filter cutoff
@@ -45,9 +45,7 @@ ENFORCE_SYMMETRY = False  # LSPG: q_right(t) = q_left(t + T/2) for thigh & calf
 D_COLLOC = 3    # polynomial degree (Radau collocation points)
 
 # ── Initial guess gait (Qu et al. 2025) ─────────────────────────────────
-GAIT = "Prototype"
-HIND_THIGH_OFFSET = 0.0  # [rad]
-HIND_CALF_OFFSET = 0.5   # [rad]
+GAIT = "LSPG33"  # "LSPG25", "LSPG33", "TLPG50", or "Prototype" (robot IK guess)
 
 
 def _collocation_coefficients(d: int):
@@ -117,11 +115,7 @@ def build_ocp():
     # ── 3. Initial guess ───────────────────────────────────────────────
     print(f"Building initial guess from paper trajectory ({GAIT})...")
     if GAIT in ["LSPG25", "LSPG33", "TLPG50"]:
-        X_guess, U_guess = build_initial_guess(
-            dyn, GAIT, N, T_INIT, TAU_MAX,
-            hind_thigh_offset=HIND_THIGH_OFFSET,
-            hind_calf_offset=HIND_CALF_OFFSET,
-        )
+        X_guess, U_guess = build_initial_guess(dyn, GAIT, N, T_INIT, TAU_MAX)
     elif GAIT == "Prototype":
         X_guess, U_guess = build_robot_ik_initial_guess(dyn, N, T_INIT, TAU_MAX)
     else:
