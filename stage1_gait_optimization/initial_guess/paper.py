@@ -65,7 +65,7 @@ def _stroke_keypoints(theta: str, phase: str, fractions: np.ndarray) -> np.ndarr
     return np.interp(fractions, [0.0, 0.5, 1.0], [init, mid, end])
 
 
-def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 2):
+def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
     """Fourier-series leg trajectory from Qu et al. 2025.
 
     One paddling cycle is divided into 12 key positions — 6 in the power phase,
@@ -110,8 +110,15 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 2):
         A[:, 2 * h - 1] = np.cos(2 * np.pi * h * t_kp)
         A[:, 2 * h] = np.sin(2 * np.pi * h * t_kp)
 
-    c1, _, _, _ = np.linalg.lstsq(A, theta1_kp, rcond=None)
-    c2, _, _, _ = np.linalg.lstsq(A, theta2_kp, rcond=None)
+    # Ridge penalty ∝ harmonic² damps the high-frequency coefficients that
+    # ring near the keyframe corners (DC term a0 left unpenalized).
+    lam = 0.6  # smoothing strength; raise for less ringing, lower to track corners
+    penalty = np.zeros(1 + 2 * n_harmonics)
+    for h in range(1, n_harmonics + 1):
+        penalty[2 * h - 1] = penalty[2 * h] = lam * h**2
+    ATA = A.T @ A + np.diag(penalty)
+    c1 = np.linalg.solve(ATA, A.T @ theta1_kp)
+    c2 = np.linalg.solve(ATA, A.T @ theta2_kp)
 
     def _eval(t, c):
         t = np.asarray(t, dtype=float)

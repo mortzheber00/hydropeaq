@@ -129,14 +129,14 @@ def build_robot_ik_initial_guess(
     ratio_strike: float = 0.1,
     ratio_power: float = 0.15,
     ratio_lift: float = 0.2,
-    stroke_len: float = 0.08,
+    stroke_len: float = 0.05,
     stand_h: float = 0.14,
-    depth_surface: float = 0.12,
-    depth_deep: float = 0.18,
-    center_x_front: float = -0.1,
+    depth_surface: float = 0.14,
+    depth_deep: float = 0.2,
+    center_x_front: float = -0.04,
     center_x_rear: float = 0.0,
     n_cycles: float = 1.0,
-    diagonal_phase_offset: float = -0.2,
+    diagonal_phase_offset: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build (X_guess, U_guess) from the robot firmware IK-based swim gait.
 
@@ -170,11 +170,11 @@ def build_robot_ik_initial_guess(
         for front / rear legs [m].
     n_cycles : float
         Number of complete gait cycles contained in T_FIXED (default 1.0).
-    diagonal_phase_offset : float
+    diagonal_phase_offset : float, optional
         Fractional cycle offset between the two diagonal pairs (FL+HR vs
-        FR+HL).  Negative ⇒ FR/HL lag FL/HR; positive ⇒ lead.  Default
-        ``-ratio_recovery / 2`` ≈ −0.2 matches the firmware's
-        ``swim_timer[FR/HL] = -t_recovery / 2``.
+        FR+HL).  Negative ⇒ FR/HL lag FL/HR; positive ⇒ lead.  Defaults to
+        ``-ratio_recovery / 2`` — exactly the firmware's
+        ``swim_timer[FR/HL] = -t_recovery / 2`` diagonal phase offset.
     """
     robot = dyn.robot
     nq, nv = robot.nq, robot.nv
@@ -187,6 +187,10 @@ def build_robot_ik_initial_guess(
     trim_feet = robot.foot_positions()  # leg_name -> (3,) world-frame position
 
     T_c = T_FIXED / n_cycles
+
+    # Firmware diagonal offset: FR/HL lag FL/HR by half a recovery phase.
+    if diagonal_phase_offset is None:
+        diagonal_phase_offset = -ratio_recovery / 2.0
 
     # FR (i=1) and HL (i=2) are offset by diagonal_phase_offset relative to FL/HR.
     phase_offsets = [0.0, diagonal_phase_offset, diagonal_phase_offset, 0.0]
