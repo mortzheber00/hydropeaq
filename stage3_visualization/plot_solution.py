@@ -7,21 +7,33 @@ Produces:
   2. Foot position trajectories (x, z vs time).
   3. Base state trajectories (position + velocity).
   4. Animated 3D skeleton of the swim cycle.
+
+Usage:
+  python plot_solution.py
+  python plot_solution.py --solution ../task3_solution.npz --save ocp.pdf
+
+``--save`` writes one vector file per static figure (``*_joint_angles`` /
+``*_base_state`` / ``*_foot_positions``, format from the extension) plus the
+animation as ``*_swim_cycle.gif``; with no ``--save`` the figures are shown.
 """
 
-import sys
+import argparse
 from pathlib import Path
+import sys
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
-from hydro_model import QuadrupedRobot
+import scienceplots  # noqa: F401  registers the 'science' matplotlib style
 
-URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
-SOL_PATH = "task3_solution.npz"
+sys.path.insert(0, str(Path(__file__).parents[1]))
+from stage1_gait_optimization.hydro_model import QuadrupedRobot
 
-if len(sys.argv) > 1:
-    SOL_PATH = sys.argv[1]
+# Professional thesis style with real LaTeX text rendering (Computer Modern).
+plt.style.use(["science"])
+plt.rcParams["text.usetex"] = True
+
+URDF_PATH = Path(__file__).parents[1] / "src" / "amph" / "urdf" / "amph.urdf"
 
 LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
 JOINT_TYPES = ["Side", "Thigh", "Calf"]
@@ -53,8 +65,6 @@ def plot_joint_angles(X, T, N, nq):
     axes[-1, 1].set_xlabel("Time [s]")
     fig.suptitle("Joint Angle Trajectories (OCP Solution)", fontsize=13)
     fig.tight_layout()
-    fig.savefig("ocp_joint_angles.png", dpi=150, bbox_inches="tight")
-    print("Saved ocp_joint_angles.png")
     return fig
 
 
@@ -78,8 +88,6 @@ def plot_base_state(X, T, N, nq):
 
     fig.suptitle("Base State Trajectories (OCP Solution)", fontsize=13)
     fig.tight_layout()
-    fig.savefig("ocp_base_state.png", dpi=150, bbox_inches="tight")
-    print("Saved ocp_base_state.png")
     return fig
 
 
@@ -101,7 +109,7 @@ def plot_foot_positions(robot, X, T, N, nq):
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
-    ylabel = ["x - base_x [m]", "y [m]", "z [m]"]
+    ylabel = [r"$x - x_{\mathrm{base}}$ [m]", "y [m]", "z [m]"]
 
     for i, leg in enumerate(LEG_NAMES):
         for ax, key, yl in zip(axes, ["x", "y", "z"], ylabel):
@@ -122,8 +130,6 @@ def plot_foot_positions(robot, X, T, N, nq):
     axes[-1].set_xlabel("Time [s]")
     fig.suptitle("Foot Positions over Swim Cycle (OCP Solution)", fontsize=13)
     fig.tight_layout()
-    fig.savefig("ocp_foot_positions.png", dpi=150, bbox_inches="tight")
-    print("Saved ocp_foot_positions.png")
     return fig
 
 
@@ -171,7 +177,7 @@ def animate_skeleton(robot, X, T, N, nq):
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.set_zlabel("Z [m]")
-        ax.set_title(f"Swim Cycle — t = {k * T / N:.3f} s  (frame {k}/{N})")
+        ax.set_title(f"Swim cycle, t = {k * T / N:.3f} s  (frame {k}/{N})")
 
         f = frames[k]
         base = f["base"]
@@ -221,8 +227,18 @@ def animate_skeleton(robot, X, T, N, nq):
 
 
 def main():
-    print(f"Loading solution from {SOL_PATH}...")
-    X, U, T, N, nq = load_solution(SOL_PATH)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--solution", type=Path,
+        default=Path(__file__).parent.parent / "task3_solution.npz",
+    )
+    parser.add_argument("--save", type=Path, default=None)
+    args = parser.parse_args()
+
+    print(f"Loading solution from {args.solution}...")
+    X, U, T, N, nq = load_solution(str(args.solution))
     print(f"  State shape:   {X.shape}  (nx={X.shape[0]}, steps={X.shape[1]})")
     print(f"  Control shape: {U.shape}")
     print(f"  T={T:.3f}s, N={N}, nq={nq}")
@@ -240,18 +256,23 @@ def main():
     robot.forward_kinematics(np.zeros(robot.nq))
     robot.build_cylinders()
 
-    plot_joint_angles(X, T, N, nq)
-    plot_base_state(X, T, N, nq)
-    plot_foot_positions(robot, X, T, N, nq)
+    figs = {
+        "joint_angles": plot_joint_angles(X, T, N, nq),
+        "base_state": plot_base_state(X, T, N, nq),
+        "foot_positions": plot_foot_positions(robot, X, T, N, nq),
+    }
     _, ani = animate_skeleton(robot, X, T, N, nq)
 
-    plt.show()
-
-    save = input("Save animation to ocp_swim_cycle.gif? [y/N] ").strip().lower()
-    if save == "y":
-        writer = animation.PillowWriter(fps=max(1, N // int(T)))
-        ani.save("ocp_swim_cycle.gif", writer=writer)
-        print("Saved ocp_swim_cycle.gif")
+    if args.save:
+        for tag, fig in figs.items():
+            path = args.save.with_name(f"{args.save.stem}_{tag}{args.save.suffix}")
+            fig.savefig(path, dpi=150, bbox_inches="tight")
+            print(f"Saved → {path}")
+        gif_path = args.save.with_name(f"{args.save.stem}_swim_cycle.gif")
+        ani.save(str(gif_path), writer=animation.PillowWriter(fps=max(1, round((N + 1) / T))))
+        print(f"Saved → {gif_path}")
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":

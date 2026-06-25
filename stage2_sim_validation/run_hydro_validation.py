@@ -7,19 +7,46 @@ This script:
   2. Builds the CasADi symbolic dynamics (including hydrodynamics).
   3. Evaluates buoyancy, drag, and added-mass at a sample configuration.
   4. Visualises the cylinder-approximated robot.
+
+Usage:
+  python run_hydro_validation.py
+  python run_hydro_validation.py --save hydro.pdf
+
+``--save`` writes the skeleton and the four geometry representations as
+``hydro_skeleton`` / ``hydro_{mesh,drag,buoyancy,overlay}`` (format from the
+extension); with no ``--save`` the figures are shown.
 """
 
+import argparse
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
-from hydro_model import QuadrupedRobot, SymbolicDynamics
-from hydro_model.visualization import visualize_robot, visualize_robot_comparison, visualize_skeleton
+import scienceplots  # noqa: F401  registers the 'science' matplotlib style
+sys.path.insert(0, str(Path(__file__).parents[1]))
+from stage1_gait_optimization.hydro_model import QuadrupedRobot, SymbolicDynamics
+from stage1_gait_optimization.hydro_model.visualization import visualize_robot_representations, visualize_skeleton
+
+# Professional thesis style with real LaTeX text rendering (Computer Modern).
+plt.style.use(["science"])
+plt.rcParams["text.usetex"] = True
 
 URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
 
 
+def _derived(base: Path, tag: str) -> str:
+    """``<stem>_<tag><suffix>`` next to ``base``, as a string for savefig."""
+    return str(base.with_name(f"{base.stem}_{tag}{base.suffix}"))
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--save", type=Path, default=None)
+    args = parser.parse_args()
+
     # ── 1. Parse URDF & build robot model ──────────────────────────────
     robot = QuadrupedRobot(URDF_PATH)
     print(robot)
@@ -81,27 +108,28 @@ def main():
     print()
 
     # ── 4. Visualise ───────────────────────────────────────────────────
+    save = args.save
     visualize_skeleton(
         robot,
         q,
-        title="AMPH — Kinematic Skeleton (Neutral Pose)",
-        save_path="robot_skeleton.png",
+        title="AMPH -- Kinematic Skeleton (Neutral Pose)",
+        save_path=_derived(save, "skeleton") if save else None,
     )
 
-    visualize_robot(
+    visualize_robot_representations(
         robot,
         q,
-        title="AMPH — Cylinder Approximation (Neutral Pose)",
-        save_path="robot_cylinder_approximation.png",
+        title="AMPH -- Geometry (Neutral Pose)",
+        save_prefix=str(save.with_suffix("")) if save else None,
+        save_suffix=save.suffix if save else ".png",
     )
 
-    visualize_robot_comparison(
-        robot,
-        q,
-        title="AMPH — Geometry Comparison (Neutral Pose)",
-        save_path="robot_geometry_comparison.png",
-    )
-    plt.show()
+    if save:
+        print(f"Saved → {_derived(save, 'skeleton')}")
+        for kind in ("mesh", "drag", "buoyancy", "overlay"):
+            print(f"Saved → {_derived(save, kind)}")
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":
