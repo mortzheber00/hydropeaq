@@ -225,3 +225,156 @@ def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
     })
     mlflow.log_artifact("task3_solution.npz")
     print("\n  Solution saved to task3_solution.npz")
+
+
+def collocation_coefficients(d: int):
+    """Lagrange basis derivative matrix C and endpoint vector D for Radau collocation.
+
+    tau_root = [0, tau_1, ..., tau_d]  (d+1 points)
+    C[i, r] = d/dtau L_i(tau_root[r+1])   (r = 0..d-1, the d Radau points)
+    D[i]    = L_i(1)
+    """
+    tau_root = np.concatenate([[0.0], np.array(ca.collocation_points(d, "radau"))])
+    C, D, _ = ca.collocation_coeff(ca.collocation_points(d, "radau"))
+    return tau_root, np.array(C), np.array(D).flatten()
+
+
+def build_collocation_nlp(
+    dyn, robot, X_guess, U_guess, n, *,
+    t_lo, t_hi, t_init, v_target, f_c, heading_tol, d_colloc=3,
+):
+    """Build the collocation transcription shared by the standalone driver
+    (``trajopt/run_collocation.py``) and the co-design evaluator
+    (``codesign/solver.py``).
+
+    Creates the ``Opti`` problem with variables (grid states ``X``, collocation
+    states ``Xc``, controls ``U``, free period ``T``), and adds every constraint
+    that is identical between the two formulations: the kinematic + inverse-
+    dynamics collocation defects, state/control bounds, the first-order
+    torque-rate (bandwidth) filter, periodicity, the phi anchor, the average-speed
+    floor (``distance >= v_target * T``), and the heading bound.  It also warm-
+    starts from the guess and returns the common cost terms.
+
+    What is *not* added here — because it genuinely differs between the two —
+    is the objective (the driver adds a forward-distance reward; the evaluator
+    does not), the optional left–right symmetry constraints, and the solver
+    configuration.  The caller assembles those from the returned handles.
+    """
+    nq, nv = robot.nq, robot.nv
+    n_act = robot.n_actuated
+    nx = 2 * nv
+    Q_J = slice(6, 6 + n_act)
+    V_B = slice(6 + n_act, 12 + n_act)
+    V_J = slice(12 + n_act, nx)
+
+    q_lb = robot.model.lowerPositionLimit[7:]
+    q_ub = robot.model.upperPositionLimit[7:]
+    v_lb = -robot.model.velocityLimit[6:]
+    v_ub = robot.model.velocityLimit[6:]
+    tau_lb = -robot.model.effortLimit[6:]
+    tau_ub = robot.model.effortLimit[6:]
+
+    tau_root, C, D = collocation_coefficients(d_colloc)
+    d = d_colloc
+
+    # Reference quaternion anchors the tangent representation at the guess's
+    # initial base orientation, so phi(t=0) = 0 by construction.
+    q_ref_quat = X_guess[3:7, 0].copy()
+    f_kin, f_inv_dyn = dyn.build_tangent_dynamics(q_ref_quat)
+    Xt_guess = legacy_to_tangent(X_guess, q_ref_quat, robot.model)
+    n_kin = 6 + n_act
+
+    opti = ca.Opti()
+    X = opti.variable(nx, n + 1)        # tangent states at grid points
+    Xc = opti.variable(nx, n * d)       # tangent states at collocation points
+    U = opti.variable(n_act, n)         # controls (piecewise constant)
+
+    # Free cycle period, bounded to a (possibly degenerate) band.
+    T = opti.variable()
+    dt = T / n
+    opti.subject_to(opti.bounded(t_lo, T, t_hi))
+    opti.set_initial(T, t_init)
+
+    # Common cost terms (the objective itself is assembled by the caller).
+    power_cost = sum(ca.sumsqr(U[:, k] * X[V_J, k]) for k in range(n)) / n
+    vel_smooth_cost = sum(ca.sumsqr(X[V_B, k + 1] - X[V_B, k]) for k in range(n)) / n
+    drift_cost = sum(X[1, k] ** 2 + (X[2, k] - X[2, 0]) ** 2 for k in range(n + 1)) / (n + 1)
+
+    # Collocation constraints (kinematic + inverse-dynamics split — no M⁻¹)
+    for k in range(n):
+        uk_full = ca.vertcat(ca.DM.zeros(6, 1), U[:, k])
+        x_all = [X[:, k]] + [Xc[:, k * d + j] for j in range(d)]
+        for j in range(1, d + 1):
+            xp = sum(C[i, j - 1] * x_all[i] for i in range(d + 1))
+            opti.subject_to(dt * f_kin(x_all[j]) == xp[:n_kin])
+            a_poly = xp[n_kin:] / dt
+            opti.subject_to(f_inv_dyn(x_all[j], a_poly) == uk_full)
+        x_end = sum(D[i] * x_all[i] for i in range(d + 1))
+        opti.subject_to(X[:, k + 1] == x_end)
+
+    # Bounds at grid points on tangent state
+    for k in range(n + 1):
+        opti.subject_to(opti.bounded(q_lb, X[Q_J, k], q_ub))
+        opti.subject_to(opti.bounded(v_lb, X[V_J, k], v_ub))
+        opti.subject_to(opti.bounded(-2.0, X[V_B, k], 2.0))
+        for side_idx in range(6, 6 + n_act, 3):
+            opti.subject_to(X[side_idx, k] == 0.0)
+
+    # Bounds at collocation points
+    for k in range(n):
+        for j in range(d):
+            xc_kj = Xc[:, k * d + j]
+            opti.subject_to(opti.bounded(q_lb, xc_kj[Q_J], q_ub))
+            opti.subject_to(opti.bounded(v_lb, xc_kj[V_J], v_ub))
+            opti.subject_to(opti.bounded(-2.0, xc_kj[V_B], 2.0))
+
+    # Bounds on controls at grid points
+    for k in range(n):
+        opti.subject_to(opti.bounded(tau_lb, U[:, k], tau_ub))
+
+    # Torque-rate (bandwidth) constraints — first-order filter, symbolic in T.
+    alpha = 2 * np.pi * dt * f_c / (2 * np.pi * dt * f_c + 1)
+    for k in range(1, n):
+        opti.subject_to(opti.bounded(
+            (1 - alpha) * U[:, k - 1] + alpha * tau_lb,
+            U[:, k],
+            (1 - alpha) * U[:, k - 1] + alpha * tau_ub,
+        ))
+    opti.subject_to(opti.bounded(
+        (1 - alpha) * U[:, n - 1] + alpha * tau_lb,
+        U[:, 0],
+        (1 - alpha) * U[:, n - 1] + alpha * tau_ub,
+    ))
+
+    # Periodicity + phi anchor + average-speed floor + heading bound.
+    x0, xN = X[:, 0], X[:, n]
+    opti.subject_to(xN[Q_J] == x0[Q_J])
+    opti.subject_to(xN[V_J] == x0[V_J])
+    opti.subject_to(xN[V_B] == x0[V_B])
+    opti.subject_to(xN[1] == x0[1])
+    opti.subject_to(xN[2] == x0[2])
+    opti.subject_to(xN[3:6] == x0[3:6])
+    opti.subject_to(X[0, 0] == 0.0)
+    opti.subject_to(X[1, 0] == 0.0)
+    opti.subject_to(X[3:6, 0] == 0.0)
+    opti.subject_to(xN[0] - x0[0] >= v_target * T)
+    opti.subject_to(opti.bounded(-heading_tol, xN[5], heading_tol))
+
+    # Warm start
+    for k in range(n + 1):
+        opti.set_initial(X[:, k], Xt_guess[:, k])
+    for k in range(n):
+        for j in range(d):
+            tau_j = tau_root[j + 1]
+            x_interp = (1 - tau_j) * Xt_guess[:, k] + tau_j * Xt_guess[:, k + 1]
+            opti.set_initial(Xc[:, k * d + j], x_interp)
+        opti.set_initial(U[:, k], U_guess[:, k])
+
+    return {
+        "opti": opti, "X": X, "Xc": Xc, "U": U, "T": T,
+        "alpha": alpha, "q_ref_quat": q_ref_quat,
+        "Q_J": Q_J, "V_B": V_B, "V_J": V_J,
+        "power_cost": power_cost,
+        "vel_smooth_cost": vel_smooth_cost,
+        "drift_cost": drift_cost,
+    }

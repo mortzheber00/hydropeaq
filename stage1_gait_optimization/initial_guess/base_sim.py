@@ -1,8 +1,7 @@
 """Base-DOF simulator for kinematic initial guesses.
 
 Forward-integrates the floating-base dynamics with prescribed joint
-kinematics, using RK4 to match the OCP integrator (see
-``run_multiple_shooting._build_rk4_integrator``).  Joint kinematics at RK4
+kinematics, using RK4 to match the OCP integrator.  Joint kinematics at RK4
 sub-stages are obtained by linear interpolation between grid-point values;
 the joint acceleration is taken as the forward-difference value on the
 interval, matching the finite-difference scheme used to build ``a_joints``.

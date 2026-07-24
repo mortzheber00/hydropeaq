@@ -6,7 +6,7 @@ Optimal control problem (OCP) for finding an efficient swimming gait for the AMP
 
 ```bash
 cd /home/ws/stage1_gait_optimization
-python run_gait_ocp.py
+python trajopt/run_collocation.py
 ```
 
 ## Experiment Tracking (MLflow)
