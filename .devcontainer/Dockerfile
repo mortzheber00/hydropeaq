@@ -34,6 +34,17 @@ RUN apt-get update && \
         ros-${ROS_DISTRO}-camera-info-manager \
     && rm -rf /var/lib/apt/lists/*
 
+# Minimal LaTeX toolchain for matplotlib usetex + SciencePlots (thesis figures).
+# --no-install-recommends keeps this to the parts needed to render plots.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        texlive-latex-base \
+        texlive-latex-recommended \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        cm-super \
+        dvipng \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install build dependencies for NRP Gazebo and SPlisHSPlasH.
 # These are compiled outside conda to avoid ABI conflicts.
 RUN apt-get update && apt-get install -y --fix-missing \
@@ -76,6 +87,12 @@ RUN apt-get update && apt-get install -y --fix-missing \
         libxinerama-dev \
         libxcursor-dev \
         libxi-dev \
+        libblas3 \
+        libblas-dev \
+        liblapack3 \
+        liblapack-dev \
+        gfortran \
+        libmetis-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CUDA toolkit for SPlisHSPlasH GPU neighborhood search (cuNSearch).

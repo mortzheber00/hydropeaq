@@ -82,7 +82,7 @@ env PATH="$SYSTEM_PATH" cmake .. \
     -DEIGEN3_VERSION_STRING=3.3.7 \
     -DCMAKE_INSTALL_PREFIX="$LOCAL_PREFIX" \
     -DUSE_OpenMP=ON \
-    -DUSE_GPU_NEIGHBORHOOD_SEARCH=ON \
+    -DUSE_GPU_NEIGHBORHOOD_SEARCH=OFF \
     -DUSE_AVX=ON \
     -DCMAKE_CUDA_COMPILER="$(find /usr/local/cuda*/bin -name nvcc 2>/dev/null | head -1)"
 
