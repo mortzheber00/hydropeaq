@@ -35,13 +35,17 @@ import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import differential_evolution
 
-URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "amph"   # registered robot name; see hydro_model/robots/
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from stage1_gait_optimization.hydro_model import QuadrupedRobot, SymbolicDynamics
+from stage1_gait_optimization.hydro_model import SymbolicDynamics, get_spec, load_robot
 from stage1_gait_optimization.hydro_model.hydrodynamics import (
     RHO_WATER,
     SymbolicHydrodynamicModel,
+)
+from stage1_gait_optimization.hydro_model.trajectory import (
+    expand_to_tree,
+    load_solution,
 )
 
 # ── Realistic parameter bounds [lower, upper] ─────────────────────────────────
@@ -223,9 +227,14 @@ def rollout_fast(X_ocp, U, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a,
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_ocp(path):
-    d = np.load(path)
-    return d["X"], d["U"], float(d["T"]), int(d["N"]), int(d["nq"])
+def load_ocp(path, robot=None):
+    """Solution arrays in *tree* coordinates (reduced files are expanded)."""
+    d = load_solution(path)
+    if robot is None:
+        robot = load_robot(d["robot"])
+    X = expand_to_tree(robot, d["X"], d["nq"])
+    nq = robot.nq if X is not d["X"] else d["nq"]
+    return X, d["U"], d["T"], d["N"], nq
 
 
 def load_sph_bag(bag_path, start_time, t_ocp):
@@ -245,9 +254,10 @@ def load_sph_bag(bag_path, start_time, t_ocp):
     with rosbag.Bag(bag_path) as bag:
         for _, msg, t in bag.read_messages(topics=["/gazebo/model_states"]):
             if model_idx is None:
-                if "amph" not in msg.name:
-                    raise ValueError(f"Model 'amph' not in bag. Available: {list(msg.name)}")
-                model_idx = list(msg.name).index("amph")
+                model = get_spec(ROBOT).ros
+                if model not in msg.name:
+                    raise ValueError(f"Model {model!r} not in bag. Available: {list(msg.name)}")
+                model_idx = list(msg.name).index(model)
             p = msg.pose[model_idx].position
             xs.append(p.x); ys.append(p.y); zs.append(p.z)
             times.append(t.to_sec())
@@ -314,7 +324,7 @@ def main():
     args = parser.parse_args()
 
     # ── Robot & component functions ────────────────────────────────────────
-    robot = QuadrupedRobot(URDF_PATH)
+    robot = load_robot(ROBOT)
     q_n = robot.neutral_config()
     robot.forward_kinematics(q_n)
     robot.build_cylinders()

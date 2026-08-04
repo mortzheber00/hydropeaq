@@ -7,7 +7,7 @@ and produces per-leg validation figures (3-panel layout per joint):
 
   Row 0: Joint angle — OCP vs Sim overlay
   Row 1: Tracking error over time  (q_ocp - q_sim)
-  Row 2: RMSE bar chart for all 12 joints  (this leg highlighted)
+  Row 2: RMSE bar chart for all actuated joints  (this leg highlighted)
 
 Usage:
     python3 validate_sim.py [--bag PATH] [--ocp PATH] [--start T] [--out DIR]
@@ -19,30 +19,39 @@ Usage:
 """
 
 import argparse
+import sys
 import tkinter as tk
-from tkinter import ttk
 from pathlib import Path
+from tkinter import ttk
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from scipy.interpolate import interp1d
 
-# ── Canonical joint ordering (matches OCP state vector X[7:19, :]) ──────────
-LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
-JOINT_TYPES = ["Side", "Thigh", "Calf"]
+sys.path.insert(0, str(Path(__file__).parents[1]))
+from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
 
-OCP_JOINT_NAMES = [
-    f"{leg}_{jtype}_joint"
-    for leg in LEG_NAMES
-    for jtype in JOINT_TYPES
-]
+ROBOT = "amph"   # registered robot name; see hydro_model/robots/
 
-# Short labels for bar chart: FL_Si, FL_Th, FL_Ca, FR_Si, …
-_LEG_SHORT = {"Front_Left": "FL", "Front_Right": "FR", "Hind_Left": "HL", "Hind_Right": "HR"}
-_JTYPE_SHORT = {"Side": "Si", "Thigh": "Th", "Calf": "Ca"}
+# ── Canonical ordering, taken from the robot's spec ─────────────────────────
+# The plots below lay one column out per actuated joint of a leg, so this
+# module works for any robot whose legs share a joint count.
+SPEC = get_spec(ROBOT)
+LEG_NAMES = list(SPEC.leg_names)
+JOINT_TYPES = list(SPEC.leg_joint_labels)
+N_PER_LEG = len(JOINT_TYPES)
+
+OCP_JOINT_NAMES = list(SPEC.actuated_joint_names)
+
+# Short labels for the bar chart, e.g. FL_Si or FL_1.1
+def _short(leg: str) -> str:
+    parts = leg.split("_")
+    return leg if len(parts) == 1 else "".join(p[0] for p in parts)
+
+
 BAR_LABELS = [
-    f"{_LEG_SHORT[leg]}_{_JTYPE_SHORT[jt]}"
+    f"{_short(leg)}_{jt[:2]}"
     for leg in LEG_NAMES
     for jt in JOINT_TYPES
 ]
@@ -73,7 +82,7 @@ def load_ocp(path: str):
 
 
 def read_bag_joint_states(bag_path: str):
-    """Read /amph/joint_states from a ROS1 .bag file.
+    """Read the robot's joint_states topic from a ROS1 .bag file.
 
     Returns:
         times     : (M,)    timestamps [s] relative to first message
@@ -86,7 +95,7 @@ def read_bag_joint_states(bag_path: str):
     ocp_indices = None  # mapping: bag column index → OCP canonical index
 
     with rosbag.Bag(bag_path) as bag:
-        for _, msg, t in bag.read_messages(topics=["/amph/joint_states"]):
+        for _, msg, t in bag.read_messages(topics=[f"/{SPEC.ros}/joint_states"]):
             if ocp_indices is None:
                 bag_names = list(msg.name)
                 ocp_indices = []
@@ -107,7 +116,10 @@ def read_bag_joint_states(bag_path: str):
     return times, positions
 
 
-def read_bag_model_states(bag_path: str, model_name: str = "amph"):
+def read_bag_model_states(bag_path: str, model_name: str = None):
+    """``model_name`` defaults to the robot's Gazebo model name."""
+    if model_name is None:
+        model_name = SPEC.ros
     """Read /gazebo/model_states from a ROS1 .bag file.
 
     Returns:
@@ -175,7 +187,7 @@ def align_base(t_ocp, xyz_sim, vx_sim, t_sim, start_time: float):
     """
     t_query = t_ocp + start_time
     xyz_aligned = np.zeros((3, len(t_ocp)))
-    for i in range(3):
+    for i in range(N_PER_LEG):
         f = interp1d(
             t_sim, xyz_sim[i, :], kind="linear",
             bounds_error=False, fill_value=(xyz_sim[i, 0], xyz_sim[i, -1]),
@@ -202,14 +214,14 @@ def plot_leg(leg_idx: int, q_ocp, q_sim, t_ocp, rmse_all, out_dir: Path):
     Layout per joint column:
       row 0 — angle overlay (OCP vs Sim)
       row 1 — tracking error (q_ocp - q_sim)
-      row 2 — RMSE bar chart for all 12 joints (this leg highlighted, full-width)
+      row 2 — RMSE bar chart for all actuated joints (this leg highlighted, full-width)
     """
     leg = LEG_NAMES[leg_idx]
-    ji = leg_idx * 3  # first joint index for this leg
+    ji = leg_idx * N_PER_LEG  # first joint index for this leg
 
     fig = plt.figure(figsize=(14, 10))
     gs = fig.add_gridspec(
-        3, 3,
+        3, N_PER_LEG,
         height_ratios=[2.2, 1.2, 1.8],
         hspace=0.50,
         wspace=0.35,
@@ -251,19 +263,19 @@ def plot_leg(leg_idx: int, q_ocp, q_sim, t_ocp, rmse_all, out_dir: Path):
             bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="0.7", lw=0.7),
         )
 
-    # ── Row 2: RMSE bar chart for all 12 joints ──────────────────────────
+    # ── Row 2: RMSE bar chart for all actuated joints ──────────────────────────
     ax2 = fig.add_subplot(gs[2, :])
 
     bar_colors = [
         LEG_COLORS[i // 3] if (i // 3) == leg_idx else "lightgrey"
-        for i in range(12)
+        for i in range(len(OCP_JOINT_NAMES))
     ]
     rmse_deg_all = np.degrees(rmse_all)
     bars = ax2.bar(
-        range(12), rmse_deg_all,
+        range(len(OCP_JOINT_NAMES)), rmse_deg_all,
         color=bar_colors, edgecolor="k", linewidth=0.5,
     )
-    ax2.set_xticks(range(12))
+    ax2.set_xticks(range(len(OCP_JOINT_NAMES)))
     ax2.set_xticklabels(BAR_LABELS, rotation=45, ha="right", fontsize=9)
     ax2.set_ylabel("RMSE [°]", fontsize=9)
     ax2.set_title(

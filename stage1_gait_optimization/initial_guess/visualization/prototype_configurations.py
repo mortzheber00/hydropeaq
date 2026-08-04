@@ -40,10 +40,11 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
-from hydro_model import QuadrupedRobot, SymbolicDynamics
+from hydro_model import SymbolicDynamics, load_robot
 from initial_guess import firmware
 
-URDF_PATH = Path(__file__).parents[3] / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "amph"   # registered robot name; see hydro_model/robots/
+
 
 # ── Gait parameters, read from the firmware builder's defaults (no drift) ────
 _D = {
@@ -168,13 +169,12 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+
     parser.add_argument("--save", type=Path, default=None)
     args = parser.parse_args()
 
     print("Loading robot and dynamics…")
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(np.zeros(robot.nq))
-    robot.build_cylinders()
+    robot = load_robot(ROBOT)
     dyn = SymbolicDynamics(robot)
     q_trim = dyn.find_trim_state()
     robot.forward_kinematics(q_trim)

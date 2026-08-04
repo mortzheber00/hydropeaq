@@ -18,21 +18,25 @@ extension); with no ``--save`` the figures are shown.
 """
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import scienceplots  # noqa: F401  registers the 'science' matplotlib style
+
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from stage1_gait_optimization.hydro_model import QuadrupedRobot, SymbolicDynamics
-from stage1_gait_optimization.hydro_model.visualization import visualize_robot_representations, visualize_skeleton
+from stage1_gait_optimization.hydro_model import SymbolicDynamics, load_robot
+from stage1_gait_optimization.hydro_model.visualization import (
+    visualize_robot_representations,
+    visualize_skeleton,
+)
 
 # Professional thesis style with real LaTeX text rendering (Computer Modern).
 plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
-URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "body2"   # registered robot name; see hydro_model/robots/
 
 
 def _derived(base: Path, tag: str) -> str:
@@ -48,14 +52,11 @@ def main():
     args = parser.parse_args()
 
     # ── 1. Parse URDF & build robot model ──────────────────────────────
-    robot = QuadrupedRobot(URDF_PATH)
+    # load_robot runs FK at the neutral pose and builds the cylinders.
+    robot = load_robot(ROBOT)
+    q = robot.neutral_config()
     print(robot)
     print()
-
-    # FK at neutral pose, then build skeleton-aligned cylinders.
-    q = robot.neutral_config()
-    robot.forward_kinematics(q)
-    robot.build_cylinders()
 
     # ── 2. Build symbolic dynamics (includes hydro) ────────────────────
     print("Building CasADi symbolic dynamics...")
@@ -112,14 +113,14 @@ def main():
     visualize_skeleton(
         robot,
         q,
-        title="AMPH -- Kinematic Skeleton (Neutral Pose)",
+        title=f"{robot.spec.name} -- Kinematic Skeleton (Neutral Pose)",
         save_path=_derived(save, "skeleton") if save else None,
     )
 
     visualize_robot_representations(
         robot,
         q,
-        title="AMPH -- Geometry (Neutral Pose)",
+        title=f"{robot.spec.name} -- Geometry (Neutral Pose)",
         save_prefix=str(save.with_suffix("")) if save else None,
         save_suffix=save.suffix if save else ".png",
     )

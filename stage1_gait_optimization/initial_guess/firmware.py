@@ -16,16 +16,42 @@ waypoints — and therefore the gait shape — are unchanged.
 Lateral ``target_y``: the C code sets ``±side_w`` explicitly; here it is
 inherited from the trim FK (URDF symmetry ⇒ trim foot y equals firmware
 ``side_w`` to within URDF tolerance).
+
+The gait itself is a foot *Cartesian* path, so it is not tied to any particular
+leg mechanism and retargets onto a closed-chain robot unchanged.  Only two
+things are: the joint solve, which goes through ``foot_ik`` for a robot with a
+coordinate map because such a robot has no tree joints to solve for; and the
+stroke dimensions, which are in metres and therefore live in ``RobotSpec``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 from hydro_model import SymbolicDynamics
+from hydro_model.coordinate_map import IdentityMap
 
-from .base_sim import simulate_base_kinematics
+from .assemble import assemble_guess
+from .foot_ik import solve_leg_theta
 
-_FW_LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
+# Stroke shape as calibrated on amph, in metres of foot travel.  A robot whose
+# legs are a different size overrides these through ``RobotSpec.firmware_gait``.
+_DEFAULT_GAIT = {
+    "ratio_recovery": 0.55,
+    "ratio_strike": 0.1,
+    "ratio_power": 0.15,
+    "ratio_lift": 0.2,
+    "stroke_len": 0.05,
+    "stand_h": 0.14,
+    "depth_surface": 0.14,
+    "depth_deep": 0.2,
+    "center_x_front": -0.04,
+    "center_x_rear": 0.0,
+}
+
+# Foot-tracking error above which the requested stroke is reported as not
+# reachable.  Well below the smallest stroke worth running (BODY2's usable box
+# is +-20 mm), so it separates "off the workspace" from IK round-off.
+_TRACK_TOL = 1e-3  # [m]
 
 
 def _smootherstep(p: float) -> float:
@@ -80,6 +106,8 @@ def _solve_leg_ik(
     leg_idx: int,
     foot_target: np.ndarray,
     q_trim: np.ndarray | None = None,
+    n_per_leg: int = 3,
+    leg_names: list[str] | None = None,
 ) -> np.ndarray:
     """Find the 3 joint angles (side, thigh, calf) that place the foot at foot_target.
 
@@ -94,13 +122,13 @@ def _solve_leg_ik(
 
     _IK_TOL = 1e-5  # acceptable foot-position error [m]
 
-    js = 7 + leg_idx * 3
-    name = _FW_LEG_NAMES[leg_idx]
-    q_prev = q_context[js : js + 3].copy()
+    js = 7 + leg_idx * n_per_leg
+    name = (leg_names or list(robot.spec.leg_names))[leg_idx]
+    q_prev = q_context[js : js + n_per_leg].copy()
 
     def residual(q_leg: np.ndarray) -> np.ndarray:
         q = q_context.copy()
-        q[js : js + 3] = q_leg
+        q[js : js + n_per_leg] = q_leg
         robot.forward_kinematics(q)
         return np.array(robot.foot_positions()[name]) - foot_target
 
@@ -110,7 +138,7 @@ def _solve_leg_ik(
 
     candidates = [_solve(q_prev)]
     if q_trim is not None:
-        candidates.append(_solve(q_trim[js : js + 3].copy()))
+        candidates.append(_solve(q_trim[js : js + n_per_leg].copy()))
 
     feasible = [(q, err) for q, err in candidates if err < _IK_TOL]
     if feasible:
@@ -125,25 +153,22 @@ def build_robot_ik_initial_guess(
     T_FIXED: float,
     TAU_MAX: float,
     *,
-    ratio_recovery: float = 0.55,
-    ratio_strike: float = 0.1,
-    ratio_power: float = 0.15,
-    ratio_lift: float = 0.2,
-    stroke_len: float = 0.05,
-    stand_h: float = 0.14,
-    depth_surface: float = 0.14,
-    depth_deep: float = 0.2,
-    center_x_front: float = -0.04,
-    center_x_rear: float = 0.0,
     n_cycles: float = 1.0,
     diagonal_phase_offset: float | None = None,
+    **gait: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build (X_guess, U_guess) from the robot firmware IK-based swim gait.
 
     Mirrors Robot_Swim_Task_IK from the embedded C firmware.  The gait is a
     4-phase state machine (recovery → strike → power → lift) timed by the
     four ratio_* parameters (which must sum to 1).  Foot Cartesian targets are
-    converted to joint angles via Pinocchio IK at each shooting node.
+    converted to actuated coordinates by IK at each shooting node.
+
+    The stroke-shape parameters below are resolved in order: an explicit
+    keyword argument, then ``RobotSpec.firmware_gait``, then the amph-calibrated
+    default.  They are absolute foot travel in metres, which is why a robot of
+    a different size must override them -- amph's 50 mm stroke and 60 mm depth
+    swing are several times BODY2's whole reachable box.
 
     Gait phasing: FL and HR start at the beginning of recovery; FR and HL
     lag by ``ratio_recovery / 2`` cycles — matching the firmware's
@@ -177,10 +202,31 @@ def build_robot_ik_initial_guess(
         ``swim_timer[FR/HL] = -t_recovery / 2`` diagonal phase offset.
     """
     robot = dyn.robot
-    nq, nv = robot.nq, robot.nv
-    nx = nq + nv
     n_act = robot.n_actuated
     dt_val = T_FIXED / N
+
+    unknown = set(gait) - set(_DEFAULT_GAIT)
+    if unknown:
+        raise TypeError(
+            f"unknown gait parameter(s) {sorted(unknown)}; "
+            f"choose from {sorted(_DEFAULT_GAIT)}"
+        )
+    p = {**_DEFAULT_GAIT, **robot.spec.firmware_gait, **gait}
+    ratio_recovery = p["ratio_recovery"]
+    ratio_strike, ratio_power = p["ratio_strike"], p["ratio_power"]
+    stroke_len, stand_h = p["stroke_len"], p["stand_h"]
+    depth_surface, depth_deep = p["depth_surface"], p["depth_deep"]
+    center_x_front, center_x_rear = p["center_x_front"], p["center_x_rear"]
+
+    leg_names = list(robot.spec.leg_names)
+    n_legs = len(leg_names)
+    if n_legs != 4:
+        raise ValueError(
+            f"the firmware gait phases two diagonal pairs, so it needs 4 legs; "
+            f"{robot.spec.name} has {n_legs}"
+        )
+    n_per_leg = n_act // n_legs
+    serial = isinstance(robot.coord_map, IdentityMap)
 
     q_trim = dyn.find_trim_state()
     robot.forward_kinematics(q_trim)
@@ -201,14 +247,21 @@ def build_robot_ik_initial_guess(
     dz_deep = -(depth_deep - stand_h)
 
     # ── Solve IK for all legs at every shooting node ─────────────────────
+    # ``act`` carries the actuated coordinates, which for a serial robot are the
+    # tree joints and for a mapped one are theta.  The base is held at trim
+    # throughout: the stroke is defined relative to the trim foot positions, and
+    # letting the base move here would make the target chase itself.
     q_joints = np.zeros((n_act, N + 1))
-    q_ctx = q_trim.copy()  # IK context — base stays at trim throughout
+    act_ctx = q_trim[7:].copy() if serial else np.zeros(n_act)
+    q_base_trim = q_trim[:7]
+    worst_err = 0.0
 
     for k in range(N + 1):
         t = k * dt_val
-        for i in range(4):
+        for i in range(n_legs):
             cx = center_x_front if i < 2 else center_x_rear
-            p_ref = trim_feet[_FW_LEG_NAMES[i]]
+            leg = leg_names[i]
+            p_ref = trim_feet[leg]
 
             t_cyc = (t + phase_offsets[i] * T_c) % T_c
             dx, dz = _firmware_foot_target(
@@ -219,11 +272,27 @@ def build_robot_ik_initial_guess(
             )
 
             target = np.array([p_ref[0] + dx, p_ref[1], p_ref[2] + dz])
-            q_sol = _solve_leg_ik(robot, q_ctx, i, target, q_trim)
+            sl = slice(i * n_per_leg, (i + 1) * n_per_leg)
 
-            js = 7 + i * 3
-            q_ctx[js : js + 3] = q_sol           # warm-start next leg / timestep
-            q_joints[i * 3 : (i + 1) * 3, k] = q_sol
+            if serial:
+                q_ctx = np.concatenate([q_base_trim, act_ctx])
+                sol = _solve_leg_ik(robot, q_ctx, i, target, q_trim,
+                                    n_per_leg=n_per_leg, leg_names=leg_names)
+            else:
+                sol, err = solve_leg_theta(
+                    robot, leg, act_ctx, sl, target[[0, 2]], q_base_trim,
+                )
+                worst_err = max(worst_err, err)
+
+            act_ctx[sl] = sol            # warm-start next leg / timestep
+            q_joints[sl, k] = sol
+
+    if worst_err > _TRACK_TOL:
+        raise ValueError(
+            f"the requested stroke leaves {robot.spec.name}'s reachable set: "
+            f"worst foot-tracking error {worst_err * 1e3:.1f} mm exceeds "
+            f"{_TRACK_TOL * 1e3:.1f} mm — reduce stroke_len or the depth swing"
+        )
 
     # ── Velocities via central differences (periodic at the seam) ────────
     # q_joints[:, 0] == q_joints[:, N] by construction (cyclic t_cyc), so
@@ -233,28 +302,15 @@ def build_robot_ik_initial_guess(
     v_joints[:, 0] = (q_joints[:, 1] - q_joints[:, -2]) / (2.0 * dt_val)
     v_joints[:, -1] = v_joints[:, 0]
 
-    a_joints = np.zeros((n_act, N))
-    a_joints[:, :-1] = (v_joints[:, 1:-1] - v_joints[:, :-2]) / dt_val
-    a_joints[:, -1] = (v_joints[:, 0] - v_joints[:, -2]) / dt_val
+    # a_joints needs N+1 columns for assemble_guess; the seam value is the
+    # periodic wrap, matching how v_joints is closed above.
+    a_joints = np.zeros((n_act, N + 1))
+    a_joints[:, :-2] = (v_joints[:, 1:-1] - v_joints[:, :-2]) / dt_val
+    a_joints[:, -2] = (v_joints[:, 0] - v_joints[:, -2]) / dt_val
+    a_joints[:, -1] = a_joints[:, 0]
 
-    # ── Simulate base DOF with prescribed joint kinematics ───────────────
-    print("  Simulating base DOF (firmware IK trajectory)...")
-    q_base_traj, v_base_traj = simulate_base_kinematics(
-        dyn, q_joints, v_joints, a_joints, q_trim, dt_val
+    # ── Base simulation, assembly and torques (shared with every builder) ─
+    return assemble_guess(
+        dyn, q_joints, v_joints, a_joints, T_FIXED, N, TAU_MAX,
+        label="firmware IK trajectory",
     )
-
-    # ── Assemble full state trajectory ───────────────────────────────────
-    X_guess = np.zeros((nx, N + 1))
-    for k in range(N + 1):
-        q_k = np.concatenate([q_base_traj[:, k], q_joints[:, k]])
-        v_k = np.concatenate([v_base_traj[:, k], v_joints[:, k]])
-        X_guess[:, k] = np.concatenate([q_k, v_k])
-
-    # ── Torque guess via inverse dynamics ────────────────────────────────
-    U_guess = np.zeros((n_act, N))
-    for k in range(N):
-        a_k = (X_guess[nq:, k + 1] - X_guess[nq:, k]) / dt_val
-        tau_id = dyn.eval_inverse_dynamics(X_guess[:nq, k], X_guess[nq:, k], a_k)
-        U_guess[:, k] = np.clip(tau_id[6:], -TAU_MAX, TAU_MAX)
-
-    return X_guess, U_guess

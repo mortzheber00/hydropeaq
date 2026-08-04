@@ -29,24 +29,29 @@ from pathlib import Path
 
 import numpy as np
 
-URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from stage1_gait_optimization.hydro_model import QuadrupedRobot, SymbolicDynamics
-
+from stage1_gait_optimization.hydro_model import SymbolicDynamics, load_robot
+from stage1_gait_optimization.hydro_model.trajectory import (
+    coords_of,
+    load_solution,
+    save_solution,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def load_ocp(path: str):
-    d = np.load(path)
-    return d["X"], d["U"], float(d["T"]), int(d["N"]), int(d["nq"])
+def load_ocp(path: str, robot=None):
+    """Solution arrays in the robot's own coordinates, plus the robot.
+
+    Deliberately *not* expanded to the tree: the rollout integrates the base
+    against the reduced dynamics, for which the stored theta is exactly right.
+    """
+    d = load_solution(path)
+    if robot is None:
+        robot = load_robot(d["robot"])
+    return d["X"], d["U"], d["T"], d["N"], d["nq"], robot
 
 
-def build_dynamics(args) -> SymbolicDynamics:
-    print("Building robot model …")
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(np.zeros(robot.nq))
-    robot.build_cylinders()
+def build_dynamics(args, robot) -> SymbolicDynamics:
 
     print("Building symbolic dynamics (CasADi compilation) …")
     t0 = time.time()
@@ -89,29 +94,30 @@ def dq_base_dt(q_base: np.ndarray, v_base: np.ndarray) -> np.ndarray:
     return np.concatenate([dp, dquat])
 
 
+
 def rk4_base_step(
     q_base: np.ndarray,
     v_base: np.ndarray,
-    q_joints: np.ndarray,
-    v_joints: np.ndarray,
-    tau_full: np.ndarray,
+    theta: np.ndarray,
+    theta_dot: np.ndarray,
+    tau_r: np.ndarray,
     dyn: SymbolicDynamics,
     dt: float,
 ):
-    """RK4 step for the base DOF only, with joints prescribed.
+    """RK4 step for the base DOF only, with the actuated joints prescribed.
 
-    Assembles the full (q, v) from the base rollout state and the prescribed
-    joint state, calls forward dynamics, and uses only the base acceleration
-    qdd[0:6] for integration.
+    Works in the robot's own coordinates: ``theta`` is the tree joint vector
+    for a serial robot and the reduced coordinate vector for a closed-chain
+    one.  ``eval_reduced_forward_dynamics`` dispatches accordingly, so a serial
+    robot follows exactly the tree path it always did.
 
     Joint torques are included because they couple into base acceleration
     through the off-diagonal blocks of the mass matrix.
     """
     def f(qb, vb):
-        q_full = np.concatenate([qb, q_joints])
-        v_full = np.concatenate([vb, v_joints])
-        qdd = dyn.eval_forward_dynamics(q_full, v_full, tau_full)
-        return dq_base_dt(qb, vb), qdd[:6]
+        v_r = np.concatenate([vb, theta_dot])
+        a_r = dyn.eval_reduced_forward_dynamics(qb, theta, v_r, tau_r)
+        return dq_base_dt(qb, vb), a_r[:6]
 
     dq1, dv1 = f(q_base, v_base)
     dq2, dv2 = f(q_base + dt/2*dq1, v_base + dt/2*dv1)
@@ -138,12 +144,14 @@ def rollout(
 
     Returns X_sim : (nq+nv, N+1).
     """
-    nq, nv = dyn.nq, dyn.nv
+    # The rollout state lives in the robot's own coordinates, which for a
+    # closed-chain robot is much smaller than the tree.
+    nq, nv = dyn.robot.nq_reduced, dyn.robot.nv_reduced
     dt = T / N
 
     # State index boundaries
-    # q:  [0:3]=pos, [3:7]=quat, [7:nq]=joints
-    # v:  [nq:nq+6]=base vel,   [nq+6:]=joint vel
+    # q:  [0:3]=pos, [3:7]=quat, [7:nq]=theta
+    # v:  [nq:nq+6]=base vel,   [nq+6:]=thetadot
     i_vbase_end = nq + 6
 
     X_sim = np.zeros((nq + nv, N + 1))
@@ -155,12 +163,12 @@ def rollout(
     q_base = X_ocp[:7, 0].copy()
     v_base = X_ocp[nq:i_vbase_end, 0].copy()
     for k in range(N):
-        q_joints = X_ocp[7:nq, k]
-        v_joints = X_ocp[i_vbase_end:, k]
-        tau_full = np.concatenate([np.zeros(6), U[:, k]])
+        theta = X_ocp[7:nq, k]
+        theta_dot = X_ocp[i_vbase_end:, k]
+        tau_r = np.concatenate([np.zeros(6), U[:, k]])
 
         q_base, v_base = rk4_base_step(
-            q_base, v_base, q_joints, v_joints, tau_full, dyn, dt
+            q_base, v_base, theta, theta_dot, tau_r, dyn, dt
         )
 
         X_sim[:7, k+1]             = q_base
@@ -206,7 +214,9 @@ def main():
     )
 
     print(f"Loading OCP: {ocp_path}")
-    X_ocp, U, T, N, nq = load_ocp(str(ocp_path))
+    # the robot is recorded in the solution file, so there is nothing to select
+    X_ocp, U, T, N, nq, robot = load_ocp(str(ocp_path))
+    print(f"  Robot: {robot.spec.name}")
     print(f"  X: {X_ocp.shape}, U: {U.shape}, T={T:.3f}s, N={N}, nq={nq}")
 
     print("\nHydrodynamic parameters:")
@@ -215,10 +225,11 @@ def main():
     print(f"  Cd_lin_t={args.Cd_lin_t}, Cd_lin_a={args.Cd_lin_a}, v_lin={args.v_lin} "
           f"(linear damping)")
 
-    dyn = build_dynamics(args)
+    dyn = build_dynamics(args, robot)
     X_sim = rollout(X_ocp, U, dyn, T, N)
 
-    np.savez(out_path, X=X_sim, U=U, T=T, N=N, nq=nq)
+    save_solution(out_path, T=T, X=X_sim, U=U, N=N, nq=nq,
+                  robot=robot.spec.name, coords=coords_of(robot))
     print(f"\nSaved: {out_path}")
 
     dx_ocp = X_ocp[0, -1] - X_ocp[0, 0]

@@ -37,8 +37,11 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+from thrust_heatmap import _link_drag_x, _require_supported
+
+from stage1_gait_optimization.hydro_model import load_robot
 from stage1_gait_optimization.hydro_model.robot import QuadrupedRobot
-from thrust_heatmap import URDF_PATH, _link_drag_x
+from stage1_gait_optimization.hydro_model.trajectory import load_solution
 
 
 def compute_traces(robot: QuadrupedRobot, leg: str, X: np.ndarray, nq: int):
@@ -169,17 +172,13 @@ def main():
     parser.add_argument("--save", type=Path, default=None)
     args = parser.parse_args()
 
-    print("Loading robot…")
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(robot.neutral_config())
-    robot.build_cylinders()
-
     print(f"Loading OCP solution from {args.solution}…")
-    d = np.load(args.solution)
-    X = d["X"]
-    nq = int(d["nq"])
-    N = int(d["N"])
-    T = float(d["T"])
+    d = load_solution(str(args.solution))
+    _require_supported(d["robot"])
+    X, nq, N, T = d["X"], d["nq"], d["N"], d["T"]
+
+    print("Loading robot…")
+    robot = load_robot(d["robot"], q=None)
     t_arr = np.linspace(0.0, T, N + 1)
 
     legs = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"] if args.leg == "all" else [args.leg]

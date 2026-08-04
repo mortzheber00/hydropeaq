@@ -1,17 +1,41 @@
+from __future__ import annotations
+
 import casadi as ca
 import mlflow
 import numpy as np
 import pinocchio as pin
+from hydro_model.trajectory import save_solution
+
+
+def _base_ref(model: pin.Model, q_ref_quat: np.ndarray) -> np.ndarray:
+    """Full-size configuration holding only the reference base orientation.
+
+    ``pin.neutral`` rather than zeros so that a tree with continuous joints
+    (whose configuration is a ``(cos, sin)`` pair) stays valid.  For a purely
+    revolute tree neutral is zeros, so this changes nothing there.  Only the
+    free-flyer block is ever read back out.
+    """
+    q = pin.neutral(model)
+    q[3:7] = q_ref_quat
+    return q
 
 
 def legacy_to_tangent(
-    X_legacy: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model
+    X_legacy: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model,
+    *, nq: int | None = None, nv: int | None = None,
 ) -> np.ndarray:
     """Convert (nq+nv, K) state with base quaternion to (2*nv, K) with a
-    3-vector base tangent ``phi`` around ``q_ref_quat`` (scalar-last)."""
-    nq, nv = model.nq, model.nv
+    3-vector base tangent ``phi`` around ``q_ref_quat`` (scalar-last).
+
+    ``nq``/``nv`` default to the model's dimensions.  Pass the robot's *reduced*
+    dimensions for a closed-chain robot, whose state is expressed in the
+    actuated coordinates rather than in the larger tree.  ``model`` is used
+    only for the base SE(3) operations, so it is always the tree model.
+    """
+    nq = model.nq if nq is None else nq
+    nv = model.nv if nv is None else nv
     n_act = nv - 6
-    q_ref_full = np.zeros(nq); q_ref_full[3:7] = q_ref_quat
+    q_ref_full = _base_ref(model, q_ref_quat)
     X_tan = np.zeros((2 * nv, X_legacy.shape[1]))
     for k in range(X_legacy.shape[1]):
         q_k = q_ref_full.copy(); q_k[3:7] = X_legacy[3:7, k]
@@ -24,15 +48,17 @@ def legacy_to_tangent(
 
 
 def tangent_to_legacy(
-    X_tan: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model
+    X_tan: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model,
+    *, nq: int | None = None, nv: int | None = None,
 ) -> np.ndarray:
     """Inverse of ``legacy_to_tangent``."""
-    nq, nv = model.nq, model.nv
+    nq = model.nq if nq is None else nq
+    nv = model.nv if nv is None else nv
     n_act = nv - 6
-    q_ref_full = np.zeros(nq); q_ref_full[3:7] = q_ref_quat
+    q_ref_full = _base_ref(model, q_ref_quat)
     X_leg = np.zeros((nq + nv, X_tan.shape[1]))
     for k in range(X_tan.shape[1]):
-        dv = np.zeros(nv); dv[3:6] = X_tan[3:6, k]
+        dv = np.zeros(model.nv); dv[3:6] = X_tan[3:6, k]
         q_int = pin.integrate(model, q_ref_full, dv)
         X_leg[0:3, k]   = X_tan[0:3, k]
         X_leg[3:7, k]   = q_int[3:7]
@@ -196,7 +222,9 @@ def _log_solver_stats(stats: dict) -> None:
         mlflow.log_metrics({"convergence_obj": obj, "inf_pr": inf_pr, "inf_du": inf_du}, step=step)
 
 
-def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
+def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float,
+                     robot: str = "amph", coords: str = "tree",
+                     out_path: str = "task3_solution.npz") -> None:
     print(f"  Cycle period T       = {T_FIXED:.4f} s")
     print(f"  Forward distance     = {X_val[0, -1] - X_val[0, 0]:.4f} m")
     print(f"  Average forward vel  = {(X_val[0, -1] - X_val[0, 0]) / T_FIXED:.4f} m/s")
@@ -213,7 +241,8 @@ def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
     print(f"    djoints= {np.linalg.norm(xN[7:nq] - x0[7:nq]):.2e}")
     print(f"    dv     = {np.linalg.norm(xN[nq:] - x0[nq:]):.2e}")
 
-    np.savez("task3_solution.npz", T=T_FIXED, X=X_val, U=U_val, N=N, nq=nq)
+    save_solution(out_path, T=T_FIXED, X=X_val, U=U_val, N=N, nq=nq,
+                  robot=robot, coords=coords)
     mlflow.log_metrics({
         "forward_dist": float(X_val[0, -1] - X_val[0, 0]),
         "forward_vel":  float((X_val[0, -1] - X_val[0, 0]) / T_FIXED),
@@ -223,8 +252,8 @@ def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
         "base_z_min":   float(X_val[2, :].min()),
         "base_z_max":   float(X_val[2, :].max()),
     })
-    mlflow.log_artifact("task3_solution.npz")
-    print("\n  Solution saved to task3_solution.npz")
+    mlflow.log_artifact(out_path)
+    print(f"\n  Solution saved to {out_path}")
 
 
 def collocation_coefficients(d: int):
@@ -260,19 +289,34 @@ def build_collocation_nlp(
     does not), the optional left–right symmetry constraints, and the solver
     configuration.  The caller assembles those from the returned handles.
     """
-    nq, nv = robot.nq, robot.nv
+    # Reduced coordinates: equal to the tree dimensions for a serial robot.
+    nq, nv = robot.nq_reduced, robot.nv_reduced
     n_act = robot.n_actuated
     nx = 2 * nv
     Q_J = slice(6, 6 + n_act)
     V_B = slice(6 + n_act, 12 + n_act)
     V_J = slice(12 + n_act, nx)
 
-    q_lb = robot.model.lowerPositionLimit[7:]
-    q_ub = robot.model.upperPositionLimit[7:]
-    v_lb = -robot.model.velocityLimit[6:]
-    v_ub = robot.model.velocityLimit[6:]
-    tau_lb = -robot.model.effortLimit[6:]
-    tau_ub = robot.model.effortLimit[6:]
+    # Limits come from the spec when it supplies them; otherwise from the URDF,
+    # which is what the pipeline always did.  A closed-chain robot must supply
+    # them: its tree limits are indexed over joints it does not control, and
+    # continuous joints carry no limits at all.
+    spec = robot.spec
+
+    def _limit(given, fallback):
+        return fallback if given is None else np.asarray(given, dtype=float)
+
+    q_lb = _limit(spec.theta_lower, robot.model.lowerPositionLimit[7:])
+    q_ub = _limit(spec.theta_upper, robot.model.upperPositionLimit[7:])
+    v_ub = _limit(spec.theta_vel_limit, robot.model.velocityLimit[6:])
+    tau_ub = _limit(spec.theta_effort_limit, robot.model.effortLimit[6:])
+    v_lb, tau_lb = -v_ub, -tau_ub
+    for label, arr in (("position", q_lb), ("velocity", v_ub), ("effort", tau_ub)):
+        if len(arr) != n_act:
+            raise ValueError(
+                f"{spec.name}: {label} limits have length {len(arr)}, expected "
+                f"{n_act} — set RobotSpec.theta_* for this robot"
+            )
 
     tau_root, C, D = collocation_coefficients(d_colloc)
     d = d_colloc
@@ -281,7 +325,7 @@ def build_collocation_nlp(
     # initial base orientation, so phi(t=0) = 0 by construction.
     q_ref_quat = X_guess[3:7, 0].copy()
     f_kin, f_inv_dyn = dyn.build_tangent_dynamics(q_ref_quat)
-    Xt_guess = legacy_to_tangent(X_guess, q_ref_quat, robot.model)
+    Xt_guess = legacy_to_tangent(X_guess, q_ref_quat, robot.model, nq=nq, nv=nv)
     n_kin = 6 + n_act
 
     opti = ca.Opti()
@@ -312,21 +356,47 @@ def build_collocation_nlp(
         x_end = sum(D[i] * x_all[i] for i in range(d + 1))
         opti.subject_to(X[:, k + 1] == x_end)
 
+    # Per-configuration constraints supplied by the robot: equalities (amph
+    # pins its side joints to zero) and inequalities (a closed-chain robot
+    # must stay assemblable).  Equalities are applied at grid points only,
+    # matching where the side-joint pinning has always lived; inequalities go
+    # everywhere, because a branch flip mid-interval would corrupt the solve.
+    def _pose(theta):
+        if spec.pose_constraints is None:
+            return [], []
+        return spec.pose_constraints(theta)
+
     # Bounds at grid points on tangent state
     for k in range(n + 1):
         opti.subject_to(opti.bounded(q_lb, X[Q_J, k], q_ub))
         opti.subject_to(opti.bounded(v_lb, X[V_J, k], v_ub))
         opti.subject_to(opti.bounded(-2.0, X[V_B, k], 2.0))
-        for side_idx in range(6, 6 + n_act, 3):
-            opti.subject_to(X[side_idx, k] == 0.0)
+        eqs, ineqs = _pose(X[Q_J, k])
+        for expr in eqs:
+            opti.subject_to(expr == 0.0)
+        for expr in ineqs:
+            opti.subject_to(expr >= 0.0)
 
-    # Bounds at collocation points
+    # Bounds at collocation points.  Radau puts its last point at tau = 1, so
+    # D = [0, ..., 0, 1] and the defect above reads X[:, k+1] == Xc[:, k*d+d-1]:
+    # the interval endpoint is held in two variables tied by an equality.
+    # Constraining both copies duplicates every row there, and once a duplicated
+    # pair goes active its two gradients differ by exactly the equality's own
+    # gradient — LICQ fails, so no KKT point exists for IPOPT to certify and it
+    # regularises indefinitely instead of converging.  The grid loop above
+    # already covers those points (the equality carries the bounds across), so
+    # stop one short.  This holds because collocation_coefficients fixes the
+    # scheme to Radau; under one whose last point is interior (Legendre, at
+    # tau = 0.887 for d = 3) that point is a state no grid node covers, and
+    # skipping it would leave it silently unbounded.
     for k in range(n):
-        for j in range(d):
+        for j in range(d - 1):
             xc_kj = Xc[:, k * d + j]
             opti.subject_to(opti.bounded(q_lb, xc_kj[Q_J], q_ub))
             opti.subject_to(opti.bounded(v_lb, xc_kj[V_J], v_ub))
             opti.subject_to(opti.bounded(-2.0, xc_kj[V_B], 2.0))
+            for expr in _pose(xc_kj[Q_J])[1]:
+                opti.subject_to(expr >= 0.0)
 
     # Bounds on controls at grid points
     for k in range(n):

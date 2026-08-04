@@ -24,8 +24,22 @@ import numpy as np
 import pinocchio as pin
 import pinocchio.casadi as cpin
 
+from .coordinate_map import IdentityMap
 from .hydrodynamics import RHO_WATER, SymbolicHydrodynamicModel
 from .robot import QuadrupedRobot
+
+
+def fn_name(*parts: str) -> str:
+    """CasADi function names allow only letters, digits and single underscores.
+
+    Link and leg names come from the URDF, where dots are legal (BODY2 has
+    ``Link_BL1.1``), so they must be sanitised before use as a name.
+    """
+    raw = "_".join(parts)
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in raw)
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_")
 
 
 class SymbolicDynamics:
@@ -88,6 +102,7 @@ class SymbolicDynamics:
         self.tau = ca.SX.sym("tau", self.nv)
 
         # Pre-compute all symbolic expressions and wrap as CasADi Functions
+        self._f_reduced_Mb = None
         self._build_rigid_body_functions()
         self._build_fk_functions()
         self._build_hydro_functions()
@@ -142,7 +157,7 @@ class SymbolicDynamics:
             R = oMf.rotation
 
             self.f_fk[name] = ca.Function(
-                f"fk_{name}", [q], [pos, R], ["q"], ["pos", "R"]
+                fn_name("fk", name), [q], [pos, R], ["q"], ["pos", "R"]
             )
 
             J_full = cpin.computeFrameJacobian(
@@ -151,18 +166,26 @@ class SymbolicDynamics:
             J_trans = J_full[:3, :]
 
             self.f_J[name] = ca.Function(
-                f"J_{name}", [q], [J_full], ["q"], ["J"]
+                fn_name("J", name), [q], [J_full], ["q"], ["J"]
             )
             self.f_Jv[name] = ca.Function(
-                f"Jv_{name}", [q], [J_trans], ["q"], ["Jv"]
+                fn_name("Jv", name), [q], [J_trans], ["q"], ["Jv"]
             )
 
         # Foot positions (convenience)
+        # Must agree with QuadrupedRobot.foot_positions(): the foot is a fixed
+        # offset in some frame's local coordinates.  Robots with a dedicated
+        # *_Foot_link use a zero offset, and the term is skipped entirely so
+        # their expression graph is unchanged.
         self.f_foot_pos: dict[str, ca.Function] = {}
         for leg, fid in self.robot.foot_frame_ids.items():
-            pos = self.cdata.oMf[fid].translation
+            oMf = self.cdata.oMf[fid]
+            pos = oMf.translation
+            offset = self.robot.foot_offsets[leg]
+            if offset.any():
+                pos = pos + oMf.rotation @ ca.DM(offset)
             self.f_foot_pos[leg] = ca.Function(
-                f"foot_{leg}", [q], [pos], ["q"], ["pos"]
+                fn_name("foot", leg), [q], [pos], ["q"], ["pos"]
             )
 
     # ==================================================================
@@ -344,11 +367,15 @@ class SymbolicDynamics:
     ) -> tuple[ca.Function, ca.Function]:
         """Return ``(f_kin, f_inv_dyn)`` for the tangent state representation.
 
-        Reduced state layout (dim = 2*nv = 36 here):
+        Reduced state layout (dim = 2*nv_reduced; 36 for amph):
             xt[0:3]                base position (world)
             xt[3:6]                base rotation tangent phi  (around q_ref)
-            xt[6 : 6+n_act]        joint positions
-            xt[6+n_act:]           Pinocchio velocity v (18-dim, body frame)
+            xt[6 : 6+n_act]        theta — the independent actuated coordinates
+            xt[6+n_act:]           reduced velocity [v_base (6); thetadot]
+
+        For a serial robot theta is the joint vector and this is the tree
+        velocity.  For a closed-chain robot the robot's ``coord_map`` expands
+        both onto the tree and projects the resulting forces back.
 
         Small-angle approx dphi/dt ≈ ω_body.
 
@@ -359,38 +386,53 @@ class SymbolicDynamics:
         The dynamic constraint is the inverse-dynamics equality
         ``M(q)·a + C·v + g − τ_hydro = τ``
         """
-        n_act = self.nv - 6
-        xt = ca.SX.sym("xt", 2 * self.nv)
-        a = ca.SX.sym("a", self.nv)
-        pos, phi, joints = xt[0:3], xt[3:6], xt[6 : 6 + n_act]
-        v = xt[6 + n_act :]
+        cmap = self.robot.coord_map
+        n_act = cmap.n_theta
+        nv_r = 6 + n_act
+
+        xt = ca.SX.sym("xt", 2 * nv_r)
+        a_r = ca.SX.sym("a", nv_r)
+        pos, phi, theta = xt[0:3], xt[3:6], xt[6 : 6 + n_act]
+        v_r = xt[6 + n_act :]
+        vb, thd = v_r[0:6], v_r[6:]
+        ab, thdd = a_r[0:6], a_r[6:]
 
         # Recover quaternion from tangent vector:
         #   q_base = q_ref ⊗ exp_SO3(φ),  exp_SO3(φ) = [sin(‖φ‖/2)·φ/‖φ‖, cos(‖φ‖/2)]
         # cpin.integrate implements q_ref ⊞ dv on the Lie group; setting dv[3:6]=φ
         # selects only the rotational DOF so position and joints stay at zero.
-        q_ref_full = ca.SX.zeros(self.nq)
+        # pin.neutral rather than zeros: a tree with continuous joints stores
+        # (cos, sin) pairs, whose neutral element is (1, 0), not (0, 0).  For a
+        # purely revolute tree neutral *is* zeros, so this is a no-op there.
+        q_ref_full = ca.SX(pin.neutral(self.robot.model))
         q_ref_full[3:7] = ca.SX(q_ref_quat)
         dv = ca.SX.zeros(self.nv)
         dv[3:6] = phi
         q_base = cpin.integrate(self.cmodel, q_ref_full, dv)[3:7]
-        q_pin = ca.vertcat(pos, q_base, joints)
+        q_pin = ca.vertcat(pos, q_base, cmap.q_joints(theta))
 
         # Kinematic time derivatives of the position block:
         #   ṗ       = R(q_base) · v_lin          (body→world rotation of linear velocity)
         #   φ̇       ≈ ω_body = v[3:6]            (small-angle: tangent rate ≈ body angular vel.)
         #   q̇_joints = v_joints = v[6:]           (revolute joints: trivial)
-        dp = self._dq_dt(q_pin, v)[0:3]
-        xt_kin = ca.vertcat(dp, v[3:6], v[6:])              # 6 + n_act rows
+        v_tree = ca.vertcat(vb, cmap.v_joints(theta, thd))       # nv rows
+        a_tree = ca.vertcat(ab, cmap.a_joints(theta, thd, thdd))  # nv rows
+
+        dp = self._dq_dt(q_pin, v_tree)[0:3]
+        xt_kin = ca.vertcat(dp, vb[3:6], thd)               # 6 + n_act rows
 
         # Inverse dynamics:  τ = (M_rb + M_a)·a + C_rb·v + g − τ_buoy − τ_drag
-        tau = self.f_inverse_dynamics(q_pin, v, a)          # nv rows
+        tau_tree = self.f_inverse_dynamics(q_pin, v_tree, a_tree)   # nv rows
+        # Project onto the reduced coordinates (virtual work: tau_r = S^T tau).
+        # With n_theta actuators this keeps the reduced system fully actuated,
+        # which is what lets the collocation transcription stay unchanged.
+        tau_r = ca.vertcat(tau_tree[0:6], cmap.tau_joints(theta, tau_tree[6:]))
 
         f_kin = ca.Function(
             "kin_tangent", [xt], [xt_kin], ["xt"], ["xtkin"]
         )
         f_inv_dyn = ca.Function(
-            "inv_dyn_tangent", [xt, a], [tau], ["xt", "a"], ["tau"]
+            "inv_dyn_tangent", [xt, a_r], [tau_r], ["xt", "a"], ["tau"]
         )
         return f_kin, f_inv_dyn
 
@@ -416,6 +458,75 @@ class SymbolicDynamics:
         """Evaluate inverse dynamics numerically."""
         return np.array(self.f_inverse_dynamics(q, v, a)).flatten()
 
+    # ==================================================================
+    # Constrained (reduced-coordinate) dynamics
+    # ==================================================================
+
+    def build_reduced_dynamics(self) -> ca.Function:
+        """``(q_base, theta, v_r) -> (M_r, b_r)`` with ``M_r a_r + b_r = tau_r``.
+
+        A closed-chain robot cannot be simulated in tree coordinates: the URDF
+        is a spanning tree with the loop-closure pins missing, so integrating it
+        lets the linkage come apart.  Its OCP controls are no help either --
+        ``tau_r = S^T tau_tree`` with ``S`` of shape (n_tree, n_theta), and the
+        16-dimensional null space of ``S^T`` is exactly the space of pin
+        reaction forces, which the reduced formulation eliminates by design.
+
+        The fix is to project the equations of motion onto the constraint
+        manifold, which ``CoordinateMap`` already spans.  Since inverse dynamics
+        is *affine* in acceleration, both blocks come straight out of it:
+
+            resid(a_r) = M_r a_r + b_r      (verified to ~1e-16)
+            M_r = d resid / d a_r           b_r = resid at a_r = 0
+
+        Built lazily and cached; the Jacobian makes it a few times more
+        expensive to construct than the tree functions.
+        """
+        if getattr(self, "_f_reduced_Mb", None) is not None:
+            return self._f_reduced_Mb
+
+        cmap = self.robot.coord_map
+        n_theta = cmap.n_theta
+        nv_r = 6 + n_theta
+
+        q_base = ca.SX.sym("q_base", 7)
+        theta = ca.SX.sym("theta", n_theta)
+        v_r = ca.SX.sym("v_r", nv_r)
+        a_r = ca.SX.sym("a_r", nv_r)
+
+        q = ca.vertcat(q_base, cmap.q_joints(theta))
+        v = ca.vertcat(v_r[:6], cmap.v_joints(theta, v_r[6:]))
+        a = ca.vertcat(a_r[:6], cmap.a_joints(theta, v_r[6:], a_r[6:]))
+
+        tau_tree = self.f_inverse_dynamics(q, v, a)
+        resid = ca.vertcat(tau_tree[:6], cmap.tau_joints(theta, tau_tree[6:]))
+
+        self._f_reduced_Mb = ca.Function(
+            "reduced_Mb", [q_base, theta, v_r],
+            [ca.jacobian(resid, a_r), ca.substitute(resid, a_r, ca.SX.zeros(nv_r))],
+            ["q_base", "theta", "v_r"], ["M_r", "b_r"],
+        )
+        return self._f_reduced_Mb
+
+    def eval_reduced_forward_dynamics(
+        self,
+        q_base: np.ndarray,
+        theta: np.ndarray,
+        v_r: np.ndarray,
+        tau_r: np.ndarray,
+    ) -> np.ndarray:
+        """Reduced acceleration ``a_r`` given the reduced generalised force.
+
+        A robot whose actuated coordinates *are* its tree joints is dispatched
+        to the ordinary tree forward dynamics, so its results are unchanged.
+        """
+        if isinstance(self.robot.coord_map, IdentityMap):
+            q = np.concatenate([np.asarray(q_base), np.asarray(theta)])
+            return self.eval_forward_dynamics(q, v_r, tau_r)
+
+        M_r, b_r = self.build_reduced_dynamics()(q_base, theta, v_r)
+        return np.linalg.solve(np.asarray(M_r), np.asarray(tau_r) - np.asarray(b_r).ravel())
+
     def find_trim_state(
         self,
         q_joints: np.ndarray | None = None,
@@ -429,25 +540,29 @@ class SymbolicDynamics:
         Parameters
         ----------
         q_joints : (n_actuated,) array, optional
-            Joint angles held fixed during the solve.  Defaults to
-            neutral (all zeros).
+            Reduced actuated coordinates theta, held fixed during the solve.
+            Defaults to the robot's home pose (zeros unless the spec says
+            otherwise — a closed-chain robot may not be assemblable at zero).
         z_guess : float
             Initial guess for base height [m].
 
         Returns
         -------
-        q_trim : (nq=19,) ndarray
-            Full trim configuration.
+        q_trim : (model.nq,) ndarray
+            Full trim configuration in *tree* coordinates.
         """
         from scipy.optimize import minimize
 
         if q_joints is None:
-            q_joints = np.zeros(self.robot.n_actuated)
+            home = self.robot.spec.theta_home
+            q_joints = (np.zeros(self.robot.n_actuated) if home is None
+                        else np.asarray(home, dtype=float))
+        q_joints = self.robot.coord_map.expand_numeric(q_joints)
 
         n_base = self.robot.n_base_q
 
         def make_q(z: float, roll: float, pitch: float) -> np.ndarray:
-            q = np.zeros(self.nq)
+            q = pin.neutral(self.robot.model)
             q[2] = z
             cr, sr = np.cos(roll / 2), np.sin(roll / 2)
             cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)

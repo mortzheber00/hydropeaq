@@ -36,7 +36,7 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))  # stage1_gait_optimization/
-from hydro_model import QuadrupedRobot
+from hydro_model import load_robot
 from initial_guess.paper import (
     GAITS,
     _CALF_OFFSET_DEG,
@@ -50,7 +50,8 @@ from initial_guess.paper import (
     paper_fourier_trajectory,
 )
 
-URDF_PATH = Path(__file__).parents[3] / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "amph"   # registered robot name; see hydro_model/robots/
+
 
 N_PER_PHASE = 6  # stick figures drawn per stroke (display density only)
 
@@ -157,12 +158,13 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+
     parser.add_argument("--gait", default="LSPG33", choices=list(GAITS))
     parser.add_argument("--save", type=Path, default=None)
     args = parser.parse_args()
 
     print("Loading robot…")
-    robot = QuadrupedRobot(URDF_PATH)
+    robot = load_robot(ROBOT)
 
     pp = GAITS[args.gait]
     theta1_fn, theta2_fn = paper_fourier_trajectory(pp)

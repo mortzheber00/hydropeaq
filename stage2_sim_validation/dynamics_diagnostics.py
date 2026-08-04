@@ -21,10 +21,15 @@ import pinocchio as pin
 import pinocchio.casadi as cpin
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from stage1_gait_optimization.hydro_model import QuadrupedRobot, SymbolicDynamics
-from stage1_gait_optimization.hydro_model.hydrodynamics import SymbolicHydrodynamicModel, _skew
-
-URDF_PATH = Path(__file__).parents[1] / "src" / "amph" / "urdf" / "amph.urdf"
+from stage1_gait_optimization.hydro_model import SymbolicDynamics, fn_name, load_robot
+from stage1_gait_optimization.hydro_model.hydrodynamics import (
+    SymbolicHydrodynamicModel,
+    _skew,
+)
+from stage1_gait_optimization.hydro_model.trajectory import (
+    expand_to_tree,
+    load_solution,
+)
 
 
 def build_per_link_diagnostics(robot, dyn):
@@ -64,7 +69,7 @@ def build_per_link_diagnostics(robot, dyn):
         F_drag = scale * F_drag
 
         per_link[link.name] = ca.Function(
-            f"diag_{link.name}",
+            fn_name("diag", link.name),
             [q, v],
             [F_drag, v_link, alpha],
             ["q", "v"],
@@ -83,18 +88,24 @@ def quat_to_R_x_row(q4):
     ])
 
 
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "task3_solution.npz"
     print(f"Loading: {path}")
-    d = np.load(path)
-    X, U, T, N, nq = d["X"], d["U"], float(d["T"]), int(d["N"]), int(d["nq"])
+    d = load_solution(path)
+    X, U, T, N, nq = d["X"], d["U"], d["T"], d["N"], d["nq"]
 
-    print("Building robot+dynamics …")
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(np.zeros(robot.nq))
-    robot.build_cylinders()
+    print(f"Building robot+dynamics ({d['robot']}) …")
+    robot = load_robot(d["robot"])
     dyn = SymbolicDynamics(robot)
     nv = dyn.nv
+
+    # Two views of the same trajectory: the per-link hydrodynamic terms are
+    # tree-space quantities, while the equations of motion are integrated in
+    # the robot's own (possibly reduced) coordinates.  They coincide for a
+    # serial robot.
+    X_r, nq_r = X, nq
+    X, nq = expand_to_tree(robot, X, nq), robot.nq
 
     per_link = build_per_link_diagnostics(robot, dyn)
     link_names = list(per_link.keys())
@@ -142,13 +153,15 @@ def main():
     for k in range(N+1):
         q = X[:nq, k]
         v = X[nq:, k]
-        tau_full = np.concatenate([np.zeros(6), U[:, min(k, N-1)]])
+        tau_r = np.concatenate([np.zeros(6), U[:, min(k, N - 1)]])
 
         tau_drag[:, k] = np.array(dyn.f_tau_drag(q, v)).flatten()
         tau_buoy[:, k] = np.array(dyn.f_tau_buoyancy(q)).flatten()
         grav[:, k]     = np.array(dyn.f_g_rb(q)).flatten()
 
-        a = dyn.eval_forward_dynamics(q, v, tau_full)
+        a = dyn.eval_reduced_forward_dynamics(
+            X_r[:7, k], X_r[7:nq_r, k], X_r[nq_r:, k], tau_r
+        )
         a_body[:, k] = a[:6]
         Rx_row = quat_to_R_x_row(q[3:7])
         a_world_x[k] = Rx_row @ a[:3]
@@ -162,12 +175,12 @@ def main():
 
     # ── Drag breakdown ─────────────────────────────────────────────────────
     print("\n" + "─" * 88)
-    print(f"Total drag force in world-x summed over links (N):")
+    print("Total drag force in world-x summed over links (N):")
     tot = F_drag_x.sum(axis=0)
     print(f"  mean = {tot.mean():+.4f}  min = {tot.min():+.4f}  max = {tot.max():+.4f}")
     print(f"  time-integrated impulse over T={T}s: {tot.mean()*T:+.4f} N·s")
 
-    print(f"\nPer-link world-x drag (sorted by |mean|, N):")
+    print("\nPer-link world-x drag (sorted by |mean|, N):")
     print(f"  {'link':30s} {'mean Fx':>10s} {'peak Fx':>10s} "
           f"{'⟨|v_x|⟩':>10s} {'⟨α⟩':>8s}")
     sorted_idx = np.argsort(-np.abs(F_drag_x.mean(axis=1)))

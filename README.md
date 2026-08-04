@@ -138,4 +138,52 @@ cmake --install /home/ws/splishsplash/build --prefix /home/moritz/.local
 ```
 
 The install step copies `libFluidSimulator.so` to `/home/moritz/.local/lib/gazebo-11/plugins/`, which is on `GAZEBO_PLUGIN_PATH` and picked up automatically by Gazebo.
+## Multiple robots
+
+The pipeline is parameterised by a `RobotSpec` rather than a hardcoded URDF path.
+Registered robots live in `stage1_gait_optimization/hydro_model/robots/`:
+
+| robot   | legs                              | coordinates |
+|---------|-----------------------------------|-------------|
+| `amph`  | 4 serial legs, 3 joints each      | tree (12 DOF) |
+| `body2` | 4 closed-loop planar legs, 2 hip servos each | reduced (8 DOF) |
+
+```bash
+python trajopt/run_collocation.py --robot body2
+python stage3_visualization/plot_solution.py --solution task3_solution.npz
+```
+
+`plot_solution` and `visualize_solution` read the robot from the solution file.
+A solved BODY2 gait is committed as `task3_solution_body2.npz` (+0.120 m per
+1 s cycle):
+
+```bash
+python3 stage3_visualization/plot_solution.py --solution task3_solution_body2.npz
+python3 stage3_visualization/visualize_solution.py task3_solution_body2.npz
+```
+
+**Adding a robot** means writing one module in `hydro_model/robots/` — naming,
+foot points, and a declarative `CylinderSpec` per link for the hydro model —
+plus, if the robot has closed kinematic loops, a `CoordinateMap` mapping its
+actuated coordinates onto the URDF tree. No pipeline code changes.
+
+BODY2's loops are handled in reduced coordinates: `body2_map.py` solves the
+five-bar and parallelogram in closed form, so the OCP keeps 8 DOF and stays
+fully actuated.
+
+The raw SolidWorks export is not directly usable — the base frame sits 1.1 m
+from the robot facing backwards, two leg joints are exported as `fixed` when
+they are really pins, and the four legs are homed at different crank angles.
+One script fixes all of it and refreshes the frozen pin geometry:
+
+```bash
+python3 src/BODY2/scripts/prepare_urdf.py     # re-run after every CAD export
+```
+
+It is idempotent, so running it on an already-prepared URDF is a no-op.
+
+Tests: `pytest` (fast, ~15 s) or `pytest -m slow` for the end-to-end solves.
+`tests/test_amph_regression.py` pins amph's numerics against a golden file so
+the multi-robot refactor is provably behaviour-preserving.
+
 </content>

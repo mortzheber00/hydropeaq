@@ -24,9 +24,11 @@ from .search import (
     build_sinusoid_guess,
     search_sinusoid_params,
 )
+from .theta_sinusoid import build_theta_sinusoid_guess
 
 __all__ = [
     "build_initial_guess",
+    "build_theta_sinusoid_guess",
     "build_robot_ik_initial_guess",
     "build_search_initial_guess",
     "build_sinusoid_guess",

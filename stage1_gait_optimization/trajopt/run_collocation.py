@@ -17,8 +17,13 @@ sys.path.insert(0, str(STAGE1_DIR))
 
 import mlflow
 import numpy as np
-from hydro_model import QuadrupedRobot, SymbolicDynamics
-from initial_guess import build_initial_guess, build_robot_ik_initial_guess
+from hydro_model import SymbolicDynamics, load_robot
+from hydro_model.trajectory import coords_of, save_solution
+from initial_guess import (
+    build_initial_guess,
+    build_robot_ik_initial_guess,
+    build_theta_sinusoid_guess,
+)
 from ocp_common import (
     _log_solver_stats,
     build_collocation_nlp,
@@ -27,10 +32,8 @@ from ocp_common import (
     tangent_to_legacy,
 )
 
-URDF_PATH = STAGE1_DIR.parent / "src" / "amph" / "urdf" / "amph.urdf"
-
 # ── OCP parameters ──────────────────────────────────────────────────────
-N = 64          # collocation intervals
+N = 32          # collocation intervals
 T_INIT = 1.0    # initial-guess cycle period [s] (warm start; T is now free)
 T_MIN = 1.0     # cycle-period bounds [s]
 T_MAX = 1.0
@@ -48,15 +51,17 @@ ENFORCE_SYMMETRY = False  # LSPG: q_right(t) = q_left(t + T/2) for thigh & calf
 D_COLLOC = 3    # polynomial degree (Radau collocation points)
 
 # ── Initial guess gait (Qu et al. 2025) ─────────────────────────────────
-GAIT = "LSPG33"  # "LSPG25", "LSPG33", "TLPG50", or "Prototype" (robot IK guess)
+GAIT = "Prototype"  # "LSPG25", "LSPG33", "TLPG50", or "Prototype" (robot IK guess)
+                 # "ThetaSinusoid" for closed-chain robots (--robot body2)
 
 
-def build_ocp():
+def build_ocp(robot_name: str = "amph"):
     mlflow.set_tracking_uri("http://localhost:5000")
     mlflow.set_experiment("gait_ocp")
-    mlflow.start_run(tags={"initial gait": GAIT, "method": "collocation"})
+    mlflow.start_run(tags={"initial gait": GAIT, "method": "collocation",
+                       "robot": robot_name})
     mlflow.log_params({
-        "N": N, "T_INIT": T_INIT, "T_MIN": T_MIN, "T_MAX": T_MAX,
+        "robot": robot_name, "N": N, "T_INIT": T_INIT, "T_MIN": T_MIN, "T_MAX": T_MAX,
         "TAU_MAX": TAU_MAX, "GAIT": GAIT, "V_TARGET": V_TARGET,
         "D_COLLOC": D_COLLOC, "HEADING_TOL": HEADING_TOL, "F_C": F_C,
         "ENFORCE_SYMMETRY": ENFORCE_SYMMETRY,
@@ -64,11 +69,10 @@ def build_ocp():
 
     # ── 1. Robot & dynamics ─────────────────────────────────────────────
     print("Building robot and symbolic dynamics...")
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(np.zeros(robot.nq))
-    robot.build_cylinders()
+    robot = load_robot(robot_name)
     dyn = SymbolicDynamics(robot)
-    nq = robot.nq
+    nq = robot.nq_reduced
+    COORDS = coords_of(robot)
 
     # ── 2. Initial guess ────────────────────────────────────────────────
     print(f"Building initial guess from paper trajectory ({GAIT})...")
@@ -76,14 +80,17 @@ def build_ocp():
         X_guess, U_guess = build_initial_guess(dyn, GAIT, N, T_INIT, TAU_MAX)
     elif GAIT == "Prototype":
         X_guess, U_guess = build_robot_ik_initial_guess(dyn, N, T_INIT, TAU_MAX)
+    elif GAIT == "ThetaSinusoid":
+        X_guess, U_guess = build_theta_sinusoid_guess(dyn, N, T_INIT, TAU_MAX)
     else:
         raise ValueError(f"Unknown GAIT: {GAIT}")
 
     print(f"  Torque guess RMS = {np.sqrt(np.mean(U_guess**2)):.3f} Nm")
     print(f"  Torque guess max = {np.max(np.abs(U_guess)):.3f} Nm")
-    np.savez("task3_guess.npz", T=T_INIT, X=X_guess, U=U_guess, N=N, nq=nq)
-    mlflow.log_artifact("task3_guess.npz")
-    print("  Initial guess saved to task3_guess.npz")
+    guess_path = save_solution("task3_guess.npz", T=T_INIT, X=X_guess, U=U_guess,
+                               N=N, nq=nq, robot=robot_name, coords=COORDS)
+    mlflow.log_artifact(str(guess_path))
+    print(f"  Initial guess saved to {guess_path}")
 
     # F=None: collocation has no single-step integrator to check defects
     # against; the cost-term breakdown is still useful for weight tuning.
@@ -171,8 +178,10 @@ def build_ocp():
         U_val = src.value(U)
         mlflow.log_param("T_solved", round(T_val, 4))
         mlflow.log_param("bandwidth_alpha", round(float(src.value(alpha)), 4))
-        X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model)
-        extract_solution(X_val, U_val, nq, N, T_val)
+        X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model,
+                                  nq=robot.nq_reduced, nv=robot.nv_reduced)
+        extract_solution(X_val, U_val, nq, N, T_val,
+                         robot=robot_name, coords=COORDS)
 
     try:
         sol = opti.solve()
@@ -193,4 +202,8 @@ def build_ocp():
 
 
 if __name__ == "__main__":
-    build_ocp()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--robot", default="amph", help="registered robot name")
+    build_ocp(parser.parse_args().robot)

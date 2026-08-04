@@ -18,8 +18,8 @@ animation as ``*_swim_cycle.gif``; with no ``--save`` the figures are shown.
 """
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
@@ -27,32 +27,33 @@ import numpy as np
 import scienceplots  # noqa: F401  registers the 'science' matplotlib style
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from stage1_gait_optimization.hydro_model import QuadrupedRobot
+sys.path.insert(0, str(Path(__file__).parents[1] / "stage1_gait_optimization"))
+from stage1_gait_optimization.hydro_model import get_spec, load_robot
+from stage1_gait_optimization.hydro_model.trajectory import expand_to_tree
+from stage1_gait_optimization.hydro_model.trajectory import load_solution as _load
 
 # Professional thesis style with real LaTeX text rendering (Computer Modern).
 plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
-URDF_PATH = Path(__file__).parents[1] / "src" / "amph" / "urdf" / "amph.urdf"
-
-LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
-JOINT_TYPES = ["Side", "Thigh", "Calf"]
-
-
 def load_solution(path: str):
-    data = np.load(path)
-    return data["X"], data["U"], float(data["T"]), int(data["N"]), int(data["nq"])
+    d = _load(path)
+    return d["X"], d["U"], d["T"], d["N"], d["nq"]
 
 
-def plot_joint_angles(X, T, N, nq):
-    """4x3 grid: one row per leg, one column per joint type."""
-    fig, axes = plt.subplots(4, 3, figsize=(14, 10), sharex=True)
+def plot_joint_angles(spec, X, T, N, nq):
+    """One row per leg, one column per actuated joint of a leg."""
+    legs, labels = spec.leg_names, spec.leg_joint_labels
+    n_per_leg = len(labels)
+    fig, axes = plt.subplots(len(legs), n_per_leg,
+                             figsize=(4.7 * n_per_leg, 2.5 * len(legs)),
+                             sharex=True, squeeze=False)
     t = np.linspace(0, T, N + 1)
 
-    for i, leg in enumerate(LEG_NAMES):
-        for j, jtype in enumerate(JOINT_TYPES):
+    for i, leg in enumerate(legs):
+        for j, jtype in enumerate(labels):
             ax = axes[i, j]
-            q_idx = 7 + i * 3 + j
+            q_idx = 7 + i * n_per_leg + j
             ax.plot(t, X[q_idx, :], "b-o", markersize=3, label="angle [rad]")
             ax.axhline(0, color="k", linewidth=0.5, linestyle=":")
             ax.set_ylabel("rad")
@@ -93,12 +94,15 @@ def plot_base_state(X, T, N, nq):
 
 def plot_foot_positions(robot, X, T, N, nq):
     """Foot x/z trajectories over the cycle."""
+    LEG_NAMES = robot.spec.leg_names
     t = np.linspace(0, T, N + 1)
+    X_tree = expand_to_tree(robot, X, nq)
+    nq_tree = robot.nq
 
     foot_traj = {leg: {"x": [], "y": [], "z": []} for leg in LEG_NAMES}
 
     for k in range(N + 1):
-        q_k = X[:nq, k]
+        q_k = X_tree[:nq_tree, k]
         robot.forward_kinematics(q_k)
         feet = robot.foot_positions()
         for leg in LEG_NAMES:
@@ -134,30 +138,30 @@ def plot_foot_positions(robot, X, T, N, nq):
 
 
 def animate_skeleton(robot, X, T, N, nq):
-    """Animated 3D skeleton cycling through all N+1 poses."""
+    """Animated 3D skeleton cycling through all N+1 poses.
+
+    The skeleton is the robot's cylinder chain, so a closed-chain leg draws
+    both of its sub-chains without any extra bookkeeping here.
+    """
+    LEG_NAMES = robot.spec.leg_names
+    X_tree = expand_to_tree(robot, X, nq)
+    nq_tree = robot.nq
+
     frames = []
     for k in range(N + 1):
-        q_k = X[:nq, k]
-        robot.forward_kinematics(q_k)
-
-        base_pos = np.array(robot.data.oMi[1].translation)
-        leg_data = {}
-        for leg in LEG_NAMES:
-            proj = robot.leg_centerline_positions(leg)
-            leg_data[leg] = {
-                "side": proj["side"],
-                "thigh": proj["thigh"],
-                "calf": proj["calf"],
-                "foot": proj["foot"],
-            }
-        frames.append({"base": base_pos, "legs": leg_data})
+        robot.forward_kinematics(X_tree[:nq_tree, k])
+        feet = robot.foot_positions()
+        leg_data = {leg: {"segments": robot.leg_skeleton(leg), "foot": feet[leg]}
+                    for leg in LEG_NAMES}
+        frames.append({"base": np.array(robot.data.oMi[1].translation), "legs": leg_data})
 
     all_pts = []
     for f in frames:
         all_pts.append(f["base"])
         for leg in LEG_NAMES:
-            for v in f["legs"][leg].values():
-                all_pts.append(v)
+            all_pts.append(f["legs"][leg]["foot"])
+            for a, b in f["legs"][leg]["segments"]:
+                all_pts.extend((a, b))
     all_pts = np.array(all_pts)
     mid = all_pts.mean(axis=0)
     span = (all_pts.max(axis=0) - all_pts.min(axis=0)).max() / 2 * 1.3
@@ -170,6 +174,7 @@ def animate_skeleton(robot, X, T, N, nq):
     colors_leg = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 
     def draw_frame(k):
+        LEG_NAMES = robot.spec.leg_names
         ax.cla()
         ax.set_xlim(mid[0] - span, mid[0] + span)
         ax.set_ylim(mid[1] - span, mid[1] + span)
@@ -186,11 +191,12 @@ def animate_skeleton(robot, X, T, N, nq):
         for i, leg in enumerate(LEG_NAMES):
             pts = f["legs"][leg]
             c = colors_leg[i]
-            chain = [base, pts["side"], pts["thigh"], pts["calf"], pts["foot"]]
-            for a, b in zip(chain[:-1], chain[1:]):
+            for a, b in pts["segments"]:
                 ax.plot(*zip(a, b), color=c, linewidth=2.0, alpha=0.85)
-            for key in ["side", "thigh", "calf"]:
-                ax.scatter(*pts[key], s=30, c="k", zorder=5)
+                ax.scatter(*a, s=30, c="k", zorder=5)
+            if pts["segments"]:
+                ax.plot(*zip(base, pts["segments"][0][0]), color=c,
+                        linewidth=2.0, alpha=0.85)
             ax.scatter(
                 *pts["foot"],
                 s=50,
@@ -235,10 +241,18 @@ def main():
         default=Path(__file__).parent.parent / "task3_solution.npz",
     )
     parser.add_argument("--save", type=Path, default=None)
+    parser.add_argument("--robot", default=None,
+                        help="registered robot name; default: read from the solution")
     args = parser.parse_args()
 
     print(f"Loading solution from {args.solution}...")
-    X, U, T, N, nq = load_solution(str(args.solution))
+    meta = _load(str(args.solution))
+    X, U, T, N, nq = meta["X"], meta["U"], meta["T"], meta["N"], meta["nq"]
+    robot_name = args.robot or meta["robot"]
+    if args.robot and args.robot != meta["robot"]:
+        raise SystemExit(f"solution is for {meta['robot']!r}, not {args.robot!r}")
+    spec = get_spec(robot_name)
+    print(f"  Robot: {robot_name}  (coords={meta['coords']}, n_theta={meta['n_theta']})")
     print(f"  State shape:   {X.shape}  (nx={X.shape[0]}, steps={X.shape[1]})")
     print(f"  Control shape: {U.shape}")
     print(f"  T={T:.3f}s, N={N}, nq={nq}")
@@ -252,12 +266,10 @@ def main():
     print(f"  Torque max |tau| : {np.max(np.abs(U)):.4f} Nm")
     print()
 
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(np.zeros(robot.nq))
-    robot.build_cylinders()
+    robot = load_robot(robot_name)
 
     figs = {
-        "joint_angles": plot_joint_angles(X, T, N, nq),
+        "joint_angles": plot_joint_angles(spec, X, T, N, nq),
         "base_state": plot_base_state(X, T, N, nq),
         "foot_positions": plot_foot_positions(robot, X, T, N, nq),
     }

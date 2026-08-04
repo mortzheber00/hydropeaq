@@ -366,7 +366,7 @@ class SymbolicHydrodynamicModel:
           M_added_joint = Jv^T (α·M_A_lin) Jv  +  Jw^T (α·M_A_rot) Jw
         """
         rho = self.rho
-        V = cyl.volume_displaced
+        V = cyl.volume_entrained
         L = cyl.length
 
         # Translational
@@ -414,7 +414,7 @@ class SymbolicHydrodynamicModel:
         with ``added_mass_matrix``.
         """
         rho = self.rho
-        V = cyl.volume_displaced
+        V = cyl.volume_entrained
         L = cyl.length
 
         ma_t = self.Ca_transverse * rho * V
@@ -517,7 +517,7 @@ class SymbolicHydrodynamicModel:
             # Drag — distributed along the cylinder via N-strip midpoint
             # integration. Scaled on non-trunk links to model wake-induced
             # thrust slip.
-            scale = 1.0 if link.name == "base_link" else self.leg_thrust_scale
+            scale = 1.0 if link.name == self.robot.spec.base_link else self.leg_thrust_scale
             wrench_drag = scale * self.drag_wrench(
                 cyl, alpha, axis_sym, J_full, R_sym
             )

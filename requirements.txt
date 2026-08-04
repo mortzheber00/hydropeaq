@@ -10,3 +10,4 @@ trimesh
 pytransform3d
 meshcat
 SciencePlots
+pytest

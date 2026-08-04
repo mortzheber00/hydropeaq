@@ -20,3 +20,7 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: long-running solves; deselect with -m 'not slow'"]

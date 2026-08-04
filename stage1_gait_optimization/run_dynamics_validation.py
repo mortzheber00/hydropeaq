@@ -9,20 +9,20 @@ This script:
   4. Demonstrates forward and inverse dynamics with hydrodynamic forces.
 """
 
-from pathlib import Path
-
 import numpy as np
-from hydro_model import QuadrupedRobot, SymbolicDynamics
+from hydro_model import SymbolicDynamics, load_robot
 
-URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "body2"   # registered robot name; see hydro_model/robots/
+
 
 
 def main():
     # ── 1. Build robot + cylinders ─────────────────────────────────────
-    robot = QuadrupedRobot(URDF_PATH)
-    q0 = np.zeros(robot.nq)
-    robot.forward_kinematics(q0)
-    robot.build_cylinders()
+    # load_robot already runs FK at the neutral configuration and builds the
+    # cylinders.  Do not redo it with np.zeros(nq): that is not a valid
+    # configuration for a robot with continuous joints, whose entries are
+    # (cos, sin) pairs, and rebuilding from it yields degenerate cylinders.
+    robot = load_robot(ROBOT)
     print(robot)
     print()
 
@@ -39,13 +39,18 @@ def main():
     print()
 
     # ── 3. Verify against Pinocchio numeric ────────────────────────────
+    # A pose off the home configuration, written in the robot's actuated
+    # coordinates and expanded onto the tree.  The perturbation is kept small
+    # so a closed-chain robot stays inside its assemblable set.
+    spec = robot.spec
+    theta_home = (np.zeros(robot.n_actuated) if spec.theta_home is None
+                  else np.asarray(spec.theta_home, dtype=float))
+    theta_test = theta_home + 0.05 * np.sin(np.arange(robot.n_actuated) + 1.0)
+
     q_test = robot.neutral_config()
     q_test[0:3] = [0.1, 0.0, 0.0]
     q_test[3:7] = [0.0, 0.0, 0.0, 1.0]
-    q_test[7:19] = [
-        0.1, 0.3, -0.2, 0.0, 0.4, -0.1,
-        0.2, -0.3, 0.1, -0.1, 0.2, -0.4,
-    ]
+    q_test[7:] = robot.coord_map.expand_numeric(theta_test)
     v_test = np.ones(robot.nv) * 0.05
 
     # Mass matrix
@@ -63,7 +68,7 @@ def main():
 
     # FK foot positions
     robot.forward_kinematics(q_test)
-    for leg in ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]:
+    for leg in robot.spec.leg_names:
         pos_sym = np.array(dyn.f_foot_pos[leg](q_test)).flatten()
         pos_pin = robot.foot_positions()[leg]
         err = np.linalg.norm(pos_sym - pos_pin)
@@ -81,6 +86,7 @@ def main():
     tau_hold = dyn.eval_inverse_dynamics(
         q_test, np.zeros(robot.nv), np.zeros(robot.nv)
     )
+
     print("Inverse dynamics (hold position, zero velocity/acceleration):")
     print(f"  tau = {tau_hold}")
     print()

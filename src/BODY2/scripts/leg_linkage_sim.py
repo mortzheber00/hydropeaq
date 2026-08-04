@@ -78,17 +78,31 @@ def _joints():
 
 
 def _visual_offsets():
-    """Per-link translation from the link frame to its mesh frame."""
+    """Per-link translation from the link frame to its mesh frame.
+
+    A rotated visual origin is rejected, but only when the link is actually
+    looked up: the hole fitting below assumes bores run along the mesh frame's
+    local z, which a rotation would break.  ``base_link`` legitimately carries
+    one after the base is re-framed, and is never consulted here.
+    """
     out = {}
     for link in ET.parse(URDF).getroot().findall("link"):
+        name = link.get("name")
         o = link.find("visual/origin")
         if o is None:
-            out[link.get("name")] = np.zeros(3)
+            out[name] = np.zeros(3)
             continue
-        if any(abs(float(v)) > 1e-12 for v in o.get("rpy", "0 0 0").split()):
-            raise RuntimeError(f"{link.get('name')}: rotated visual origin is not supported")
-        out[link.get("name")] = np.array([float(v) for v in o.get("xyz").split()])
+        rotated = any(abs(float(v)) > 1e-12 for v in o.get("rpy", "0 0 0").split())
+        out[name] = (RuntimeError(f"{name}: rotated visual origin is not supported")
+                     if rotated else np.array([float(v) for v in o.get("xyz").split()]))
     return out
+
+
+def _visual_offset(link: str) -> np.ndarray:
+    tv = VISUAL[link]
+    if isinstance(tv, Exception):
+        raise tv
+    return tv
 
 
 JOINTS = _joints()
@@ -169,7 +183,7 @@ def _pins(leg):
     for k in ("1.1", "1.2", "1.3", "2.1", "2.2"):
         R, p = T[f"Link_{leg}{k}"]
         tri, nrm = _read_stl(MESHES / f"Link_{leg}{k}.STL")
-        tv = VISUAL[f"Link_{leg}{k}"]
+        tv = _visual_offset(f"Link_{leg}{k}")
         holes[k] = [(R @ (np.array([c[0], c[1], 0.0]) + tv) + p)[PLANE]
                     for c in _hole_centres(tri, nrm)]
     for k, want in (("1.1", 1), ("1.2", 2), ("1.3", 3), ("2.1", 2), ("2.2", 2)):
@@ -271,7 +285,7 @@ class Leg:
                 key = f"{c}.{k}"
                 R, o = self.frames[f"Link_{name}{key}"]
                 tri, _ = _read_stl(MESHES / f"Link_{name}{key}.STL")
-                tv = VISUAL[f"Link_{name}{key}"]
+                tv = _visual_offset(f"Link_{name}{key}")
                 self.mesh[key] = ((tri.reshape(-1, 3) + tv) @ R.T + o)[:, PLANE].reshape(-1, 3, 2)
         v = self.mesh["2.3"].reshape(-1, 2)
         self.tip0 = v[np.argmax(np.linalg.norm(v - p["P7"], axis=1))]
@@ -309,7 +323,9 @@ class Leg:
         th23 = _angle(P8 - P7) - _angle(p0["P8"] - p0["P7"])          # link 2.3
         tip = P7 + _rot2(self.tip0 - p0["P7"], th23)
 
-        wrap = lambda a: (a + np.pi) % (2 * np.pi) - np.pi
+        def wrap(a):
+            return (a + np.pi) % (2 * np.pi) - np.pi
+
         return dict(
             ok=ok1 & ok2,
             pins=dict(P1=P1, P2=P2, P3=P3, P4=P4, P5=P5, P6=P6, P7=P7, P8=P8),

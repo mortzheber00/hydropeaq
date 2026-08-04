@@ -27,11 +27,12 @@ sys.path.insert(0, str(STAGE1_DIR))
 
 import numpy as np
 import pinocchio as pin
-from hydro_model import QuadrupedRobot, SymbolicDynamics
+from hydro_model import SymbolicDynamics, load_robot
 from initial_guess import build_initial_guess, build_robot_ik_initial_guess
 from ocp_common import build_collocation_nlp, tangent_to_legacy
 
-URDF_PATH = STAGE1_DIR.parent / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "amph"   # registered robot name; see hydro_model/robots/
+
 
 PAPER_GAITS = ("LSPG25", "LSPG33", "TLPG50")
 FIRMWARE_GAITS = ("Prototype",)
@@ -63,9 +64,7 @@ def get_robot_dyn():
     """
     global _ROBOT_DYN
     if _ROBOT_DYN is None:
-        robot = QuadrupedRobot(URDF_PATH)
-        robot.forward_kinematics(np.zeros(robot.nq))
-        robot.build_cylinders()
+        robot = load_robot(ROBOT)
         dyn = SymbolicDynamics(robot)
         _ROBOT_DYN = (robot, dyn)
     return _ROBOT_DYN
@@ -173,7 +172,8 @@ def _extract(src, X, U, T, V_J, q_ref_quat, robot, nq, n,
     T_val = float(src.value(T))
     Xt_val = src.value(X)
     U_val = src.value(U)
-    X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model)
+    X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model,
+                              nq=robot.nq_reduced, nv=robot.nv_reduced)
 
     forward = float(X_val[0, -1] - X_val[0, 0])
     speed = forward / T_val

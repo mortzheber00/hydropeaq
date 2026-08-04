@@ -46,10 +46,24 @@ from matplotlib.widgets import Slider
 from scipy.interpolate import LinearNDInterpolator, griddata
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+from stage1_gait_optimization.hydro_model import get_spec, load_robot
 from stage1_gait_optimization.hydro_model.hydrodynamics import RHO_WATER
 from stage1_gait_optimization.hydro_model.robot import QuadrupedRobot
 
-URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
+# This tool is still amph-specific: it assumes a 3-joint serial leg and builds
+# a 2x2 sagittal Jacobian over (thigh, calf) with the side joint pinned.  The
+# BODY2 analogue -- sweep (theta1, theta2), mask by assemblability, sum drag
+# over the leg's six links -- is a separate piece of work.
+SUPPORTED_ROBOTS = ("amph",)
+URDF_PATH = get_spec("amph").urdf_path
+
+
+def _require_supported(robot_name: str) -> None:
+    if robot_name not in SUPPORTED_ROBOTS:
+        raise NotImplementedError(
+            f"thrust_heatmap supports {SUPPORTED_ROBOTS}, not {robot_name!r}: its "
+            f"thrust model assumes a 3-joint serial leg. See the plan, stage3 section."
+        )
 
 CD_T = 1.0
 CD_A = 0.1
@@ -507,7 +521,7 @@ def main():
     args = parser.parse_args()
 
     print("Loading robot…")
-    robot = QuadrupedRobot(URDF_PATH)
+    robot = load_robot("amph")
     robot.forward_kinematics(robot.neutral_config())
     robot.build_cylinders()
 

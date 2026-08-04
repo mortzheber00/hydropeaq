@@ -61,6 +61,12 @@ LINK_COLORS = {
 }
 
 
+# Cycled per segment of a leg's cylinder chain, so a robot with any number of
+# links per leg is drawn consistently.
+_SEGMENT_COLORS = [LINK_COLORS["side"], LINK_COLORS["thigh"], LINK_COLORS["calf"],
+                   LINK_COLORS["base"], "#E17FB0", "#7FD4C1"]
+
+
 def _link_color(name: str) -> str:
     name_lower = name.lower()
     for key, color in LINK_COLORS.items():
@@ -101,19 +107,20 @@ def visualize_skeleton(
     ----------
     robot : QuadrupedRobot
         Pinocchio-backed robot model.
-    q : joint angles (defaults to zeros).
-    centerline : if True (default), project each leg's thigh/calf/foot
-        onto the leg's sagittal plane so the chain appears planar.
-        The raw (offset) positions are shown as faint ghost markers.
+    q : joint angles (defaults to the neutral configuration).
+    centerline : accepted for backwards compatibility and ignored.  Whether a
+        leg is drawn sagittally projected is now a property of the robot: the
+        skeleton follows its cylinder chain, and ``CylinderSpec.project_leg``
+        decides the projection.
     title : plot title.
     elev, azim : camera angles.
     figsize : figure size.
     save_path : if given, save figure to this path.
     """
-    from .robot import LEG_NAMES
+    LEG_NAMES = robot.spec.leg_names
 
     if q is None:
-        q = np.zeros(robot.nq)
+        q = robot.neutral_config()
 
     robot.forward_kinematics(q)
 
@@ -140,49 +147,21 @@ def visualize_skeleton(
     )
 
     # -- Draw each leg --
+    feet = robot.foot_positions()
     for leg in LEG_NAMES:
-        # Raw joint positions from Pinocchio
-        side_jid = robot.model.getJointId(f"{leg}_Side_joint")
-        thigh_jid = robot.model.getJointId(f"{leg}_Thigh_joint")
-        calf_jid = robot.model.getJointId(f"{leg}_Calf_joint")
+        # The skeleton is the robot's cylinder chain, so a closed-chain leg
+        # draws both of its sub-chains with no extra bookkeeping here.  The
+        # segments already carry any sagittal projection the spec asks for.
+        segments = robot.leg_skeleton(leg)
         foot_fid = robot.foot_frame_ids[leg]
 
-        raw = {
-            "side": np.array(robot.data.oMi[side_jid].translation),
-            "thigh": np.array(robot.data.oMi[thigh_jid].translation),
-            "calf": np.array(robot.data.oMi[calf_jid].translation),
-            "foot": np.array(robot.data.oMf[foot_fid].translation),
-        }
-
-        if centerline:
-            proj = robot.leg_centerline_positions(leg)
-            # Show raw positions as faint ghost markers
-            for key in ["thigh", "calf", "foot"]:
-                ax.scatter(*raw[key], s=12, c="gray", alpha=0.3, zorder=2)
-                # Dashed line from ghost to projected
-                ax.plot(
-                    *zip(raw[key], proj[key]),
-                    color="gray",
-                    linewidth=0.5,
-                    linestyle=":",
-                    alpha=0.4,
-                )
-            pts = proj
-        else:
-            pts = raw
-
-        # Joint markers and frame axes
-        chain = ["side", "thigh", "calf"]
-        jids = [side_jid, thigh_jid, calf_jid]
-        for key, jid in zip(chain, jids):
-            pos = pts[key]
-            R = np.array(robot.data.oMi[jid].rotation)
-            all_pts.append(pos)
-            ax.scatter(*pos, s=40, c="k", zorder=5)
-            _draw_frame_axes(ax, pos, R, length=0.012)
+        # Joint markers and frame axes at each segment start
+        for p_start, _ in segments:
+            all_pts.append(p_start)
+            ax.scatter(*p_start, s=40, c="k", zorder=5)
 
         # Foot marker
-        foot_pos = pts["foot"]
+        foot_pos = feet[leg]
         foot_R = np.array(robot.data.oMf[foot_fid].rotation)
         all_pts.append(foot_pos)
         ax.scatter(
@@ -196,47 +175,15 @@ def visualize_skeleton(
         )
         _draw_frame_axes(ax, foot_pos, foot_R, length=0.015)
 
-        # Connecting lines: base→side→thigh→calf, calf--foot
-        ax.plot(
-            *zip(base_pos, pts["side"]),
-            color=_link_color("side"),
-            linewidth=2.5,
-            alpha=0.8,
-        )
-        ax.plot(
-            *zip(pts["side"], pts["thigh"]),
-            color=_link_color("side"),
-            linewidth=2.5,
-            alpha=0.8,
-        )
-        ax.plot(
-            *zip(pts["thigh"], pts["calf"]),
-            color=_link_color("thigh"),
-            linewidth=2.5,
-            alpha=0.8,
-        )
-        ax.plot(
-            *zip(pts["calf"], pts["foot"]),
-            color=_link_color("calf"),
-            linewidth=2.0,
-            linestyle="--",
-            alpha=0.7,
-        )
-
-        # Labels
-        for key in ["side", "thigh", "calf"]:
-            pos = pts[key]
-            label = f"{leg}\n{key}".replace("_", "\n")
-            ax.text(
-                pos[0],
-                pos[1],
-                pos[2] + 0.005,
-                label,
-                fontsize=4,
-                ha="center",
-                va="bottom",
-                color="dimgray",
-            )
+        # Connecting lines: the cylinder chain, plus base -> first segment
+        for idx, (p_start, p_end) in enumerate(segments):
+            ax.plot(*zip(p_start, p_end), color=_SEGMENT_COLORS[idx % len(_SEGMENT_COLORS)],
+                    linewidth=2.5, alpha=0.8)
+        if segments:
+            ax.plot(*zip(base_pos, segments[0][0]), color=_SEGMENT_COLORS[0],
+                    linewidth=2.5, alpha=0.8)
+            ax.plot(*zip(segments[-1][1], foot_pos), color=LINK_COLORS["foot"],
+                    linewidth=2.0, linestyle="--", alpha=0.7)
 
     all_pts = np.array(all_pts)
     _set_equal_aspect(ax, all_pts)
@@ -315,14 +262,26 @@ def visualize_robot_representations(
     import matplotlib.colors as mcolors
 
     if q is None:
-        q = np.zeros(robot.nq)
+        q = robot.neutral_config()
 
     robot.forward_kinematics(q)
     robot.build_cylinders()
 
     tm = _make_urdf_transform_manager(robot)
-    for i, jname in enumerate(robot.actuated_joint_names):
-        tm.set_joint(jname, float(q[7 + i]))
+    # Every tree joint has to be set, not just the actuated ones: on a
+    # closed-chain robot the passive joints carry the loop closure, and leaving
+    # them at zero tears the legs off their pins.  The angle comes from the
+    # Pinocchio configuration by joint index -- for a continuous joint that
+    # configuration is a (cos, sin) pair rather than an angle.
+    for jid in range(1, robot.model.njoints):
+        joint = robot.model.joints[jid]
+        if joint.nq == 1:
+            angle = float(q[joint.idx_q])
+        elif joint.nq == 2:
+            angle = float(np.arctan2(q[joint.idx_q + 1], q[joint.idx_q]))
+        else:  # free-flyer base
+            continue
+        tm.set_joint(robot.model.names[jid], angle)
     for v in tm.visuals:
         link_name = v.frame.split("visual:")[1].rsplit("/", 1)[0]
         v.color = list(mcolors.to_rgba(_link_color(link_name)))
