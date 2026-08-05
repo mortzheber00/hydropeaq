@@ -2,9 +2,31 @@
 <sdf version="1.6">
   <world name="swimming_pool">
 
+    <gravity>0 0 -9.81</gravity>
+    <!-- The paddle carries about 711 g of apparent water (4 boundary particles at
+         psi 178 g) on 4.47 g of link, so roughly 7 N has to travel out through
+         Link_2.2 at 0.64 g and Link_2.1 at 0.24 g before it reaches the 116 g
+         hull.  Pushing a force that size along a chain of bodies that light is
+         the worst case for an iterative LCP, and it shows up as the paddle
+         separating at P7, a hinge Gazebo already has rather than one it is
+         missing.  More iterations give the impulse time to propagate along the
+         chain; inertia ratio reduction is ODE's own remedy for the 521:1 spread
+         between base_link and the hip links.
+
+         use_dynamic_moi_rescaling has to be written out explicitly: sdformat
+         always materialises the element with a default of 0, so ODEPhysics
+         reads it as false and the feature stays off, even though Gazebo would
+         default it to true if the element were genuinely absent. -->
     <physics type="ode">
-      <gravity>0 0 -9.81</gravity>
       <max_step_size>0.001</max_step_size>
+      <ode>
+        <solver>
+          <type>quick</type>
+          <iters>300</iters>
+          <sor>1.3</sor>
+          <use_dynamic_moi_rescaling>1</use_dynamic_moi_rescaling>
+        </solver>
+      </ode>
     </physics>
 
     <include>
@@ -143,10 +165,12 @@
         <viscosity>0.001</viscosity>
       </fluid>
 
-      <!-- Water volume fills the full pool floor-to-surface (z: 0.0 → 0.5 m).
-           The robot boundary mesh is exported automatically by the plugin, so
-           particles are placed only in the fluid region outside the robot.
-           initialVelocity 0 0 0 → stationary at t=0. -->
+      <!-- Water fills z 0.0 → 0.25 m, so the surface sits at z = 0.25.
+           createFluidBlocks() lays particles on a plain lattice over this box
+           and never tests them against boundary geometry, so anything standing
+           inside the box at load time gets particles initialised inside its own
+           collision mesh.  That is why the robot spawns above the surface
+           rather than submerged.  initialVelocity 0 0 0 → stationary at t=0. -->
       <fluidBlock>
         <denseMode>0</denseMode>
         <start>-0.99 -0.49 0.0</start>
@@ -157,10 +181,16 @@
 
     <!-- Robot included directly so the fluid plugin sees it at Init() time.
          spawn_model cannot be used here — the plugin processes boundaries
-         before the ROS spawn service is available. -->
+         before the ROS spawn service is available.
+
+         z = 0.356 puts the lowest point of the robot 1 cm above the water, so
+         it enters at 0.44 m/s.  It used to spawn at 1.5, a metre clear of the
+         pool rim, and reached the surface at 4.8 m/s — a 120x impact energy
+         that landed on the legs during the initialisation phase, before the
+         gait had even started. -->
     <include>
-      <uri>model://amph</uri>
-      <pose>-0.5 0 0.5 0 0 0</pose>
+      <uri>model://BODY2</uri>
+      <pose>-0.5 0 0.356 0 0 0</pose>
     </include>
 
   </world>

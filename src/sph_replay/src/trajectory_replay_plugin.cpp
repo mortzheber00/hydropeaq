@@ -22,7 +22,10 @@ public:
             return;
         }
 
-        std::string topic = "/amph/joint_trajectory_replay";
+        // Default to the model's own namespace, which is what replay_trajectory.py
+        // publishes on (RobotSpec.ros is the Gazebo model name).  A <topic>
+        // element overrides it.
+        std::string topic = "/" + model->GetName() + "/joint_trajectory_replay";
         if (sdf->HasElement("topic"))
             topic = sdf->Get<std::string>("topic");
 
