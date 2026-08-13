@@ -66,6 +66,38 @@ class CylinderSpec:
 
 
 @dataclass(frozen=True)
+class OCPSettings:
+    """Gait-OCP transcription and cost weights for one robot.
+
+    These used to be module globals in ``trajopt/run_collocation.py``, which
+    meant retuning them for one robot silently retuned the other.  The defaults
+    below are amph's committed values, so a robot that omits the field gets the
+    behaviour the pipeline had before this type existed.
+    """
+
+    gait: str = "Prototype"   # initial-guess builder; see run_collocation.build_ocp
+    n: int = 32               # collocation intervals
+    d_colloc: int = 3         # polynomial degree (Radau collocation points)
+    t_init: float = 1.0       # initial-guess cycle period [s] (warm start)
+    t_min: float = 1.0        # cycle-period bounds [s]
+    t_max: float = 1.0
+    d_target: float = 0.2     # forward distance per nominal cycle [m]
+    tau_max: float = 3.5      # joint torque limit [Nm]
+    f_c: float = 20.0         # actuator bandwidth [Hz] — first-order filter cutoff
+    w_power: float = 2.0      # weight for sum-of-squared per-joint power (τ·q̇)²
+    w_dist: float = 0.5       # weight for forward distance reward
+    w_vel_smooth: float = 20.0  # weight for velocity smoothing
+    w_drift: float = 10.0     # weight for drift penalty
+    heading_tol: float = 0.05   # max yaw angle at endpoint [rad]
+    enforce_symmetry: bool = False  # LSPG: q_right(t) = q_left(t + T/2)
+
+    @property
+    def v_target(self) -> float:
+        """Required average forward speed [m/s]."""
+        return self.d_target / self.t_init
+
+
+@dataclass(frozen=True)
 class RobotSpec:
     """Declarative description of one robot."""
 
@@ -111,6 +143,9 @@ class RobotSpec:
     # Keys are the tunable parameters of ``build_robot_ik_initial_guess``;
     # anything omitted keeps that function's default.
     firmware_gait: Dict[str, float] = field(default_factory=dict)
+
+    # Gait-OCP horizon and cost weights; see OCPSettings.
+    ocp: OCPSettings = field(default_factory=OCPSettings)
 
     @property
     def package_root(self) -> Path:

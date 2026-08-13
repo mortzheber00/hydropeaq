@@ -6,7 +6,7 @@ existed; ``tests/test_amph_regression.py`` is the proof.
 
 from __future__ import annotations
 
-from . import REPO_ROOT, CylinderSpec, RobotSpec
+from . import REPO_ROOT, CylinderSpec, OCPSettings, RobotSpec
 
 LEG_NAMES = ("Front_Left", "Front_Right", "Hind_Left", "Hind_Right")
 JOINTS_PER_LEG = ("Side_joint", "Thigh_joint", "Calf_joint")
@@ -51,4 +51,7 @@ SPEC = RobotSpec(
     + tuple(c for leg in LEG_NAMES for c in _leg_cylinders(leg)),
     coordinate_map=None,          # IdentityMap
     pose_constraints=_pose_constraints,
+    # OCPSettings' defaults are amph's own numbers, so this is spelled out only
+    # to say the gait explicitly.  Do not tune them for another robot here.
+    ocp=OCPSettings(gait="Prototype"),
 )

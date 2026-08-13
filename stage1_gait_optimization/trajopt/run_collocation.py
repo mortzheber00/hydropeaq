@@ -33,46 +33,35 @@ from ocp_common import (
 )
 
 # ── OCP parameters ──────────────────────────────────────────────────────
-N = 32          # collocation intervals
-T_INIT = 1.0    # initial-guess cycle period [s] (warm start; T is now free)
-T_MIN = 1.0     # cycle-period bounds [s]
-T_MAX = 1.0
-D_TARGET = 0.2  # forward distance per nominal cycle [m]
-V_TARGET = D_TARGET / T_INIT  # required average forward speed [m/s]
-TAU_MAX = 3.5   # joint torque limit [Nm]
-F_C = 20.0      # actuator bandwidth [Hz] — first-order filter cutoff
-W_POWER = 2.0    # weight for sum-of-squared per-joint mechanical power (τ·q̇)²
-W_DIST = 0.5    # weight for forward distance reward
-W_VEL_SMOOTH = 20.0  # weight for velocity smoothing
-W_DRIFT = 10.0   # weight for drift penalty
-HEADING_TOL = 0.05  # max yaw angle at endpoint (radians)
-ENFORCE_SYMMETRY = False  # LSPG: q_right(t) = q_left(t + T/2) for thigh & calf
-
-D_COLLOC = 3    # polynomial degree (Radau collocation points)
-
-# ── Initial guess gait (Qu et al. 2025) ─────────────────────────────────
-GAIT = "Prototype"  # "LSPG25", "LSPG33", "TLPG50", or "Prototype" (robot IK guess)
-                 # "ThetaSinusoid" for closed-chain robots (--robot body2)
+# Per robot, on its spec (hydro_model/robots/<name>.py -> OCPSettings).  They
+# were module globals here, which meant retuning them for one robot silently
+# retuned the other; amph's values are OCPSettings' defaults.
 
 
 def build_ocp(robot_name: str = "amph"):
-    mlflow.set_tracking_uri("http://localhost:5000")
-    mlflow.set_experiment("gait_ocp")
-    mlflow.start_run(tags={"initial gait": GAIT, "method": "collocation",
-                       "robot": robot_name})
-    mlflow.log_params({
-        "robot": robot_name, "N": N, "T_INIT": T_INIT, "T_MIN": T_MIN, "T_MAX": T_MAX,
-        "TAU_MAX": TAU_MAX, "GAIT": GAIT, "V_TARGET": V_TARGET,
-        "D_COLLOC": D_COLLOC, "HEADING_TOL": HEADING_TOL, "F_C": F_C,
-        "ENFORCE_SYMMETRY": ENFORCE_SYMMETRY,
-    })
-
     # ── 1. Robot & dynamics ─────────────────────────────────────────────
     print("Building robot and symbolic dynamics...")
     robot = load_robot(robot_name)
     dyn = SymbolicDynamics(robot)
     nq = robot.nq_reduced
     COORDS = coords_of(robot)
+
+    cfg = robot.spec.ocp
+    N, T_INIT, GAIT, TAU_MAX = cfg.n, cfg.t_init, cfg.gait, cfg.tau_max
+
+    mlflow.set_tracking_uri("http://localhost:5000")
+    mlflow.set_experiment("gait_ocp")
+    mlflow.start_run(tags={"initial gait": GAIT, "method": "collocation",
+                       "robot": robot_name})
+    mlflow.log_params({
+        "robot": robot_name, "N": N, "T_INIT": T_INIT,
+        "T_MIN": cfg.t_min, "T_MAX": cfg.t_max,
+        "TAU_MAX": TAU_MAX, "GAIT": GAIT, "V_TARGET": cfg.v_target,
+        "D_COLLOC": cfg.d_colloc, "HEADING_TOL": cfg.heading_tol, "F_C": cfg.f_c,
+        "ENFORCE_SYMMETRY": cfg.enforce_symmetry,
+        "W_POWER": cfg.w_power, "W_DIST": cfg.w_dist,
+        "W_VEL_SMOOTH": cfg.w_vel_smooth, "W_DRIFT": cfg.w_drift,
+    })
 
     # ── 2. Initial guess ────────────────────────────────────────────────
     print(f"Building initial guess from paper trajectory ({GAIT})...")
@@ -96,7 +85,7 @@ def build_ocp(robot_name: str = "amph"):
     # against; the cost-term breakdown is still useful for weight tuning.
     diagnose_initial_guess(
         X_guess, U_guess, nq, N, T_INIT,
-        W_POWER, W_DIST, W_VEL_SMOOTH, W_DRIFT, F=None,
+        cfg.w_power, cfg.w_dist, cfg.w_vel_smooth, cfg.w_drift, F=None,
     )
 
     save = input("Stop optimization after initial guess? [y/N] ").strip().lower()
@@ -109,8 +98,9 @@ def build_ocp(robot_name: str = "amph"):
     print("Setting up NLP...")
     nlp = build_collocation_nlp(
         dyn, robot, X_guess, U_guess, N,
-        t_lo=T_MIN, t_hi=T_MAX, t_init=T_INIT,
-        v_target=V_TARGET, f_c=F_C, heading_tol=HEADING_TOL, d_colloc=D_COLLOC,
+        t_lo=cfg.t_min, t_hi=cfg.t_max, t_init=T_INIT,
+        v_target=cfg.v_target, f_c=cfg.f_c, heading_tol=cfg.heading_tol,
+        d_colloc=cfg.d_colloc,
     )
     opti = nlp["opti"]
     X, U, T = nlp["X"], nlp["U"], nlp["T"]
@@ -120,12 +110,12 @@ def build_ocp(robot_name: str = "amph"):
     # Objective: shared effort / smoothness / drift terms plus a forward-distance
     # reward (this driver rewards distance directly; the codesign evaluator does
     # not, relying on the speed floor instead).
-    dist_cost = -W_DIST * (X[0, -1] - X[0, 0]) / T
+    dist_cost = -cfg.w_dist * (X[0, -1] - X[0, 0]) / T
     opti.minimize(
-        W_POWER * nlp["power_cost"]
+        cfg.w_power * nlp["power_cost"]
         + dist_cost
-        + W_VEL_SMOOTH * nlp["vel_smooth_cost"]
-        + W_DRIFT * nlp["drift_cost"]
+        + cfg.w_vel_smooth * nlp["vel_smooth_cost"]
+        + cfg.w_drift * nlp["drift_cost"]
     )
 
     # ── Left–right symmetry (LSPG) ──────────────────────────────────────
@@ -136,7 +126,7 @@ def build_ocp(robot_name: str = "amph"):
     # sagittal-plane thigh/calf positions are constrained — the matching joint
     # velocities follow from the kinematic collocation constraint (q̇ = v), so
     # constraining them too would be redundant and over-determine the NLP.
-    if ENFORCE_SYMMETRY:
+    if cfg.enforce_symmetry:
         assert N % 2 == 0, "LSPG symmetry needs even N so T/2 lands on a grid point"
         half = N // 2
         qj0 = 6           # first joint-position row in tangent state

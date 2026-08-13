@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import REPO_ROOT, CylinderSpec, LocalPoint, RobotSpec
+from . import REPO_ROOT, CylinderSpec, LocalPoint, OCPSettings, RobotSpec
 
 LEG_NAMES = ("FL", "FR", "BL", "BR")
 JOINTS_PER_LEG = ("1.1", "2.1")          # the two hip servos, both on base_link
@@ -209,4 +209,19 @@ SPEC = RobotSpec(
         "center_x_front": 0.0,    # stroke centred on the trim foot, both ends
         "center_x_rear": 0.0,
     },
+    # The firmware IK gait needs a foot path; BODY2's is written straight in
+    # theta instead, because theta *is* the actuated coordinate once the
+    # coordinate map has the loops (see initial_guess/theta_sinusoid.py).
+    #
+    # The three weights that differ from amph's defaults were tuned against
+    # this robot: it is 143 g against amph's, so the same 0.2 m/cycle target
+    # asks for a stroke the linkage's assemblable band cannot reach, and the
+    # power and smoothing terms have to be rebalanced around the smaller
+    # torques that go with it.
+    ocp=OCPSettings(
+        gait="ThetaSinusoid",
+        d_target=0.1,
+        w_power=200.0,
+        w_vel_smooth=0.2,
+    ),
 )

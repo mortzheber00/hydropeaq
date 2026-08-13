@@ -16,6 +16,9 @@ Usage:
     --ocp    path to OCP .npz file        (default: /home/ws/task3_solution.npz)
     --start  sim time [s] for OCP t=0     (default: 0.0 = bag start)
     --out    output directory for PNGs    (default: .)
+
+The robot is read from the solution file, so the same command works for either
+one; the bag has to be the run of that same solution.
 """
 
 import argparse
@@ -32,17 +35,18 @@ from scipy.interpolate import interp1d
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
 
-ROBOT = "amph"   # registered robot name; see hydro_model/robots/
-
 # ── Canonical ordering, taken from the robot's spec ─────────────────────────
 # The plots below lay one column out per actuated joint of a leg, so this
 # module works for any robot whose legs share a joint count.
-SPEC = get_spec(ROBOT)
-LEG_NAMES = list(SPEC.leg_names)
-JOINT_TYPES = list(SPEC.leg_joint_labels)
-N_PER_LEG = len(JOINT_TYPES)
+#
+# Which robot that is comes from the solution file, which records it -- the
+# same source replay_trajectory.py reads.  It used to be a module constant
+# here, so validating BODY2 meant editing the file, and forgetting to edit it
+# back made the next amph run compare against the wrong joint names.
+SPEC = None
+LEG_NAMES = JOINT_TYPES = OCP_JOINT_NAMES = BAR_LABELS = None
+N_PER_LEG = None
 
-OCP_JOINT_NAMES = list(SPEC.actuated_joint_names)
 
 # Short labels for the bar chart, e.g. FL_Si or FL_1.1
 def _short(leg: str) -> str:
@@ -50,11 +54,17 @@ def _short(leg: str) -> str:
     return leg if len(parts) == 1 else "".join(p[0] for p in parts)
 
 
-BAR_LABELS = [
-    f"{_short(leg)}_{jt[:2]}"
-    for leg in LEG_NAMES
-    for jt in JOINT_TYPES
-]
+def use_robot(name: str) -> None:
+    """Bind the module's naming tables to a registered robot."""
+    global SPEC, LEG_NAMES, JOINT_TYPES, N_PER_LEG, OCP_JOINT_NAMES, BAR_LABELS
+    SPEC = get_spec(name)
+    LEG_NAMES = list(SPEC.leg_names)
+    JOINT_TYPES = list(SPEC.leg_joint_labels)
+    N_PER_LEG = len(JOINT_TYPES)
+    OCP_JOINT_NAMES = list(SPEC.actuated_joint_names)
+    BAR_LABELS = [f"{_short(leg)}_{jt[:2]}"
+                  for leg in LEG_NAMES for jt in JOINT_TYPES]
+
 
 LEG_COLORS = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 
@@ -67,8 +77,13 @@ def load_ocp(path: str):
     q_joints : (12, N+1)  joint angles in OCP canonical order [rad]
     t_ocp    : (N+1,)     time vector [s]
     T        : float      cycle period [s]
+
+    Also binds the module to the robot the file names, so everything below
+    reads the right joints out of the bag.
     """
     d = np.load(path)
+    # v1 files predate the field; they are all amph, which is what they were.
+    use_robot(str(d["robot"]) if "robot" in d.files else "amph")
     X = d["X"]
     T = float(d["T"])
     N = int(d["N"])
@@ -186,8 +201,11 @@ def align_base(t_ocp, xyz_sim, vx_sim, t_sim, start_time: float):
         vx_aligned  : (N+1,)  [m/s]
     """
     t_query = t_ocp + start_time
+    # Three rows because xyz is a position, not because a leg has three joints.
+    # This loop ran over N_PER_LEG, which is 3 for amph by coincidence and 2 for
+    # BODY2 -- there it left the z row at zero.
     xyz_aligned = np.zeros((3, len(t_ocp)))
-    for i in range(N_PER_LEG):
+    for i in range(3):
         f = interp1d(
             t_sim, xyz_sim[i, :], kind="linear",
             bounds_error=False, fill_value=(xyz_sim[i, 0], xyz_sim[i, -1]),
