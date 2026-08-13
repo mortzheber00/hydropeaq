@@ -1376,16 +1376,43 @@
        Hence no transmission blocks and no gazebo_ros_control; nothing commands
        these joints, the replay plugin sets them directly.
 
-       That is also why a leg can visibly come apart, which amph never does:
-       each leg is two independent branches off base_link (1.1, 1.2, 1.3 and
-       2.1, 2.2, 2.3), and the pin that joins them (P6, Link_2.1 to Link_1.3)
-       is not in the URDF at all; see scripts/leg_linkage_sim.py.  The leg is
-       assembled only while all 24 angles match the coordinate map exactly, and
-       nothing constrains it to.  ODE also leaves dParamFMax at 0 unless
-       something sets it, so every hinge is free; at 9e-10 kg m2 of principal
-       inertia the torque the SPH coupling feeds back through Link::AddTorque
-       drifts a joint by 5 deg, a 5 mm gap at the pin, inside a few 1 ms steps.
-       A dry replay never shows it: nothing applies a torque at all.
+       That is also why a leg can visibly seam, which amph never does: each leg
+       is two independent branches off base_link (1.1, 1.2, 1.3 and 2.1, 2.2,
+       2.3), and the two pins joining them (P6, Link_2.1 to Link_1.3, and P8,
+       Link_1.3 to Link_2.3) are not in the URDF at all; see
+       scripts/leg_linkage_sim.py.  The leg is assembled only while all 24
+       angles match the coordinate map, and nothing constrains it to.  ODE also
+       leaves dParamFMax at 0 unless something sets it, so every hinge is free;
+       at 9e-10 kg m2 of principal inertia the torque the SPH coupling feeds
+       back through Link::AddTorque drifts a joint by 5 deg, a 5 mm gap at the
+       pin, inside a few 1 ms steps.  A dry replay never shows it: nothing
+       applies a torque at all.
+
+       Do not read a seam as the validation being wrong without measuring it.
+       Both cut pins sit on Link_1.3, which is not between base_link and the
+       paddle: Link_2.3 reaches the base through 2.1 -> 2.2 -> 2.3, a plain
+       serial chain of prescribed joints, so no gap at P6/P8 can displace it.
+       What a *large* gap does mean is that the prescribed angles have left the
+       linkage manifold, and then the paddle is misplaced too.  The
+       distinction is a number, not a judgement:
+
+           stage2_sim_validation/check_prescription.py (see its own usage)
+
+       Fed the coordinate map's own output it reads 2.1e-13 mm, so anything a
+       real run shows is Gazebo's; one degree of error on a passive joint reads
+       about 1 mm.
+
+       Closing the loops properly was tried and is worse, so do not repeat it:
+       eight SDF <joint> loop closures driven through a
+       velocity_controllers/JointTrajectoryController on the eight hips left
+       the passive joints at 40 deg RMSE against the kinematic solution, which
+       misplaces the paddles far more than any seam does.  A planar mechanism
+       built from 3D pins is redundantly constrained: 6 surplus constraints
+       per leg, 24 across the robot, hanging off sub-gram links with a 521:1
+       mass spread against the hull, which is the case an iterative LCP handles
+       worst.  Ball joints (redundancy 6 -> 2 per leg) measured worse still at
+       54 deg, and the direct solver, type "world", goes singular and the robot
+       comes apart.
 
        The <dynamics friction> on every joint above holds the angles on the map.
        3.5 N m is amph's number, taken from its effort limit by
