@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -43,8 +45,39 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         traj_ = *msg;
         start_time_ = model_->GetWorld()->SimTime();
+
+        // Order the joints parent first, once per trajectory.  SetVelocity
+        // derives a child link's twist from its parent's *current* one, so a
+        // parent has to be set before its child or the child inherits a stale
+        // reference.
+        order_.resize(traj_.joint_names.size());
+        for (size_t j = 0; j < order_.size(); ++j) order_[j] = j;
+        std::vector<size_t> depth(order_.size());
+        for (size_t j = 0; j < order_.size(); ++j)
+            depth[j] = Depth(model_->GetJoint(traj_.joint_names[j]));
+        std::stable_sort(order_.begin(), order_.end(),
+                         [&](size_t a, size_t b) { return depth[a] < depth[b]; });
+
         ROS_INFO("TrajectoryReplayPlugin: received trajectory with %zu waypoints",
                  traj_.points.size());
+    }
+
+    // An explicit zero rate, not an empty vector: empty means "leave the twist
+    // alone", which is the free state this drive exists to stop.
+    static std::vector<double> Zeros(size_t n) { return std::vector<double>(n, 0.0); }
+
+    // Hops from this joint's parent link up to a link with no parent joint.
+    static size_t Depth(const physics::JointPtr& joint) {
+        if (!joint) return 0;
+        size_t d = 0;
+        physics::LinkPtr link = joint->GetParent();
+        while (link && d < 64) {
+            const physics::Joint_V up = link->GetParentJoints();
+            if (up.empty()) break;
+            link = up.front()->GetParent();
+            ++d;
+        }
+        return d;
     }
 
     void OnUpdate() {
@@ -54,12 +87,19 @@ private:
         double t = (model_->GetWorld()->SimTime() - start_time_).Double();
         const auto& pts = traj_.points;
 
+        // Outside the trajectory the pose is *held*, so its rate is zero.  Not
+        // the waypoint's own velocity: that is the rate the joint will have when
+        // the replay reaches it, and imposing it on a joint that is standing
+        // still tells SPH the legs are sweeping at up to 2 rad/s while their
+        // pose never changes.  The fluid takes that momentum every step from a
+        // body that never moves, and the reaction throws the robot across the
+        // pool before the gait has started.
         if (t <= pts.front().time_from_start.toSec()) {
-            Apply(pts.front());
+            ApplyState(pts.front().positions, Zeros(pts.front().positions.size()));
             return;
         }
         if (t >= pts.back().time_from_start.toSec()) {
-            Apply(pts.back());
+            ApplyState(pts.back().positions, Zeros(pts.back().positions.size()));
             return;
         }
 
@@ -75,19 +115,51 @@ private:
         double t1 = pts[hi].time_from_start.toSec();
         double alpha = (t - t0) / (t1 - t0);
 
-        for (size_t j = 0; j < traj_.joint_names.size(); ++j) {
-            auto joint = model_->GetJoint(traj_.joint_names[j]);
-            if (!joint) continue;
-            double pos = pts[lo].positions[j] * (1.0 - alpha) + pts[hi].positions[j] * alpha;
-            joint->SetPosition(0, pos, true);
+        const size_t n = traj_.joint_names.size();
+        const bool have_vel = pts[lo].velocities.size() == n
+                           && pts[hi].velocities.size() == n;
+        std::vector<double> pos(n), vel;
+        for (size_t j = 0; j < n; ++j)
+            pos[j] = pts[lo].positions[j] * (1.0 - alpha) + pts[hi].positions[j] * alpha;
+        if (have_vel) {
+            vel.resize(n);
+            for (size_t j = 0; j < n; ++j)
+                vel[j] = pts[lo].velocities[j] * (1.0 - alpha)
+                       + pts[hi].velocities[j] * alpha;
         }
+        ApplyState(pos, vel);
     }
 
-    void Apply(const trajectory_msgs::JointTrajectoryPoint& pt) {
-        for (size_t j = 0; j < traj_.joint_names.size(); ++j) {
+    // Impose one prescribed state: the angles, then the joint rates that go
+    // with them.
+    //
+    // The rates are not cosmetic.  SetPosition moves link poses behind the
+    // solver's back and Link::MoveFrame(.., preserveWorldVelocity=true) leaves
+    // the twist exactly as ODE last integrated it, so without this the link
+    // velocities are free state that nothing ever writes.  In air that is
+    // harmless -- no force, so they stay near zero.  In the fluid it closes a
+    // loop: GazeboSimulatorBase::updateBoundaryParticles reads each boundary
+    // particle's velocity straight off the link (WorldLinearVel/WorldAngularVel),
+    // so SPH sees a body whose position is the commanded one and whose velocity
+    // is whatever the last fluid force left behind.  It computes a force from
+    // that inconsistency, feeds it back through Link::AddForce, ODE integrates
+    // it into a larger inconsistency, and the whole thing runs at the 1 kHz step
+    // rate.  Small gain is the high-frequency leg wiggle that starts exactly
+    // when the legs touch water; gain above one is the divergence.
+    void ApplyState(const std::vector<double>& pos,
+                    const std::vector<double>& vel) {
+        // Poses first, and all of them: SetPosition moves a joint's whole
+        // downstream subtree, so a velocity read before the last one has landed
+        // would be taken off a link that is about to move again.
+        for (size_t j = 0; j < traj_.joint_names.size() && j < pos.size(); ++j) {
             auto joint = model_->GetJoint(traj_.joint_names[j]);
-            if (!joint) continue;
-            joint->SetPosition(0, pt.positions[j], true);
+            if (joint) joint->SetPosition(0, pos[j], true);
+        }
+        if (vel.empty()) return;
+        for (size_t k : order_) {
+            if (k >= vel.size()) continue;
+            auto joint = model_->GetJoint(traj_.joint_names[k]);
+            if (joint) joint->SetVelocity(0, vel[k]);
         }
     }
 
@@ -98,6 +170,7 @@ private:
     trajectory_msgs::JointTrajectory traj_;
     gazebo::common::Time start_time_;
     std::mutex mutex_;
+    std::vector<size_t> order_;   // joint indices, parent first
 };
 
 GZ_REGISTER_MODEL_PLUGIN(TrajectoryReplayPlugin)
