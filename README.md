@@ -163,18 +163,55 @@ python3 stage3_visualization/visualize_solution.py task3_solution_body2.npz
 ```
 
 **Adding a robot** means writing one module in `hydro_model/robots/` — naming,
-foot points, and a declarative `CylinderSpec` per link for the hydro model —
-plus, if the robot has closed kinematic loops, a `CoordinateMap` mapping its
-actuated coordinates onto the URDF tree. No pipeline code changes.
+foot points, a declarative `CylinderSpec` per link for the hydro model, and an
+`OCPSettings` with that robot's horizon and cost weights — plus, if the robot
+has closed kinematic loops, a `CoordinateMap` mapping its actuated coordinates
+onto the URDF tree. No pipeline code changes. The OCP weights live on the spec
+rather than in `run_collocation.py` so that tuning one robot cannot move
+another; `OCPSettings`' defaults are amph's values.
 
 BODY2's loops are handled in reduced coordinates: `body2_map.py` solves the
 five-bar and parallelogram in closed form, so the OCP keeps 8 DOF and stays
 fully actuated.
 
+### BODY2 in Gazebo
+
+Both robots use the same replay path: `replay_trajectory.py` publishes a
+`JointTrajectory` and the model's replay plugin imposes it with
+`Joint::SetPosition`. BODY2's loops live in the coordinate map for the OCP and
+in the prescription for Gazebo — never in the SDF. All 24 tree joints are
+prescribed, not the 8 hips, because an under-constrained tree left to a
+position controller comes apart.
+
+Closing the loops with SDF `<joint>` elements and driving the hips through
+`ros_control` was tried and is worse: 40° passive-joint RMSE against the
+kinematic solution, 54° with ball joints, and the direct LCP solver goes
+singular. Don't repeat it.
+
+Because P6 and P8 are not URDF joints, a leg can render with a visible seam.
+Measure before believing it means anything — the paddle reaches the base
+through a serial chain that no gap at those pins can disturb:
+
+```bash
+roslaunch BODY2 joint_prescription.launch \
+    npz_path:=/home/ws/task3_solution_body2.npz \
+    bag_path:=/home/ws/prescription.bag n_repeat:=3
+python3 stage2_sim_validation/check_prescription.py --bag /home/ws/prescription.bag
+```
+
+Fed the coordinate map's own output it reads 2.1e-13 mm, so any gap a real run
+shows is Gazebo's; one degree of error on a passive joint reads about 1 mm.
+
+> **Resolution caveat.** `particleRadius` is 0.025 in `body2_pool.world`, which
+> does not resolve BODY2's legs: the five thin links per leg are bars 4.8–8.2 mm
+> across, and they carry 56% of the leg's transverse drag area. At this setting
+> the SPH thrust is qualitative. Refine before quoting a number.
+
 The raw SolidWorks export is not directly usable — the base frame sits 1.1 m
 from the robot facing backwards, two leg joints are exported as `fixed` when
-they are really pins, and the four legs are homed at different crank angles.
-One script fixes all of it and refreshes the frozen pin geometry:
+they are really pins, the four legs are homed at different crank angles, and
+the joint names contain dots, which ROS graph names forbid. One script fixes
+all of it and refreshes the frozen pin geometry:
 
 ```bash
 python3 src/BODY2/scripts/prepare_urdf.py     # re-run after every CAD export
