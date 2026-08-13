@@ -51,14 +51,14 @@
         xyz="0.0180272944873612 -0.00112687309864636 -0.0022259322582463"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494628" />
+        value="0.000900840318089747" />
       <inertia
-        ixx="1.64331754568383E-09"
-        ixy="1.52431762722807E-09"
-        ixz="3.6991888634381E-10"
-        iyy="2.59334970025315E-08"
-        iyz="-2.31233611923169E-11"
-        izz="2.66863584599606E-08" />
+        ixx="6.63044493667688E-09"
+        ixy="6.15030498511224E-09"
+        ixz="1.49254586454185E-09"
+        iyy="1.04636273337669E-07"
+        iyz="-9.32979590823686E-11"
+        izz="1.07673912929323E-07" />
     </inertial>
     <visual>
       <origin
@@ -96,8 +96,9 @@
       link="Link_BR1.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR1.2">
@@ -106,14 +107,14 @@
         xyz="-0.0259990150342754 0.000226348141333224 -0.00150000000000005"
         rpy="0 0 0" />
       <mass
-        value="0.000248010258828361" />
+        value="0.000998814653989497" />
       <inertia
-        ixx="9.33133079610627E-10"
-        ixy="5.54868606269548E-10"
-        ixz="3.36634665805196E-24"
-        iyy="6.46624386890696E-08"
-        iyz="-1.14138826313051E-25"
-        izz="6.52235563804377E-08" />
+        ixx="3.75801790797075E-09"
+        ixy="2.23462891252536E-09"
+        ixz="1.35573277829521E-23"
+        iyy="2.60415805501165E-07"
+        iyz="-4.59672647612271E-25"
+        izz="2.62675601428152E-07" />
     </inertial>
     <visual>
       <origin
@@ -151,8 +152,9 @@
       link="Link_BR1.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR1.3">
@@ -206,8 +208,9 @@
       link="Link_BR1.3" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR2.1">
@@ -216,14 +219,14 @@
         xyz="0.0246403132607352 -0.000805309723935069 -0.00156195419099547"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490464" />
+        value="0.000972195094897943" />
       <inertia
-        ixx="1.39834497936951E-09"
-        ixy="1.6073462463637E-09"
-        ixz="3.41703875421213E-10"
-        iyy="5.05262880608808E-08"
-        iyz="-1.11677741545383E-11"
-        izz="5.14871362833592E-08" />
+        ixx="5.64641697000469E-09"
+        ixy="6.4903491313234E-09"
+        ixz="1.37977579879082E-09"
+        iyy="2.04021535849427E-07"
+        iyz="-4.50946729410053E-11"
+        izz="2.07901372219596E-07" />
     </inertial>
     <visual>
       <origin
@@ -261,8 +264,9 @@
       link="Link_BR2.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR2.2">
@@ -316,8 +320,9 @@
       link="Link_BR2.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR2.3">
@@ -371,8 +376,9 @@
       link="Link_BR2.3" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL1.1">
@@ -381,14 +387,14 @@
         xyz="0.0166927168847503 -0.00689973858338606 0.00257406774175339"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494629" />
+        value="0.000900840261026578" />
       <inertia
-        ixx="5.12022873828736E-09"
-        ixy="8.64230464698444E-09"
-        ixz="3.42533442519669E-10"
-        iyy="2.24565858099281E-08"
-        iyz="-1.41582177770719E-10"
-        izz="2.66863584599606E-08" />
+        ixx="2.0659058044545E-08"
+        ixy="3.48699018084126E-08"
+        ixz="1.38205119984124E-09"
+        iyy="9.06076531816796E-08"
+        iyz="-5.71254640787147E-10"
+        izz="1.07673906108786E-07" />
     </inertial>
     <visual>
       <origin
@@ -426,8 +432,9 @@
       link="Link_BL1.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL1.2">
@@ -436,14 +443,14 @@
         xyz="-0.025805997036572 -0.00317025642193863 0.0015000000000001"
         rpy="0 0 0" />
       <mass
-        value="0.000248010258828361" />
+        value="0.000998814620637674" />
       <inertia
-        ixx="1.87595085212232E-09"
-        ixy="-7.713889795459E-09"
-        ixz="3.55450306234229E-24"
-        iyy="6.3719620916558E-08"
-        iyz="7.95114588469388E-25"
-        izz="6.52235563804379E-08" />
+        ixx="7.55503884214006E-09"
+        ixy="-3.10662387358113E-08"
+        ixz="1.43150918213665E-23"
+        iyy="2.56618775745862E-07"
+        iyz="3.20217429632679E-24"
+        izz="2.62675592657046E-07" />
     </inertial>
     <visual>
       <origin
@@ -481,8 +488,9 @@
       link="Link_BL1.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL1.3">
@@ -536,8 +544,9 @@
       link="Link_BL1.3" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL2.1">
@@ -546,14 +555,14 @@
         xyz="0.0237950130582229 -0.00644910186707628 0.00173804580900416"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490465" />
+        value="0.000972195105099795" />
       <inertia
-        ixx="4.71479514151842E-09"
-        ixy="1.2430410092849E-08"
-        ixz="3.29981526277048E-10"
-        iyy="4.7209837898732E-08"
-        iyz="-8.94340537676523E-11"
-        izz="5.14871362833593E-08" />
+        ixx="1.90380056204203E-08"
+        ixy="5.01931070403994E-08"
+        ixz="1.33244180570571E-09"
+        iyy="1.90629949399188E-07"
+        iyz="-3.61128313570204E-10"
+        izz="2.07901374401235E-07" />
     </inertial>
     <visual>
       <origin
@@ -591,8 +600,9 @@
       link="Link_BL2.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL2.2">
@@ -646,8 +656,9 @@
       link="Link_BL2.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL2.3">
@@ -701,8 +712,9 @@
       link="Link_BL2.3" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR1.1">
@@ -711,14 +723,14 @@
         xyz="0.017151410424343 0.00566412481929759 -0.00222593225824652"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494628" />
+        value="0.000900840346021255" />
       <inertia
-        ixx="3.95536305629977E-09"
-        ixy="-7.28958093108096E-09"
-        ixz="3.51945803508093E-10"
-        iyy="2.36214514919156E-08"
-        iyz="1.16227465341533E-10"
-        izz="2.66863584599606E-08" />
+        ixx="1.5959068794344E-08"
+        ixy="-2.94119457316999E-08"
+        ixz="1.42002825280994E-09"
+        iyy="9.53076529299441E-08"
+        iyz="4.6895369370037E-10"
+        izz="1.07673916267867E-07" />
     </inertial>
     <visual>
       <origin
@@ -756,8 +768,9 @@
       link="Link_FR1.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR1.2">
@@ -766,14 +779,14 @@
         xyz="0.0256435306631247 0.00429061154678056 -0.00150000000000034"
         rpy="0 0 0" />
       <mass
-        value="0.00024801025882836" />
+        value="0.00099881458875752" />
       <inertia
-        ixx="2.66409106161949E-09"
-        ixy="-1.03742187111762E-08"
-        ixz="-4.02214084081129E-25"
-        iyy="6.29314807070608E-08"
-        iyz="-1.09608645002382E-25"
-        izz="6.52235563804378E-08" />
+        ixx="1.07291247978803E-08"
+        ixy="-4.17802112083403E-08"
+        ixz="-1.61984144076074E-24"
+        iyy="2.53444681358226E-07"
+        iyz="-4.41428165913451E-25"
+        izz="2.6267558427297E-07" />
     </inertial>
     <visual>
       <origin
@@ -811,8 +824,9 @@
       link="Link_FR1.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR1.3">
@@ -866,8 +880,9 @@
       link="Link_FR1.3" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR2.1">
@@ -876,14 +891,14 @@
         xyz="0.0237717374344949 0.00653437530948119 -0.00156195419099547"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490464" />
+        value="0.000972195065668047" />
       <inertia
-        ixx="4.80447710033956E-09"
-        ixy="-1.25824517045495E-08"
-        ixz="3.29658747472417E-10"
-        iyy="4.71201559399108E-08"
-        iyz="9.06165982166656E-11"
-        izz="5.14871362833592E-08" />
+        ixx="1.94001341700088E-08"
+        ixy="-5.08070381350479E-08"
+        ixz="1.33113839398463E-09"
+        iyy="1.90267812345572E-07"
+        iyz="3.65903328649198E-10"
+        izz="2.07901365968859E-07" />
     </inertial>
     <visual>
       <origin
@@ -921,8 +936,9 @@
       link="Link_FR2.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR2.2">
@@ -976,8 +992,9 @@
       link="Link_FR2.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR2.3">
@@ -1031,8 +1048,9 @@
       link="Link_FR2.3" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL1.1">
@@ -1041,14 +1059,14 @@
         xyz="0.0180296855600706 0.00108794674448348 0.00257406774175362"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494629" />
+        value="0.000900840181157897" />
       <inertia
-        ixx="1.63684832386113E-09"
-        ixy="-1.47185726849706E-09"
-        ixz="3.69967950997487E-10"
-        iyy="2.59399662243542E-08"
-        iyz="2.23245949883359E-11"
-        izz="2.66863584599606E-08" />
+        ixx="6.60434196655897E-09"
+        ixy="-5.9386374323249E-09"
+        ixz="1.49274360332352E-09"
+        iyy="1.04662359394736E-07"
+        iyz="9.00750896821687E-11"
+        izz="1.07673896562395E-07" />
     </inertial>
     <visual>
       <origin
@@ -1086,8 +1104,9 @@
       link="Link_FL1.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL1.2">
@@ -1096,14 +1115,14 @@
         xyz="-0.0259941919541079 0.000549531111224729 0.00149999999999982"
         rpy="0 0 0" />
       <mass
-        value="0.00024801025882836" />
+        value="0.000998814658375445" />
       <inertia
-        ixx="9.56775946683901E-10"
-        ixy="1.34687181508008E-09"
-        ixz="-8.05546590483931E-26"
-        iyy="6.46387958219962E-08"
-        iyz="1.13948400506015E-25"
-        izz="6.52235563804376E-08" />
+        ixx="3.85323512359339E-09"
+        ixy="5.42427284343003E-09"
+        ixz="-3.24418734281691E-25"
+        iyy="2.60320589445571E-07"
+        iyz="4.58905745518416E-25"
+        izz="2.62675602581601E-07" />
     </inertial>
     <visual>
       <origin
@@ -1141,8 +1160,9 @@
       link="Link_FL1.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL1.3">
@@ -1196,8 +1216,9 @@
       link="Link_FL1.3" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL2.1">
@@ -1206,14 +1227,14 @@
         xyz="0.0246258862075774 0.00116588585712182 0.00173804580900505"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490465" />
+        value="0.00097219515514233" />
       <inertia
-        ixx="1.45591905399244E-09"
-        ixy="-2.32567045014483E-09"
-        ixz="3.41503805725039E-10"
-        iyy="5.0468713986258E-08"
-        iyz="1.61681270641522E-11"
-        izz="5.14871362833592E-08" />
+        ixx="5.87889732799664E-09"
+        ixy="-9.39089144940072E-09"
+        ixz="1.37896801712442E-09"
+        iyy="2.03789068484009E-07"
+        iyz="6.52857442421027E-11"
+        izz="2.07901385102699E-07" />
     </inertial>
     <visual>
       <origin
@@ -1251,8 +1272,9 @@
       link="Link_FL2.1" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL2.2">
@@ -1306,8 +1328,9 @@
       link="Link_FL2.2" />
     <axis
       xyz="0 0 1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL2.3">
@@ -1361,8 +1384,9 @@
       link="Link_FL2.3" />
     <axis
       xyz="0 0 -1" />
-    <dynamics
-      friction="3.5" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
 
 
@@ -1373,8 +1397,10 @@
        src/BODY2/scripts/prepare_urdf.py).  Replay therefore prescribes every
        tree joint from Body2CoordinateMap rather than the eight hips: an
        under-constrained tree left to a position controller simply comes apart.
-       Hence no transmission blocks and no gazebo_ros_control; nothing commands
-       these joints, the replay plugin sets them directly.
+       The replay plugin sets all 24 directly and no controller is spawned
+       for them.  gazebo_ros_control is loaded all the same, for the joint
+       brake described below; its own POSITION write is neutralised by the
+       plugin ordering noted at the <gazebo> blocks at the end of this file.
 
        That is also why a leg can visibly seam, which amph never does: each leg
        is two independent branches off base_link (1.1, 1.2, 1.3 and 2.1, 2.2,
@@ -1414,27 +1440,35 @@
        54 deg, and the direct solver, type "world", goes singular and the robot
        comes apart.
 
-       The <dynamics friction> on every joint above holds the angles on the map.
-       3.5 N m is amph's number, taken from its effort limit by
-       gazebo_ros_control; it is a bound, not a measurement.  Sizing it is a
-       threshold, not a gradient: the fluid torque about a hinge peaks near
-       0.24 N m, and below that the joint runs away while above it the joint
-       does not move at all.  Real pin friction here would be ~1e-4 N m, but
-       nothing is trying to model that; it says "prescribed, so rigid".
+       The <limit effort> on every joint above holds the angles on the map.
+       gazebo_ros_control reads it and calls SetParam("fmax", effort_limit),
+       which is dParamFMax with dParamVel 0, a Coulomb brake, and exactly
+       what amph gets.  This file used to set the same bound directly as
+       <dynamics friction>; the transmissions replace that route, and the two
+       must not both be present.
+
+       3.5 N m is amph's number, a bound rather than a measurement.  Sizing
+       it is a threshold, not a gradient: the fluid torque about a hinge peaks
+       near 0.24 N m, and below that the joint runs away while above it the
+       joint does not move at all.  Real pin friction here would be ~1e-4 N m,
+       but nothing is trying to model that; it says "prescribed, so rigid".
        It costs nothing while idle, because ODE only ever applies the impulse
-       actually needed and clips at the bound.
+       actually needed and clips at the bound.  Being a constraint rather than
+       a force it is stable at any inertia, unlike <dynamics damping>, which
+       Gazebo integrates explicitly unless <implicit_spring_damper> is set and
+       would need b < 2I/dt of about 2e-6 here.  Joint::SetPosition writes link
+       poses directly, outside the solver, so the brake never fights the
+       prescription.
 
-       Turn this back down to ~1e-4 if the hips ever become torque-driven:
-       six braked joints per leg at 3.5 N m against a 0.303 N m peak hip
-       torque would weld the linkage solid.
+       The <limit> elements are not decoration.  Without them urdfdom leaves
+       urdf_joint->limits null, DefaultRobotHWSim::registerJointLimits keeps
+       its own default of DBL_MAX, and SetParam("fmax", DBL_MAX) hands ODE an
+       infinite bound.  A continuous joint needs no lower/upper, but it does
+       need effort and velocity for the brake to have a number at all.
 
-       SDF <friction> maps to dParamFMax with dParamVel 0, a Coulomb brake, the
-       same thing gazebo_ros_control incidentally gives amph through
-       SetParam("fmax", effort_limit).  Being a constraint rather than a force
-       it is stable at any inertia, unlike <dynamics damping>, which Gazebo
-       integrates explicitly unless <implicit_spring_damper> is set and would
-       need b < 2I/dt of about 2e-6 here.  Joint::SetPosition writes link poses
-       directly, outside the solver, so the brake never fights the prescription.
+       Do not put pid_gains for these joints on the parameter server either:
+       DefaultRobotHWSim switches to POSITION_PID when it finds them and then
+       never sets fmax at all.
 
        The publisher below exists only to feed /BODY2/joint_states to
        stage2_sim_validation/validate_sim.py.
@@ -1446,6 +1480,284 @@
       <robotNamespace>/BODY2</robotNamespace>
       <updateRate>100</updateRate>
       <jointName>Joint_FL1_1, Joint_FL1_2, Joint_FL1_3, Joint_FL2_1, Joint_FL2_2, Joint_FL2_3, Joint_FR1_1, Joint_FR1_2, Joint_FR1_3, Joint_FR2_1, Joint_FR2_2, Joint_FR2_3, Joint_BL1_1, Joint_BL1_2, Joint_BL1_3, Joint_BL2_1, Joint_BL2_2, Joint_BL2_3, Joint_BR1_1, Joint_BR1_2, Joint_BR1_3, Joint_BR2_1, Joint_BR2_2, Joint_BR2_3</jointName>
+    </plugin>
+  </gazebo>
+
+  <transmission name="Joint_BR1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <!-- Before trajectory_replay, and it has to stay there.  With no position
+       controller spawned, joint_position_command_ is never written and stays
+       at its initial 0.0, so DefaultRobotHWSim::writeSim still calls
+       SetPosition(0, 0.0) on all 24 joints every step.  Both plugins write on
+       WorldUpdateBegin and Gazebo fires handlers in connection order, so the
+       later <gazebo> block wins: replay overwrites that 0.0 within the same
+       step, before physics integrates.  Swap the two and the legs collapse to
+       the zero pose.  The brake is set once at init and is unaffected. -->
+  <gazebo>
+    <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so">
+      <robotNamespace>/BODY2</robotNamespace>
     </plugin>
   </gazebo>
 

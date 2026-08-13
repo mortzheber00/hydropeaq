@@ -131,7 +131,25 @@ void FluidSimulator::Load(physics::WorldPtr parent, sdf::ElementPtr sdf)
 {
 	this->world = parent;
 	this->fluidPluginSdf = sdf;
-	this->connections.push_back(event::Events::ConnectWorldUpdateEnd(
+
+	// beforePhysicsUpdate, not worldUpdateEnd.  World::Update runs
+	// worldUpdateBegin, UpdateCollision, beforePhysicsUpdate, UpdatePhysics,
+	// worldUpdateEnd, so the two slots sit on opposite sides of the integration.
+	// From worldUpdateEnd the boundary is read after ODE has already advanced a
+	// step, and the force computed from it lands on the step after that.  Both
+	// robots prescribe every joint with Joint::SetPosition, which writes poses
+	// outside the solver and leaves no constraint behind, so that step of
+	// integration is exactly where a prescribed link drifts: SPH never sees the
+	// commanded state, only what the fluid load did to it.  In the body2
+	// initialisation pose, where the commanded rate is zero, everything read
+	// back is drift, and the force computed from it is fed straight back in.
+	//
+	// beforePhysicsUpdate is after the prescription and before the integration,
+	// so the boundary is read as commanded and the force acts on the very step
+	// it was computed for.  It fires after every worldUpdateBegin handler
+	// whatever order the plugins loaded in, so this does not depend on the
+	// replay plugin connecting first.
+	this->connections.push_back(event::Events::ConnectBeforePhysicsUpdate(
 		boost::bind(&FluidSimulator::RunStep, this)));
 }
 

@@ -116,17 +116,26 @@ private:
         double alpha = (t - t0) / (t1 - t0);
 
         const size_t n = traj_.joint_names.size();
-        const bool have_vel = pts[lo].velocities.size() == n
-                           && pts[hi].velocities.size() == n;
-        std::vector<double> pos(n), vel;
+        std::vector<double> pos(n), vel(n);
         for (size_t j = 0; j < n; ++j)
             pos[j] = pts[lo].positions[j] * (1.0 - alpha) + pts[hi].positions[j] * alpha;
-        if (have_vel) {
-            vel.resize(n);
-            for (size_t j = 0; j < n; ++j)
-                vel[j] = pts[lo].velocities[j] * (1.0 - alpha)
-                       + pts[hi].velocities[j] * alpha;
-        }
+
+        // The rate is the derivative of the lerp above, not the waypoints' own
+        // velocities lerped beside it.  Those two agree only where the
+        // trajectory is piecewise linear between waypoints, and this one is
+        // not: replay_trajectory.py subdivides theta linearly across the OCP's
+        // 62.5 ms knots, so a joint travels at the secant of that interval
+        // while the published velocity is the optimizer's instantaneous one.
+        // On the body2 solution the pair disagrees by 3.1 rad/s RMS and up to
+        // 33 rad/s -- more than the joint's own rate on the worst hips, and a
+        // paddle-tip error of 1.9 m/s against a 0.44 m/s water entry.  SPH
+        // reads both off the same link and turns the difference into a force,
+        // which is the loop ApplyState describes below.  The secant is
+        // consistent by construction whatever the waypoints carry; the cost is
+        // a rate that steps at each waypoint instead of varying across it.
+        for (size_t j = 0; j < n; ++j)
+            vel[j] = (pts[hi].positions[j] - pts[lo].positions[j]) / (t1 - t0);
+
         ApplyState(pos, vel);
     }
 

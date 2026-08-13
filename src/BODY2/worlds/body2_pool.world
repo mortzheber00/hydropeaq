@@ -17,11 +17,40 @@
          always materialises the element with a default of 0, so ODEPhysics
          reads it as false and the feature stays off, even though Gazebo would
          default it to true if the element were genuinely absent. -->
+    <!-- "world" is the direct Dantzig LCP solver, not quickstep's iterative
+         SOR-PGS, and iters/sor/use_dynamic_moi_rescaling above are quickstep
+         parameters that it ignores.  They are kept so the note above still
+         reads against something.
+
+         The reason is what the legs do on entry.  Every joint axis in this tree
+         is parallel to the others, so no combination of the 24 prescribed
+         angles can move a link out of its leg plane; an out-of-plane twist is
+         therefore not kinematics but constraint violation, in the 5 degrees of
+         freedom each hinge is meant to lock rather than the 1 it frees.  It
+         shows up only in water because a hinge in free fall transmits no force
+         at all: every link accelerates at g whatever the constraint does, so
+         there is nothing for the solver to get wrong until fluid pressure loads
+         the links unevenly.  PGS then has to close a 1e5:1 inertia spread,
+         1.42e-4 kg m2 at the hull against 1.35e-9 at the links, and 300
+         iterations does not do it.  A direct solve has no iteration error to
+         leave behind, and 25 bodies is nothing to factor.
+
+         The URDF warns that type "world" goes singular and the robot comes
+         apart.  That was measured with the eight loop-closure pins modelled as
+         SDF joints, which is redundantly constrained (6 surplus constraints
+         per leg), and a redundant LCP really is singular.  This tree has 25
+         links and 24 joints with no loops, so the redundancy that broke it is
+         not present.  Put the pins back and this has to go back to quick.
+
+         If the twisting is reduced but not gone, the other half is ERP: with no
+         <constraints> block ODE defaults to 0.2, bleeding off only a fifth of
+         the accumulated joint error per step.  Add
+         <constraints><cfm>0</cfm><erp>0.8</erp></constraints> here. -->
     <physics type="ode">
       <max_step_size>0.001</max_step_size>
       <ode>
         <solver>
-          <type>quick</type>
+          <type>world</type>
           <iters>300</iters>
           <sor>1.3</sor>
           <use_dynamic_moi_rescaling>1</use_dynamic_moi_rescaling>
@@ -147,7 +176,7 @@
         <particleRadius>0.025</particleRadius>
         <simulationMethod>4</simulationMethod>
         <gravitation>0 0 -9.81</gravitation>
-        <cflMethod>1</cflMethod>
+        <cflMethod>0</cflMethod>
         <cflFactor>1.0</cflFactor>
         <cflMaxTimeStepSize>0.005</cflMaxTimeStepSize>
         <maxIterations>100</maxIterations>
@@ -190,7 +219,7 @@
          gait had even started. -->
     <include>
       <uri>model://BODY2</uri>
-      <pose>-0.5 0 0.356 0 0 0</pose>
+      <pose>-0.5 0 0.656 0 0 0</pose>
     </include>
 
   </world>
