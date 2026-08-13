@@ -109,10 +109,27 @@ JOINTS = _joints()
 VISUAL = _visual_offsets()
 
 
+def urdf_joint(leg: str, key: str) -> str:
+    """URDF joint name for a linkage key: ``("FL", "1.1") -> "Joint_FL1_1"``.
+
+    The pins are named ``1.1``-style throughout this module and the coordinate
+    map, because that is the CAD's nomenclature.  The URDF spells the same
+    joints with an underscore: ROS graph resource names forbid dots, so a
+    dotted joint name is illegal anywhere a name is built out of it -- a
+    controller's parameter namespace, a rosparam key, a dynamic_reconfigure
+    server.  Link names and mesh files keep the dots; they never become ROS
+    names.  ``prepare_urdf.py`` enforces this on every run.
+
+    hydro_model/robots/body2.py carries the same one-liner; the two packages
+    do not import each other.
+    """
+    return f"Joint_{leg}{key.replace('.', '_')}"
+
+
 def _link_frames(leg):
     """World pose of every link of one leg at the URDF zero configuration."""
     T = {"base_link": (np.eye(3), np.zeros(3))}
-    for name in (f"Joint_{leg}{c}.{k}" for c in (1, 2) for k in (1, 2, 3)):
+    for name in (f"Joint_{leg}{c}_{k}" for c in (1, 2) for k in (1, 2, 3)):
         j = JOINTS[name]
         Rp, pp = T[j["parent"]]
         T[j["child"]] = (Rp @ j["R"], pp + Rp @ j["xyz"])
@@ -259,7 +276,7 @@ class Leg:
         hip = None
         for c in (1, 2):
             for k in (1, 2, 3):
-                j = JOINTS[f"Joint_{name}{c}.{k}"]
+                j = JOINTS[f"Joint_{name}{c}_{k}"]
                 axis = self.frames[j["parent"]][0] @ j["R"] @ j["axis"]
                 if np.linalg.norm(axis) < 1e-9:
                     axis = hip          # *.3 still exported as a weld: it is a pin
@@ -333,10 +350,10 @@ class Leg:
                    "2.1": th2, "2.2": th22, "2.3": th23},
             tip=tip,
             # values for the joints the URDF already declares
-            joints={f"Joint_{self.name}1.2": wrap(self.sgn["1.2"] * (th12 - th1)),
-                    f"Joint_{self.name}1.3": wrap(self.sgn["1.3"] * (th13 - th12)),
-                    f"Joint_{self.name}2.2": wrap(self.sgn["2.2"] * (th22 - th2)),
-                    f"Joint_{self.name}2.3": wrap(self.sgn["2.3"] * (th23 - th22))},
+            joints={urdf_joint(self.name, "1.2"): wrap(self.sgn["1.2"] * (th12 - th1)),
+                    urdf_joint(self.name, "1.3"): wrap(self.sgn["1.3"] * (th13 - th12)),
+                    urdf_joint(self.name, "2.2"): wrap(self.sgn["2.2"] * (th22 - th2)),
+                    urdf_joint(self.name, "2.3"): wrap(self.sgn["2.3"] * (th23 - th22))},
             # the two pins that have no URDF joint at all
             closures={"P6 (2.1<->1.3)": wrap(self.sgn["1.1"] * (th13 - th2)),
                       "P8 (1.3<->2.3)": wrap(self.sgn["1.1"] * (th23 - th13))})

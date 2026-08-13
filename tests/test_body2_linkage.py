@@ -16,7 +16,7 @@ import pytest
 from hydro_model import load_robot
 from hydro_model.robots.body2 import H_MIN, LEG_NAMES, LINKAGE, LINKAGE_PATH
 from hydro_model.robots.body2_map import JOINT_KEYS, _solve_leg
-from leg_linkage_sim import Leg
+from leg_linkage_sim import Leg, urdf_joint
 
 # Feasible sample points around the home pose, in degrees.  The band at
 # theta = 0 runs from -12 to +50 deg in theta1, so this stays well inside.
@@ -66,7 +66,7 @@ def test_map_matches_the_reference_solver(leg):
                 np.testing.assert_allclose(np.hypot(c, s), 1.0, atol=1e-12)
                 mine = np.arctan2(s, c)
                 want = (q1 if key == "1.1" else q2 if key == "2.1"
-                        else float(sol["joints"][f"Joint_{leg}{key}"]))
+                        else float(sol["joints"][urdf_joint(leg, key)]))
                 err = np.arctan2(np.sin(mine - want), np.cos(mine - want))
                 assert abs(err) < 1e-10, f"{leg} joint {key}: {mine} vs {want}"
     assert checked > 20, f"only {checked} feasible samples"

@@ -152,7 +152,7 @@ class Body2CoordinateMap(CoordinateMap):
     """Maps BODY2's 8 hip angles onto its 24-joint (48-configuration) tree."""
 
     def __init__(self, robot):
-        from .body2 import LEG_NAMES, LINKAGE
+        from .body2 import LEG_NAMES, LINKAGE, urdf_joint
 
         model = robot.model
         self.n_theta = robot.n_actuated
@@ -172,11 +172,11 @@ class Body2CoordinateMap(CoordinateMap):
             pairs, _ = _solve_leg(th[2 * i], th[2 * i + 1],
                                   LINKAGE["legs"][leg], LINKAGE["branch"])
             for key in JOINT_KEYS:
-                jid = model.getJointId(f"Joint_{leg}{key}")
-                joint = model.joints[jid]
+                name = urdf_joint(leg, key)
+                joint = model.joints[model.getJointId(name)]
                 if joint.nq != 2:
                     raise ValueError(
-                        f"Joint_{leg}{key} has nq={joint.nq}; BODY2's joints must all "
+                        f"{name} has nq={joint.nq}; BODY2's joints must all "
                         f"be continuous (unbounded) for this map's representation"
                     )
                 iq, iv = joint.idx_q - 7, joint.idx_v - 6

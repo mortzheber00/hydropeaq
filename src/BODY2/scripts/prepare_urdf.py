@@ -2,6 +2,12 @@
 
 Run this once after every CAD re-export.  It applies, in order:
 
+0. **Sanitise the joint names.**  The export spells them ``Joint_FL1.1``; ROS
+   graph resource names forbid dots, so every joint becomes ``Joint_FL1_1``.
+   Link names, mesh files and the ``"1.1"`` keys used throughout
+   ``leg_linkage_sim`` and ``body2_map`` keep the CAD's dotted nomenclature --
+   none of those ever becomes a ROS name.
+
 1. **Fix the leg joints.**  ``Joint_*1.3`` and ``Joint_*2.3`` are exported as
    ``fixed`` but are real pins, and several joint origins sit up to 2.6 mm off
    the physical hole centres (two of them are not even on the part).  Every leg
@@ -123,7 +129,7 @@ def _target_frame(model) -> pin.SE3:
 
     def hip_x(prefix):
         return float(np.mean([
-            float(data.oMi[model.getJointId(f"Joint_{leg}1.1")].translation[0])
+            float(data.oMi[model.getJointId(lls.urdf_joint(leg, "1.1"))].translation[0])
             for leg in lls.LEGS if leg.startswith(prefix)
         ]))
 
@@ -220,14 +226,14 @@ def _leg_update(name, ref, text):
         # the link frame keeps that orientation but slides onto the pin axis
         frame[k] = (M @ R0, np.array([a1[0], moved[1], a1[1]]))
 
-    hip = lls.JOINTS[f"Joint_{name}1.1"]
+    hip = lls.JOINTS[lls.urdf_joint(name, "1.1")]
     n_world = leg.frames["base_link"][0] @ hip["R"] @ hip["axis"]
 
     joints, links = {}, {}
     for k in KEYS:
         Rc, oc = frame[k]
         Rp, op = (np.eye(3), np.zeros(3)) if PARENT[k] is None else frame[PARENT[k]]
-        jn = f"Joint_{name}{k}"
+        jn = lls.urdf_joint(name, k)
         if k in ("1.3", "2.3"):
             n = n_world                    # new joints follow the hip's handedness
         else:
@@ -283,23 +289,42 @@ def fix_and_home_legs(text: str) -> str:
 
 # ---------------------------------------------------------------- driver
 
+def sanitise_joint_names(text: str) -> str:
+    """Rewrite ``Joint_FL1.1`` to ``Joint_FL1_1`` and friends.
+
+    ROS graph resource names forbid dots, so a dotted joint name is illegal
+    anywhere a name is built out of it.  Only joint names change; link names,
+    mesh files and the ``"1.1"`` keys used throughout leg_linkage_sim and
+    body2_map keep the CAD's dotted nomenclature.  See ``lls.urdf_joint``.
+    """
+    text, n = re.subn(r"Joint_([A-Z]{2})([12])\.([123])", r"Joint_\1\2_\3", text)
+    print(f"  renamed {n} dotted joint-name occurrence(s)")
+    return text
+
+
 def main() -> None:
     print(f"preparing {lls.URDF}")
+
+    # Before anything reads a joint by name: the helpers below and
+    # leg_linkage_sim both spell them with an underscore.
+    print("\n[0/4] sanitising joint names for ROS")
+    write_urdf(sanitise_joint_names(read_urdf()))
+    importlib.reload(lls)
 
     # Legs first: re-framing measures the centre of mass, and doing it after
     # homing means the origin lands on the CoM of the pose the robot will
     # actually sit in -- which is also what makes a second run a no-op.
-    print("\n[1/3] fixing joint types/origins and homing the legs")
+    print("\n[1/4] fixing joint types/origins and homing the legs")
     write_urdf(fix_and_home_legs(read_urdf()))
 
     # leg_linkage_sim caches the URDF at import; it must re-read after a rewrite
     importlib.reload(lls)
 
-    print("\n[2/3] re-framing the base")
+    print("\n[2/4] re-framing the base")
     write_urdf(reframe_base(read_urdf()))
     importlib.reload(lls)
 
-    print("\n[3/3] refreshing the frozen pin geometry")
+    print("\n[3/4] refreshing the frozen pin geometry")
     importlib.reload(dump_linkage)
     dump_linkage.main()
 

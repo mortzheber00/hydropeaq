@@ -30,6 +30,20 @@ from . import REPO_ROOT, CylinderSpec, LocalPoint, OCPSettings, RobotSpec
 LEG_NAMES = ("FL", "FR", "BL", "BR")
 JOINTS_PER_LEG = ("1.1", "2.1")          # the two hip servos, both on base_link
 
+
+def urdf_joint(leg: str, key: str) -> str:
+    """URDF joint name for a linkage key: ``("FL", "1.1") -> "Joint_FL1_1"``.
+
+    Pins are named ``1.1``-style here and in the coordinate map because that is
+    the CAD's nomenclature, but ROS graph resource names forbid dots, so the
+    URDF spells the same joints with an underscore.  Link names and mesh files
+    keep the dots; they never become ROS names.
+
+    ``src/BODY2/scripts/leg_linkage_sim.py`` carries the same one-liner; the
+    two packages do not import each other.
+    """
+    return f"Joint_{leg}{key.replace('.', '_')}"
+
 _PKG = REPO_ROOT / "src" / "BODY2"
 LINKAGE_PATH = Path(__file__).resolve().parent / "body2_linkage.json"
 LINKAGE = json.loads(LINKAGE_PATH.read_text())
@@ -116,16 +130,16 @@ def _leg_cylinders(leg: str):
     """
     lp = LINKAGE["legs"][leg]["local_points"]
     return (
-        CylinderSpec(f"Link_{leg}1.1", start=f"Joint_{leg}1.1", end=f"Joint_{leg}1.2"),
-        CylinderSpec(f"Link_{leg}1.2", start=f"Joint_{leg}1.2", end=f"Joint_{leg}1.3"),
-        CylinderSpec(f"Link_{leg}1.3", start=f"Joint_{leg}1.3",
+        CylinderSpec(f"Link_{leg}1.1", start=urdf_joint(leg, "1.1"), end=urdf_joint(leg, "1.2")),
+        CylinderSpec(f"Link_{leg}1.2", start=urdf_joint(leg, "1.2"), end=urdf_joint(leg, "1.3")),
+        CylinderSpec(f"Link_{leg}1.3", start=urdf_joint(leg, "1.3"),
                      end=LocalPoint(f"Link_{leg}1.3", tuple(lp["P8"]))),
         # Link 2.1 carries both P5 and P6; P4->P6 is the longer, more
         # hydrodynamically relevant span (50 mm vs 30 mm).
-        CylinderSpec(f"Link_{leg}2.1", start=f"Joint_{leg}2.1",
+        CylinderSpec(f"Link_{leg}2.1", start=urdf_joint(leg, "2.1"),
                      end=LocalPoint(f"Link_{leg}2.1", tuple(lp["P6"]))),
-        CylinderSpec(f"Link_{leg}2.2", start=f"Joint_{leg}2.2", end=f"Joint_{leg}2.3"),
-        CylinderSpec(f"Link_{leg}2.3", start=f"Joint_{leg}2.3",
+        CylinderSpec(f"Link_{leg}2.2", start=urdf_joint(leg, "2.2"), end=urdf_joint(leg, "2.3")),
+        CylinderSpec(f"Link_{leg}2.3", start=urdf_joint(leg, "2.3"),
                      end=LocalPoint(f"Link_{leg}2.3", tuple(lp["tip"])),
                      radius=FOOT_RADIUS,
                      added_mass_volume=FOOT_ADDED_MASS_VOLUME),
@@ -165,7 +179,7 @@ SPEC = RobotSpec(
     package_dir=_PKG,
     leg_names=LEG_NAMES,
     actuated_joint_names=tuple(
-        f"Joint_{leg}{j}" for leg in LEG_NAMES for j in JOINTS_PER_LEG
+        urdf_joint(leg, j) for leg in LEG_NAMES for j in JOINTS_PER_LEG
     ),
     leg_joint_labels=JOINTS_PER_LEG,
     ros_name="BODY2",               # the URDF's robot name, unlike the registry key
