@@ -93,7 +93,11 @@ def plot_base_state(X, T, N, nq):
 
 
 def plot_foot_positions(robot, X, T, N, nq):
-    """Foot x/z trajectories over the cycle."""
+    """Foot trajectories over the cycle, in the base frame.
+
+    Body-relative rather than world: base heave and pitch are comparable to the
+    stroke itself, so a world-frame plot shows mostly the base moving.
+    """
     LEG_NAMES = robot.spec.leg_names
     t = np.linspace(0, T, N + 1)
     X_tree = expand_to_tree(robot, X, nq)
@@ -104,16 +108,21 @@ def plot_foot_positions(robot, X, T, N, nq):
     for k in range(N + 1):
         q_k = X_tree[:nq_tree, k]
         robot.forward_kinematics(q_k)
+        # oMi[1] is the free-flyer placement, and it is a view into robot.data,
+        # so read it inside the loop.  actInv undoes the base rotation as well
+        # as its translation, which subtracting the base position would not.
+        oMb = robot.data.oMi[1]
         feet = robot.foot_positions()
         for leg in LEG_NAMES:
-            pos = feet[leg]
-            foot_traj[leg]["x"].append(pos[0] - X[0, k])
+            pos = oMb.actInv(feet[leg])
+            foot_traj[leg]["x"].append(pos[0])
             foot_traj[leg]["y"].append(pos[1])
             foot_traj[leg]["z"].append(pos[2])
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
-    ylabel = [r"$x - x_{\mathrm{base}}$ [m]", "y [m]", "z [m]"]
+    ylabel = [r"$x_{\mathrm{body}}$ [m]", r"$y_{\mathrm{body}}$ [m]",
+              r"$z_{\mathrm{body}}$ [m]"]
 
     for i, leg in enumerate(LEG_NAMES):
         for ax, key, yl in zip(axes, ["x", "y", "z"], ylabel):
@@ -132,7 +141,8 @@ def plot_foot_positions(robot, X, T, N, nq):
         ax.legend(fontsize=8)
 
     axes[-1].set_xlabel("Time [s]")
-    fig.suptitle("Foot Positions over Swim Cycle (OCP Solution)", fontsize=13)
+    fig.suptitle("Foot Positions in the Body Frame over Swim Cycle (OCP Solution)",
+                 fontsize=13)
     fig.tight_layout()
     return fig
 

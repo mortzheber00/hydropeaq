@@ -44,6 +44,12 @@ SPEC = RobotSpec(
     leg_names=LEG_NAMES,
     actuated_joint_names=tuple(f"{leg}_{j}" for leg in LEG_NAMES for j in JOINTS_PER_LEG),
     leg_joint_labels=("Side", "Thigh", "Calf"),
+    # Only the out-of-plane Side joint flips; Thigh and Calf face the same way
+    # on both sides.  Side is pinned to zero anyway, so its sign never binds --
+    # and for the same reason it is left out of symmetry_joints.
+    lr_leg_pairs=(("Front_Right", "Front_Left"), ("Hind_Right", "Hind_Left")),
+    mirror_joint_sign=(-1.0, 1.0, 1.0),
+    symmetry_joints=(1, 2),          # Thigh, Calf; Side is pinned by pose_constraints
     foot_points={leg: (f"{leg}_Foot_link", (0.0, 0.0, 0.0)) for leg in LEG_NAMES},
     leg_plane_joint={leg: f"{leg}_Side_joint" for leg in LEG_NAMES},
     recenter_base_y=True,
@@ -53,5 +59,5 @@ SPEC = RobotSpec(
     pose_constraints=_pose_constraints,
     # OCPSettings' defaults are amph's own numbers, so this is spelled out only
     # to say the gait explicitly.  Do not tune them for another robot here.
-    ocp=OCPSettings(gait="Prototype"),
+    ocp=OCPSettings(gait="LSPG25"),
 )

@@ -89,7 +89,13 @@ class OCPSettings:
     w_vel_smooth: float = 20.0  # weight for velocity smoothing
     w_drift: float = 10.0     # weight for drift penalty
     heading_tol: float = 0.05   # max yaw angle at endpoint [rad]
-    enforce_symmetry: bool = False  # LSPG: q_right(t) = q_left(t + T/2)
+
+    # Mirror each RobotSpec.lr_leg_pairs left leg onto its right, phase-shifted.
+    enforce_symmetry: bool = True
+    # Seed for the cycle fraction the right leg lags the left; the OCP solves
+    # for it from there.  None reads it off the initial guess (prefer that);
+    # set a scalar, or one value per pair, to force a different phasing.
+    symmetry_phase: Optional[Union[float, Tuple[float, ...]]] = None
 
     @property
     def v_target(self) -> float:
@@ -113,6 +119,17 @@ class RobotSpec:
     # ROS namespace and Gazebo model name (stage2).  Defaults to ``name``;
     # set it when the URDF's robot name differs from the registry key.
     ros_name: Optional[str] = None
+
+    # (right, left) mirror pairs, plus the per-joint sign carrying a left leg's
+    # block onto its mirrored right one.  The sign follows from how the legs are
+    # mounted; check a candidate by confirming both trace the same hip-relative
+    # foot path.  Empty -> no mirror, and enforce_symmetry cannot be used.
+    lr_leg_pairs: Tuple[Tuple[str, str], ...] = ()
+    mirror_joint_sign: Optional[Tuple[float, ...]] = None   # length = joints per leg
+    # Per-leg joint indices the symmetry parametrisation covers; None -> all.
+    # Leave out any joint pose_constraints already pins outright: the two would
+    # stack into rank-deficient rows and overdetermine the NLP.
+    symmetry_joints: Optional[Tuple[int, ...]] = None
 
     # leg -> (frame carrying the foot, offset in that frame's local coordinates)
     foot_points: Dict[str, Tuple[str, Tuple[float, float, float]]] = field(default_factory=dict)
