@@ -1,9 +1,10 @@
-# AMPH — Amphibious Quadruped Swimming-Gait Optimization
+# HydroPEAQ — Hydrodynamic Modeling and Trajectory Optimization for Propulsion Efficiency in Amphibious Quadruped Robots
 
-Energy-efficient **swimming gaits** for the AMPH amphibious quadruped robot, found by
-trajectory optimization against a differentiable hydrodynamic model, co-designed on a
+Energy-efficient **swimming gaits** for amphibious quadruped robots, found by trajectory
+optimization against a differentiable hydrodynamic model, co-designed on a
 speed-vs-efficiency Pareto front, and validated against a high-fidelity SPH fluid
-simulation.
+simulation. The reference platform is the AMPH quadruped; BODY2 is also supported (see
+[Multiple robots](#multiple-robots)).
 
 <p align="center">
   <img src="docs/figures/ocp_swim_cycle.gif" alt="Optimized swim cycle" width="70%">
