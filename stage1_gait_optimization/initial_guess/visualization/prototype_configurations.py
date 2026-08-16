@@ -10,9 +10,10 @@ stick figures sampled over one cycle and coloured by phase, with the four
 phase-transition waypoints highlighted and the foot path overlaid.  A separate
 figure shows the 4-phase gait-timing diagram for all four legs.
 
-Gait parameters (phase ratios, stroke length, depths, diagonal offset) are read
-straight from the defaults of ``build_robot_ik_initial_guess`` so this plot
-always matches the gait that the firmware initial guess actually builds.
+Gait parameters (phase ratios, stroke length, depths, diagonal offset) are
+resolved the same way ``build_robot_ik_initial_guess`` resolves them — the
+amph-calibrated defaults under any ``RobotSpec.firmware_gait`` override — so
+this plot always matches the gait that the firmware initial guess builds.
 
 Left/right legs are mirror-symmetric, so only the front and hind leg are shown.
 
@@ -26,7 +27,6 @@ diagram); the format follows the extension you give.
 from __future__ import annotations
 
 import argparse
-import inspect
 import sys
 from pathlib import Path
 
@@ -40,26 +40,21 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
-from hydro_model import SymbolicDynamics, load_robot
+from hydro_model import SymbolicDynamics, get_spec, load_robot
 from initial_guess import firmware
 
 ROBOT = "amph"   # registered robot name; see hydro_model/robots/
 
 
-# ── Gait parameters, read from the firmware builder's defaults (no drift) ────
-_D = {
-    k: v.default
-    for k, v in inspect.signature(firmware.build_robot_ik_initial_guess).parameters.items()
-    if v.default is not inspect.Parameter.empty
-}
+# ── Gait parameters, resolved as the firmware builder resolves them (no drift) ──
+_D = {**firmware._DEFAULT_GAIT, **get_spec(ROBOT).firmware_gait}
 R_REC, R_STR, R_POW, R_LIFT = _D["ratio_recovery"], _D["ratio_strike"], _D["ratio_power"], _D["ratio_lift"]
 STROKE_LEN = _D["stroke_len"]
 STAND_H, DEPTH_SURF, DEPTH_DEEP = _D["stand_h"], _D["depth_surface"], _D["depth_deep"]
 CENTER_X_FRONT, CENTER_X_REAR = _D["center_x_front"], _D["center_x_rear"]
-# diagonal_phase_offset defaults to None in the builder -> -ratio_recovery/2.
-DIAG_OFFSET = _D["diagonal_phase_offset"]
-if DIAG_OFFSET is None:
-    DIAG_OFFSET = -R_REC / 2.0
+# diagonal_phase_offset is not a gait-shape key: the builder defaults it to
+# -ratio_recovery/2, i.e. FR/HL lag FL/HR by half a recovery phase.
+DIAG_OFFSET = -R_REC / 2.0
 
 # z convention matches firmware: deeper water = more negative dz from trim.
 DZ_SURF = -(DEPTH_SURF - STAND_H)
