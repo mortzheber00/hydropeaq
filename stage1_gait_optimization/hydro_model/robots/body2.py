@@ -66,6 +66,15 @@ THETA_HOME = np.zeros(len(LEG_NAMES) * 2)
 # sweeps along this stays assemblable far longer than one that does not.
 BAND_DIR = np.array([1.37, 1.0]) / np.linalg.norm([1.37, 1.0])
 
+# Hip travel, (lower, upper) degrees on joints 1.1 and 2.1.  The sides mount
+# mirrored -- roll +pi/2 against -pi/2 on a common axis -- so their boxes negate.
+_HIP_BOX_DEG = {"L": ((-66.0, 180.0), (-40.0, 105.0)),
+                "R": ((-180.0, 66.0), (-105.0, 40.0))}
+
+# Leg-major to match actuated_joint_names: FL1.1, FL2.1, FR1.1, ...
+HIP_BOX = np.radians([_HIP_BOX_DEG[leg[1]][i]
+                      for leg in LEG_NAMES for i in range(len(JOINTS_PER_LEG))])
+
 # Minimum circle-circle half-chord the OCP must keep.  Crossing zero is the
 # only way the mechanism can flip assembly branch, and home has 12.5 mm of
 # slack, so 2 mm is a wide margin.
@@ -182,6 +191,10 @@ SPEC = RobotSpec(
         urdf_joint(leg, j) for leg in LEG_NAMES for j in JOINTS_PER_LEG
     ),
     leg_joint_labels=JOINTS_PER_LEG,
+    # Both hips flip, same as HIP_BOX: theta_right = -theta_left traces the
+    # mirrored foot path exactly, these legs being planar.
+    lr_leg_pairs=(("FR", "FL"), ("BR", "BL")),
+    mirror_joint_sign=(-1.0, -1.0),
     ros_name="BODY2",               # the URDF's robot name, unlike the registry key
     foot_points={
         leg: (f"Link_{leg}2.3", tuple(LINKAGE["legs"][leg]["local_points"]["tip"]))
@@ -193,10 +206,10 @@ SPEC = RobotSpec(
     + tuple(c for leg in LEG_NAMES for c in _leg_cylinders(leg)),
     volume_overrides={"base_link": CHASSIS_VOLUME},
     coordinate_map=_coordinate_map,
-    # The hips are continuous servos; travel is limited by the linkage (via
-    # pose_constraints), not by a joint stop.
-    theta_lower=np.full(len(LEG_NAMES) * 2, -np.pi),
-    theta_upper=np.full(len(LEG_NAMES) * 2, np.pi),
+    # Continuous servos, so this is travel, not a joint stop; assemblability on
+    # top of it comes from pose_constraints.
+    theta_lower=HIP_BOX[:, 0],
+    theta_upper=HIP_BOX[:, 1],
     # TODO(hardware): placeholders carried over from amph.  BODY2 is a 143 g
     # robot with 0.2 g leg links, so 3.5 N*m is roughly 15x too large and any
     # gait optimised against it is qualitative only.  Replace with the servo
@@ -216,12 +229,12 @@ SPEC = RobotSpec(
     # reachable box, so leaving them in place would put every foot target off
     # the workspace.
     firmware_gait={
-        "stroke_len": 0.025,
-        "stand_h": 0.0958,       # home foot depth below the base frame origin
-        "depth_surface": 0.0958,  # recovery runs at the trim depth
+        "stroke_len": 0.042,
+        "stand_h": 0.085,       # home foot depth below the base frame origin
+        "depth_surface": 0.085,  # recovery runs at the trim depth
         "depth_deep": 0.1158,     # power stroke 20 mm below it
-        "center_x_front": 0.0,    # stroke centred on the trim foot, both ends
-        "center_x_rear": 0.0,
+        "center_x_front": -0.03,    # stroke centred on the trim foot, both ends
+        "center_x_rear": -0.03,
     },
     # The firmware IK gait needs a foot path; BODY2's is written straight in
     # theta instead, because theta *is* the actuated coordinate once the
@@ -233,7 +246,7 @@ SPEC = RobotSpec(
     # power and smoothing terms have to be rebalanced around the smaller
     # torques that go with it.
     ocp=OCPSettings(
-        gait="ThetaSinusoid",
+        gait="Prototype",
         d_target=0.1,
         w_power=200.0,
         w_vel_smooth=0.2,

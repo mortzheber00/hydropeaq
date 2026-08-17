@@ -28,7 +28,11 @@ All pin locations are read from the mesh geometry rather than from the exported
 joint origins, which sit up to 2.6 mm off the physical hole centres.
 
 Run with no arguments for the slider viewer; ``Leg("BR").solve(q1, q2)`` gives the
-passive joint values for driving a simulator.
+passive joint values for driving a simulator.  The viewer opens a second window
+holding the same leg in the optimiser's own coordinates -- see
+``_optimiser_margin`` below.  ``--limits`` puts a box constraint on the two hip
+angles, the viewer's twin of bounding ``theta`` in the OCP, and ``--trajectory``
+draws a saved solution or initial guess across both windows.
 """
 
 import struct
@@ -120,8 +124,9 @@ def urdf_joint(leg: str, key: str) -> str:
     server.  Link names and mesh files keep the dots; they never become ROS
     names.  ``prepare_urdf.py`` enforces this on every run.
 
-    hydro_model/robots/body2.py carries the same one-liner; the two packages
-    do not import each other.
+    hydro_model/robots/body2.py carries the same one-liner; neither package is
+    on the other's import path.  Only the viewer reaches across, optionally and
+    one way, to draw the optimiser's feasible set (``_optimiser_margin``).
     """
     return f"Joint_{leg}{key.replace('.', '_')}"
 
@@ -366,17 +371,148 @@ class Leg:
         return a + _rot2(self.mesh[key] - a0, sol["theta"][key])
 
 
+# ------------------------------------------------------- optimiser coordinates
+
+STAGE1 = PKG.parents[1] / "stage1_gait_optimization"
+
+
+def _optimiser_margin():
+    """Loop-closure margin of the coordinate map stage1 optimises through.
+
+    ``hydro_model.robots.body2_map`` drives a leg from the same two hip angles
+    this module does, and stage1's OCP additionally holds both circle-circle
+    intersections at ``h^2 >= H_MIN^2`` so a trajectory cannot pass through a
+    configuration where the loops fall apart.  That constraint, not the raw
+    assemblability the viewer draws, is the set the optimiser may plan in.
+
+    Returns ``(margin, H_MIN_mm)`` where ``margin(leg, Q1, Q2)`` is the signed
+    half-chord ``sign(h^2) * sqrt(|h^2|)`` of whichever loop binds, in mm.  It
+    is monotone in ``h^2``, so its zero and its ``H_MIN`` contour are exactly
+    the constraint's, on a scale that can be measured off the leg.
+
+    Returns ``None`` if stage1 or casadi is not importable; nothing else in
+    this module needs either.
+    """
+    import sys
+
+    if str(STAGE1) not in sys.path:
+        sys.path.insert(0, str(STAGE1))
+    try:
+        import casadi as ca
+        from hydro_model.robots.body2 import H_MIN, LINKAGE
+        from hydro_model.robots.body2_map import _solve_leg
+    except ImportError as exc:
+        print(f"optimiser-map window disabled ({exc})")
+        return None
+
+    cache = {}
+
+    def margin(leg, q1, q2):
+        if leg not in cache:
+            th = ca.SX.sym("theta", 2)
+            _, h_sq = _solve_leg(th[0], th[1], LINKAGE["legs"][leg], LINKAGE["branch"])
+            cache[leg] = ca.Function("h_sq", [th], [ca.vertcat(*h_sq)])
+        flat = np.vstack([np.ravel(q1).astype(float), np.ravel(q2).astype(float)])
+        h2 = np.asarray(cache[leg].map(flat.shape[1])(flat))
+        h = np.sign(h2) * np.sqrt(np.abs(h2))
+        return h.min(axis=0).reshape(np.shape(q1)) * 1e3
+
+    return margin, H_MIN * 1e3
+
+
+def _trajectory(path):
+    """Reduced hip coordinates from a stage1 solution or initial-guess ``.npz``.
+
+    Both come out of ``hydro_model.trajectory.save_solution`` and share one
+    layout: ``X`` is ``(nq + nv, N+1)`` and its rows ``7:nq`` hold ``theta``,
+    ordered ``(1.1, 2.1)`` per leg over ``LEG_NAMES``.  The file is read with
+    numpy rather than through ``hydro_model`` so a trajectory can be drawn on a
+    machine without casadi, and because importing that package for a dict of
+    arrays would pull in pinocchio too.
+
+    Returns ``(theta (8, N+1), T)`` in radians and seconds.
+    """
+    data = np.load(path, allow_pickle=False)
+    if "version" not in data.files:
+        raise SystemExit(f"{path}: pre-versioning file; those are amph solutions "
+                         f"in tree coordinates, not BODY2 hip angles")
+    robot, coords = str(data["robot"]), str(data["coords"])
+    if robot != "body2":
+        raise SystemExit(f"{path}: robot is {robot!r}, not 'body2'")
+    if coords != "reduced":
+        raise SystemExit(f"{path}: coords are {coords!r}; BODY2 states are written "
+                         f"in the reduced actuated coordinates")
+    theta = data["X"][7:int(data["nq"])]
+    if len(theta) != 2 * len(LEGS):
+        raise SystemExit(f"{path}: {len(theta)} reduced coordinates, expected {2 * len(LEGS)}")
+    return theta, float(data["T"])
+
+
+# theta's leg order, i.e. hydro_model.robots.body2.LEG_NAMES.  Spelled out
+# rather than reusing LEGS: this one indexes somebody else's array.
+THETA_LEGS = ("FL", "FR", "BL", "BR")
+
+
+def _wrap_break(a, b):
+    """Wrap two degree series into (-180, 180] and cut the polyline where either wraps.
+
+    Solutions run in unwrapped angles -- the hips are continuous and the
+    coordinate map has no branch cut -- so a path may leave the square the map
+    is drawn on.  Without the cut, re-entering on the far side draws a stripe
+    straight across the plot that was never part of the trajectory.
+    """
+    wa, wb = (a + 180) % 360 - 180, (b + 180) % 360 - 180
+    cut = np.flatnonzero((np.abs(np.diff(wa)) > 180) | (np.abs(np.diff(wb)) > 180)) + 1
+    return np.insert(wa, cut, np.nan), np.insert(wb, cut, np.nan)
+
+
+def _box(limits):
+    """Validate ``--limits`` (four degrees) into ``((q1lo, q1hi), (q2lo, q2hi))``.
+
+    The zero pose has to be inside.  It is the configuration the leg is
+    assembled in, and the assembly branch every solve here runs on is read off
+    it; a box excluding it would describe a range the leg could only enter by
+    first leaving the box, leaving nothing honest to draw.
+    """
+    box = ((limits[0], limits[1]), (limits[2], limits[3]))
+    for joint, (lo, hi) in zip(("x1.1", "x2.1"), box):
+        if lo >= hi:
+            raise SystemExit(f"--limits: {joint} lower bound {lo:g} is not below {hi:g}")
+        if not (-180 <= lo and hi <= 180):
+            raise SystemExit(f"--limits: {joint} box must lie within [-180, 180]")
+        if not lo <= 0 <= hi:
+            raise SystemExit(f"--limits: {joint} box [{lo:g}, {hi:g}] excludes the zero pose")
+    return box
+
+
 # ---------------------------------------------------------------- viewer
 
-def main():
+def main(limits=None, trajectory=None):
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Rectangle
     from matplotlib.widgets import RadioButtons, Slider
 
     legs = {n: Leg(n) for n in LEGS}
     colours = {"1.1": "#d62728", "1.2": "#ff7f0e", "1.3": "#8c564b",
                "2.1": "#1f77b4", "2.2": "#2ca02c", "2.3": "#9467bd"}
     grid = np.linspace(-np.pi, np.pi, 181)
+    Q1, Q2 = np.meshgrid(grid, grid)
+
+    # Optional box constraint on the hips, the viewer's twin of bounding theta
+    # in the OCP.  The mask is quantised to the grid, so the reachable set and
+    # the tip cloud snap to the nearest 2 deg cell while the drawn box is exact.
+    box = None if limits is None else _box(limits)
+    if box is None:
+        inbox = np.ones(Q1.shape, bool)
+    else:
+        (a1, b1), (a2, b2) = box
+        d1, d2 = np.degrees(Q1), np.degrees(Q2)
+        inbox = (d1 >= a1) & (d1 <= b1) & (d2 >= a2) & (d2 <= b2)
+
+    theta, period = (None, None) if trajectory is None else _trajectory(trajectory)
+    TRACE = "#e6007e"                          # reads against RdBu, the island and the meshes
 
     fig = plt.figure(figsize=(11, 8))
     fig.subplots_adjust(left=0.28, right=0.97, bottom=0.16, top=0.94)
@@ -388,6 +524,8 @@ def main():
 
     cloud = ax.plot([], [], ".", ms=1.2, color="0.75", zorder=0,
                     label="foot-tip workspace")[0]
+    trace = (ax.plot([], [], "-", color=TRACE, lw=1.4, zorder=1,
+                     label="trajectory")[0] if theta is not None else None)
     meshes = {k: LineCollection([], colors=c, lw=0.6, alpha=0.85, zorder=3)
               for k, c in colours.items()}
     for lc in meshes.values():
@@ -400,21 +538,45 @@ def main():
                    ha="center", color="crimson", weight="bold", visible=False)
     read = fig.text(0.02, 0.62, "", family="monospace", fontsize=8, va="top")
 
-    s1 = Slider(fig.add_axes([0.32, 0.07, 0.6, 0.03]), "Joint x1.1 [deg]", -180, 180, valinit=0)
-    s2 = Slider(fig.add_axes([0.32, 0.02, 0.6, 0.03]), "Joint x2.1 [deg]", -180, 180, valinit=0)
+    (s1lo, s1hi), (s2lo, s2hi) = box if box is not None else ((-180, 180), (-180, 180))
+    s1 = Slider(fig.add_axes([0.32, 0.07, 0.6, 0.03]), "Joint x1.1 [deg]", s1lo, s1hi, valinit=0)
+    s2 = Slider(fig.add_axes([0.32, 0.02, 0.6, 0.03]), "Joint x2.1 [deg]", s2lo, s2hi, valinit=0)
     radio = RadioButtons(fig.add_axes([0.02, 0.80, 0.12, 0.16]), LEGS, active=LEGS.index("BR"))
     state = {"leg": "BR"}
 
+    # second window: the same leg in the coordinates stage1 optimises through
+    opt = _optimiser_margin()
+    mapax = None
+    if opt is not None:
+        margin_of, hmin_mm = opt
+        mapfig = plt.figure(figsize=(6.8, 6.2))
+        mapfig.subplots_adjust(left=0.13, right=0.99, bottom=0.10, top=0.92)
+        mapax = mapfig.add_subplot(111)
+        mstate = {}
+
+    if theta is not None:
+        print(f"{trajectory}: {theta.shape[1]} samples over T = {period:.4f} s")
+        if mapax is not None:
+            for i, name in enumerate(THETA_LEGS):
+                h = margin_of(name, theta[2 * i], theta[2 * i + 1]).min()
+                verdict = "inside" if h >= hmin_mm else "VIOLATES"
+                print(f"  {name}: min loop half-chord {h:+8.2f} mm  "
+                      f"({verdict} the stage1 bound of {hmin_mm:g} mm)")
+
     def workspace(leg):
-        """Foot-tip positions reachable from the zero pose without taking the leg apart.
+        """Configurations reachable from the zero pose without taking the leg apart.
 
         Assemblable (q1, q2) cells split into several islands; only the one holding
         the zero pose can be driven to, so the rest are flooded away.  The hips are
-        continuous joints, hence the wrap-around neighbourhood.
+        continuous joints, hence the wrap-around neighbourhood -- a box constraint
+        needs no special case there, since wrapping from +180 to -180 has to cross
+        cells the box already masks out unless the box spans the full turn.
+
+        Returns the reachable mask over the (q1, q2) grid and the foot tips it
+        maps to: the same set drawn once in each of the viewer's two windows.
         """
-        Q1, Q2 = np.meshgrid(grid, grid)
         sol = leg.solve(Q1, Q2)
-        ok = sol["ok"] & np.isfinite(sol["tip"][..., 0])
+        ok = sol["ok"] & np.isfinite(sol["tip"][..., 0]) & inbox
         n = len(grid)
         seed = (int(np.argmin(np.abs(grid))),) * 2
         reach = np.zeros_like(ok)
@@ -428,10 +590,91 @@ def main():
                     if ok[nr, nc] and not reach[nr, nc]:
                         reach[nr, nc] = True
                         stack.append((nr, nc))
-        return sol["tip"][reach]
+        return reach, sol["tip"][reach]
+
+    def draw_map(name, reach):
+        """Redraw the optimiser-coordinate window for a newly picked leg.
+
+        The colour field is the binding loop's half-chord: red where the leg
+        cannot be assembled at all, blue where it can, and the two contours are
+        the assembly limit and the tighter bound stage1 actually constrains.
+        The reachable island is the same set the other window draws as the
+        foot-tip cloud, so the two are readable side by side.
+        """
+        margin = margin_of(name, Q1, Q2)
+        deg1, deg2 = np.degrees(Q1), np.degrees(Q2)
+        half = np.degrees(grid[1] - grid[0]) / 2
+        lim = 180 + half
+        vmax = np.nanmax(margin)
+
+        mapax.clear()
+        im = mapax.imshow(margin, origin="lower", extent=(-lim, lim, -lim, lim),
+                          cmap="RdBu", vmin=-vmax, vmax=vmax, interpolation="nearest")
+        # On all four legs of this build the assemblable set turns out to be a
+        # single island, so the green boundary lies exactly on the h = 0 contour.
+        # The island goes down first and thicker: the black line then stays on
+        # top with a green fringe instead of being painted over.
+        mapax.contour(deg1, deg2, reach.astype(float), [0.5],
+                      colors="#2ca02c", linewidths=2.2)
+        mapax.contour(deg1, deg2, margin, [0.0], colors="k", linewidths=1.0)
+        mapax.contour(deg1, deg2, margin, [hmin_mm], colors="k", linewidths=1.0,
+                      linestyles="dashed")
+        if box is not None:
+            # shade out what the constraint forbids, rather than cropping to it:
+            # the excluded structure is exactly what one wants to see when
+            # deciding whether the box is drawn in the right place.
+            veil = np.ones(Q1.shape + (4,))          # white, i.e. wash out
+            veil[..., 3] = np.where(inbox, 0.0, 0.62)
+            mapax.imshow(veil, origin="lower", extent=(-lim, lim, -lim, lim),
+                         interpolation="nearest", zorder=4)
+            mapax.add_patch(Rectangle((box[0][0], box[1][0]), box[0][1] - box[0][0],
+                                      box[1][1] - box[1][0], fill=False, ec="k",
+                                      lw=1.4, zorder=6))
+        if theta is not None:
+            i = THETA_LEGS.index(name)
+            tq1, tq2 = _wrap_break(np.degrees(theta[2 * i]), np.degrees(theta[2 * i + 1]))
+            mapax.plot(tq1, tq2, "-", color=TRACE, lw=1.4, zorder=7)
+            mapax.plot(tq1[:1], tq2[:1], "o", color=TRACE, ms=5, zorder=7)
+        mstate["marker"] = mapax.plot([], [], "o", ms=8, mfc="w", mec="k", zorder=5)[0]
+        mstate["read"] = mapax.text(0.02, 0.02, "", transform=mapax.transAxes,
+                                    family="monospace", fontsize=8, zorder=7,
+                                    bbox=dict(fc="w", ec="none", alpha=0.7, pad=2))
+
+        if mstate.get("cbar") is None:
+            mstate["cbar"] = mapfig.colorbar(im, ax=mapax, extend="min", pad=0.02)
+            mstate["cbar"].set_label("loop half-chord h [mm]  (binding loop)", fontsize=9)
+        else:
+            mstate["cbar"].update_normal(im)
+
+        mapax.set_aspect("equal")
+        mapax.set_xlim(-lim, lim)
+        mapax.set_ylim(-lim, lim)
+        mapax.set_xticks(range(-180, 181, 90))
+        mapax.set_yticks(range(-180, 181, 90))
+        mapax.set_xlabel("q1  =  Joint x1.1 [deg]")
+        mapax.set_ylabel("q2  =  Joint x2.1 [deg]")
+        mapax.set_title(f"BODY2 leg {name} - optimiser coordinate map", weight="bold")
+        mapax.legend(handles=[
+            Line2D([], [], color="#2ca02c", lw=2.2, label="reachable from zero pose"),
+            Line2D([], [], color="k", lw=1.0, label="assembly limit  h = 0"),
+            Line2D([], [], color="k", lw=1.0, ls="--",
+                   label=f"stage1 bound  h = {hmin_mm:g} mm"),
+            Line2D([], [], color="k", marker="o", ls="", mfc="w", ms=7,
+                   label="current pose"),
+        ] + ([Line2D([], [], color="k", lw=1.4, label="box constraint")]
+             if box is not None else [])
+          + ([Line2D([], [], color=TRACE, lw=1.4, label="trajectory")]
+             if theta is not None else []),
+            loc="upper right", fontsize=8, framealpha=0.9)
 
     def draw(_=None):
         leg = legs[state["leg"]]
+        if mapax is not None:
+            h = float(margin_of(leg.name, np.radians(s1.val), np.radians(s2.val)))
+            inside = "inside" if h >= hmin_mm else "OUTSIDE"
+            mstate["marker"].set_data([s1.val], [s2.val])
+            mstate["read"].set_text(f"h = {h:+8.2f} mm   {inside} the stage1 bound")
+            mapfig.canvas.draw_idle()
         sol = leg.solve(np.radians(s1.val), np.radians(s2.val))
         if not sol["ok"]:
             warn.set_visible(True)
@@ -460,13 +703,26 @@ def main():
 
     def pick(label):
         state["leg"] = label
-        w = workspace(legs[label])
+        reach, w = workspace(legs[label])
+        if mapax is not None:
+            draw_map(label, reach)
         cloud.set_data(w[:, 0], w[:, 1])
+        xs, zs = w[:, 0], w[:, 1]
+        if trace is not None:
+            i = THETA_LEGS.index(label)
+            tip = legs[label].solve(theta[2 * i], theta[2 * i + 1])["tip"]
+            trace.set_data(tip[:, 0], tip[:, 1])
+            # a guess can leave the reachable set, and does so as nan: keep the
+            # frame around whatever of it did land somewhere.
+            fin = np.isfinite(tip[:, 0])
+            if fin.any():
+                xs = np.concatenate([xs, tip[fin, 0]])
+                zs = np.concatenate([zs, tip[fin, 1]])
         ax.set_title(f"BODY2 leg {label} - closed-loop kinematics", weight="bold")
         draw()
         m = 0.02
-        ax.set_xlim(w[:, 0].min() - m, w[:, 0].max() + m)
-        ax.set_ylim(w[:, 1].min() - m, w[:, 1].max() + m)
+        ax.set_xlim(xs.min() - m, xs.max() + m)
+        ax.set_ylim(zs.min() - m, zs.max() + m)
         fig.canvas.draw_idle()
 
     s1.on_changed(draw)
@@ -478,4 +734,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Interactive viewer for the BODY2 legs.")
+    ap.add_argument("--limits", nargs=4, type=float,
+                    metavar=("Q1MIN", "Q1MAX", "Q2MIN", "Q2MAX"),
+                    help="box constraint on the two hip angles, in degrees.  The "
+                         "sliders are clamped to it, the reachable set is flooded "
+                         "inside it only -- so the foot-tip workspace shows what the "
+                         "constrained leg can actually reach -- and the map shades "
+                         "out the rest.  Must contain the zero pose.")
+    ap.add_argument("--trajectory", metavar="NPZ",
+                    help="draw a stage1 solution or initial guess: the hip path on "
+                         "the coordinate map and the foot path on the leg.  Any "
+                         ".npz written by hydro_model.trajectory.save_solution for "
+                         "body2 in reduced coordinates.")
+    args = ap.parse_args()
+    main(args.limits, args.trajectory)

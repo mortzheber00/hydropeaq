@@ -229,10 +229,12 @@ def build_heatmap(robot: QuadrupedRobot, leg: str, n_grid: int = 60):
 
 
 def _build_anim_data(robot: QuadrupedRobot, sol_path: Path, leg: str) -> dict:
-    """Pre-compute body-relative sagittal (x, z) positions for all joints at all timesteps.
+    """Pre-compute body-frame sagittal (x, z) positions for all joints at all timesteps.
 
     Uses leg_centerline_positions (sagittal projection) so the chain appears planar,
-    exactly matching the foot positions shown on the heatmap.
+    exactly matching the foot positions shown on the heatmap.  Those are swept with
+    the base at neutral_config, so the frames only agree once the base rotation is
+    undone too — subtracting the base position alone leaves the pitch in.
     """
     d = np.load(sol_path)
     X, nq, N = d["X"], int(d["nq"]), int(d["N"])
@@ -245,10 +247,12 @@ def _build_anim_data(robot: QuadrupedRobot, sol_path: Path, leg: str) -> dict:
         q = X[:nq, t]
         robot.forward_kinematics(q)
         proj = robot.leg_centerline_positions(leg)
-        bx, _, bz = q[:3]
+        # oMi[1] is the free-flyer placement, and a view into robot.data, so it
+        # has to be read here rather than hoisted out of the loop.
+        oMb = robot.data.oMi[1]
         for k in joint_keys:
-            v = proj[k]
-            data[k][t] = [v[0] - bx, v[2] - bz]
+            v = oMb.actInv(proj[k])
+            data[k][t] = [v[0], v[2]]
 
     data["N"] = N
     data["T"] = T

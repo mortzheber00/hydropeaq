@@ -1,39 +1,54 @@
 #!/usr/bin/env python3
 """
-Validate Gazebo fluid simulation against OCP solution.
+Validate the Gazebo fluid simulation against the OCP solution it was replayed
+from, and write the comparison as thesis-ready vector figures.
 
-Reads joint states from a ROS1 .bag file, aligns to the OCP time grid,
-and produces per-leg validation figures (3-panel layout per joint):
+Reads joint states and base pose from a ROS1 .bag file, resamples them onto the
+OCP time grid, and produces three figures:
 
-  Row 0: Joint angle — OCP vs Sim overlay
-  Row 1: Tracking error over time  (q_ocp - q_sim)
-  Row 2: RMSE bar chart for all actuated joints  (this leg highlighted)
+  1. Joint tracking  — one panel per (leg, joint); OCP and simulation overlaid,
+     with the area between them shaded as the tracking error and the per-joint
+     RMSE quoted in the corner.
+  2. Base tracking   — the same comparison for base x/y/z and forward speed,
+     with an explicit error trace underneath.
+  3. RMSE summary    — every actuated joint on one axis, grouped and coloured by
+     leg, against the all-joint mean.
+
+The overlay is the comparison itself, so the error is drawn *between* the two
+curves rather than in a separate row: sign, timing and magnitude are then read
+off the same panel as the trajectories.  The RMSE bar chart used to be repeated
+once per leg with a different group highlighted; it is one figure now.
 
 Usage:
     python3 validate_sim.py [--bag PATH] [--ocp PATH] [--start T] [--out DIR]
+                            [--format EXT] [--no-show]
 
-    --bag    path to .bag file            (default: /home/ws/sim_log.bag)
-    --ocp    path to OCP .npz file        (default: /home/ws/task3_solution.npz)
-    --start  sim time [s] for OCP t=0     (default: 0.0 = bag start)
-    --out    output directory for PNGs    (default: .)
+    --bag     path to .bag file            (default: /home/ws/sim_log.bag)
+    --ocp     path to OCP .npz file        (default: /home/ws/task3_solution.npz)
+    --start   sim time [s] for OCP t=0     (default: 0.0 = bag start)
+    --out     output directory             (default: .)
+    --format  figure format                (default: pdf — vector, for LaTeX)
+    --no-show skip the interactive viewer  (for headless figure generation)
 
 The robot is read from the solution file, so the same command works for either
 one; the bag has to be the run of that same solution.
 """
+from __future__ import annotations
 
 import argparse
 import sys
-import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from scipy.interpolate import interp1d
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+sys.path.insert(0, str(Path(__file__).parents[1] / "stage3_visualization"))
 from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
+from thesis_style import PALETTE, tex  # noqa: E402  also activates the plot style
 
 # ── Canonical ordering, taken from the robot's spec ─────────────────────────
 # The plots below lay one column out per actuated joint of a leg, so this
@@ -44,29 +59,28 @@ from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
 # here, so validating BODY2 meant editing the file, and forgetting to edit it
 # back made the next amph run compare against the wrong joint names.
 SPEC = None
-LEG_NAMES = JOINT_TYPES = OCP_JOINT_NAMES = BAR_LABELS = None
+LEG_NAMES = JOINT_TYPES = OCP_JOINT_NAMES = None
 N_PER_LEG = None
-
-
-# Short labels for the bar chart, e.g. FL_Si or FL_1.1
-def _short(leg: str) -> str:
-    parts = leg.split("_")
-    return leg if len(parts) == 1 else "".join(p[0] for p in parts)
 
 
 def use_robot(name: str) -> None:
     """Bind the module's naming tables to a registered robot."""
-    global SPEC, LEG_NAMES, JOINT_TYPES, N_PER_LEG, OCP_JOINT_NAMES, BAR_LABELS
+    global SPEC, LEG_NAMES, JOINT_TYPES, N_PER_LEG, OCP_JOINT_NAMES
     SPEC = get_spec(name)
     LEG_NAMES = list(SPEC.leg_names)
     JOINT_TYPES = list(SPEC.leg_joint_labels)
     N_PER_LEG = len(JOINT_TYPES)
     OCP_JOINT_NAMES = list(SPEC.actuated_joint_names)
-    BAR_LABELS = [f"{_short(leg)}_{jt[:2]}"
-                  for leg in LEG_NAMES for jt in JOINT_TYPES]
 
 
-LEG_COLORS = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+# The comparison is binary, so it gets the two ends of the shared palette:
+# reference solid, measurement dashed on top of it.
+C_OCP, C_SIM = PALETTE[0], PALETTE[2]
+# Legs keep the shared palette order, so a leg is the same colour here as in the
+# stage-3 figures.
+LEG_COLORS = PALETTE
+
+DEG = r"$^\circ$"   # usetex has no degree glyph in the text font
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -226,188 +240,181 @@ def compute_rmse(q_ocp, q_sim):
 
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
-def plot_leg(leg_idx: int, q_ocp, q_sim, t_ocp, rmse_all, out_dir: Path):
-    """Generate the 3-panel validation figure for one leg.
+def _overlay(ax, t, y_ocp, y_sim):
+    """Reference / measurement overlay with the gap between them shaded."""
+    ax.fill_between(t, y_ocp, y_sim, color=C_SIM, alpha=0.16, lw=0, zorder=1)
+    ax.plot(t, y_ocp, color=C_OCP, lw=1.3, zorder=3)
+    ax.plot(t, y_sim, color=C_SIM, lw=1.1, ls=(0, (4, 1.6)), zorder=4)
+    ax.set_xlim(t[0], t[-1])
+    ax.grid(alpha=0.3, lw=0.4)
 
-    Layout per joint column:
-      row 0 — angle overlay (OCP vs Sim)
-      row 1 — tracking error (q_ocp - q_sim)
-      row 2 — RMSE bar chart for all actuated joints (this leg highlighted, full-width)
+
+def _headroom(ax, frac: float = 0.22):
+    """Open a band at the top of the panel for the RMSE badge to sit in.
+
+    Call once per set of shared axes: on a shared-y column every call would
+    expand the same limits again.
     """
-    leg = LEG_NAMES[leg_idx]
-    ji = leg_idx * N_PER_LEG  # first joint index for this leg
+    lo, hi = ax.get_ylim()
+    ax.set_ylim(lo, hi + frac * (hi - lo))
 
-    fig = plt.figure(figsize=(14, 10))
-    gs = fig.add_gridspec(
-        3, N_PER_LEG,
-        height_ratios=[2.2, 1.2, 1.8],
-        hspace=0.50,
-        wspace=0.35,
-    )
 
-    for col, jtype in enumerate(JOINT_TYPES):
-        j = ji + col
-        q_o = np.degrees(q_ocp[j, :])
-        q_s = np.degrees(q_sim[j, :])
-        err = q_o - q_s
+def _corner(ax, text):
+    """RMSE badge, top-right, clear of the curves."""
+    ax.annotate(text, xy=(0.975, 0.94), xycoords="axes fraction",
+                ha="right", va="top", fontsize=7,
+                bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.75",
+                          lw=0.5, alpha=0.9))
 
-        # ── Row 0: angle overlay ─────────────────────────────────────────
-        ax0 = fig.add_subplot(gs[0, col])
-        ax0.plot(t_ocp, q_o, color="tab:blue", lw=1.8, label="OCP")
-        ax0.plot(t_ocp, q_s, color="tab:orange", lw=1.5, ls="--", label="Sim")
-        ax0.set_title(f"{jtype} joint", fontsize=10)
-        if col == 0:
-            ax0.set_ylabel(f"{leg.replace('_', ' ')}\nangle [°]", fontsize=9)
-        else:
-            ax0.set_ylabel("angle [°]", fontsize=9)
-        ax0.legend(fontsize=8, loc="best")
-        ax0.grid(True, alpha=0.3)
-        ax0.tick_params(labelbottom=False)
 
-        # ── Row 1: tracking error ────────────────────────────────────────
-        ax1 = fig.add_subplot(gs[1, col], sharex=ax0)
-        ax1.plot(t_ocp, err, color="tab:red", lw=1.5)
-        ax1.axhline(0, color="k", lw=0.7, ls=":")
-        ax1.fill_between(t_ocp, err, alpha=0.18, color="tab:red")
-        ax1.set_ylabel("error [°]", fontsize=9)
-        ax1.set_xlabel("time [s]", fontsize=9)
-        ax1.grid(True, alpha=0.3)
-
-        rmse_deg = np.degrees(rmse_all[j])
-        ax1.annotate(
-            f"RMSE = {rmse_deg:.2f}°",
-            xy=(0.98, 0.92), xycoords="axes fraction",
-            ha="right", va="top", fontsize=8,
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="0.7", lw=0.7),
-        )
-
-    # ── Row 2: RMSE bar chart for all actuated joints ──────────────────────────
-    ax2 = fig.add_subplot(gs[2, :])
-
-    bar_colors = [
-        LEG_COLORS[i // 3] if (i // 3) == leg_idx else "lightgrey"
-        for i in range(len(OCP_JOINT_NAMES))
+def _overlay_legend(fig):
+    handles = [
+        Line2D([], [], color=C_OCP, lw=1.3, label="OCP solution"),
+        Line2D([], [], color=C_SIM, lw=1.1, ls=(0, (4, 1.6)),
+               label="Gazebo simulation"),
+        Patch(facecolor=C_SIM, alpha=0.16, label="tracking error"),
     ]
-    rmse_deg_all = np.degrees(rmse_all)
-    bars = ax2.bar(
-        range(len(OCP_JOINT_NAMES)), rmse_deg_all,
-        color=bar_colors, edgecolor="k", linewidth=0.5,
-    )
-    ax2.set_xticks(range(len(OCP_JOINT_NAMES)))
-    ax2.set_xticklabels(BAR_LABELS, rotation=45, ha="right", fontsize=9)
-    ax2.set_ylabel("RMSE [°]", fontsize=9)
-    ax2.set_title(
-        f"RMSE — all joints  (mean = {rmse_deg_all.mean():.2f}°, "
-        f"highlighted = {leg.replace('_', ' ')})",
-        fontsize=10,
-    )
-    ax2.grid(True, axis="y", alpha=0.3)
-    for bar, v in zip(bars, rmse_deg_all):
-        ax2.text(
-            bar.get_x() + bar.get_width() / 2, v + 0.01 * rmse_deg_all.max(),
-            f"{v:.2f}", ha="center", va="bottom", fontsize=7,
-        )
+    # "outside" placement is what constrained layout reserves room for, so the
+    # legend never has to be nudged by hand.
+    fig.legend(handles=handles, loc="outside lower center", ncol=3, fontsize=8)
 
-    fig.suptitle(
-        f"Sim Validation — {leg.replace('_', ' ')} Leg",
-        fontsize=13, fontweight="bold",
+
+def plot_joint_tracking(q_ocp, q_sim, t_ocp, rmse_all, title: str | None = None):
+    """Every actuated joint on one grid: legs down the rows, joints across.
+
+    Columns share a y axis, so the same joint type is directly comparable
+    between legs — the thing the figure is there to show.
+    """
+    n_legs = len(LEG_NAMES)
+    fig, axes = plt.subplots(
+        n_legs, N_PER_LEG, sharex=True, sharey="col", squeeze=False,
+        figsize=(2.45 * N_PER_LEG + 0.7, 1.55 * n_legs + 0.9),
+        layout="constrained",
     )
 
-    out_path = out_dir / f"validation_{leg.lower()}.png"
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    print(f"  Saved {out_path}")
+    for i, leg in enumerate(LEG_NAMES):
+        for j, jtype in enumerate(JOINT_TYPES):
+            k = i * N_PER_LEG + j
+            ax = axes[i, j]
+            _overlay(ax, t_ocp, np.degrees(q_ocp[k, :]), np.degrees(q_sim[k, :]))
+            _corner(ax, rf"RMSE {np.degrees(rmse_all[k]):.2f}{DEG}")
+            if i == 0:
+                ax.set_title(tex(jtype))
+            if j == 0:
+                ax.set_ylabel(tex(leg.replace("_", " ")) + "\n" + rf"$q$ [{DEG}]")
+            if i == n_legs - 1:
+                ax.set_xlabel(r"time $t$ [s]")
+
+    for j in range(N_PER_LEG):   # columns share a y axis: expand each once
+        _headroom(axes[0, j])
+
+    if title is None:
+        title = (r"Joint tracking: OCP solution vs.\ Gazebo simulation "
+                 rf"(mean RMSE {np.degrees(rmse_all.mean()):.2f}{DEG})")
+    fig.suptitle(title)
+    _overlay_legend(fig)
     return fig
 
 
-def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp, out_dir: Path):
-    """3-panel validation figure for base position and forward speed.
+def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp, title: str | None = None):
+    """Base position and forward speed: overlay on top, error trace below.
 
-    4 columns: x, y, z (position [m]), vx (forward speed [m/s])
-      row 0 — overlay (OCP vs Sim), both shifted to start at 0
-      row 1 — tracking error
-      row 2 — RMSE bar chart for all 4 variables (full width)
+    Position is drawn as displacement from ``t=0`` for both, so the panels
+    compare the motion the gait produces rather than where the model happened to
+    be spawned.  The base gets its own error row because its drift is the
+    headline result, and it is small enough to disappear inside the overlay.
     """
-    # Shift both to zero at t=0 so we compare relative displacement / speed shape
     xyz_o = xyz_ocp - xyz_ocp[:, [0]]
     xyz_s = xyz_sim - xyz_sim[:, [0]]
 
-    labels = ["x position", "y position", "z position", "forward speed (vx)"]
-    units  = ["m", "m", "m", "m/s"]
+    titles = [r"$\Delta x$ (forward)", r"$\Delta y$ (lateral)",
+              r"$\Delta z$ (heave)", r"forward speed $v_x$"]
+    units = ["m", "m", "m", "m/s"]
     ocp_data = [xyz_o[0], xyz_o[1], xyz_o[2], vx_ocp]
     sim_data = [xyz_s[0], xyz_s[1], xyz_s[2], vx_sim]
 
-    rmse_base = np.array([
-        np.sqrt(np.mean((o - s) ** 2))
-        for o, s in zip(ocp_data, sim_data)
-    ])
+    rmse_base = np.array([np.sqrt(np.mean((o - s) ** 2))
+                          for o, s in zip(ocp_data, sim_data)])
 
-    fig = plt.figure(figsize=(18, 9))
-    gs = fig.add_gridspec(
-        3, 4,
-        height_ratios=[2.2, 1.2, 1.8],
-        hspace=0.50,
-        wspace=0.35,
-    )
+    fig, axes = plt.subplots(2, 4, sharex=True, squeeze=False,
+                             gridspec_kw=dict(height_ratios=[2.0, 1.0]),
+                             figsize=(10.0, 4.4), layout="constrained")
 
-    for col, (label, unit, q_o, q_s) in enumerate(
-        zip(labels, units, ocp_data, sim_data)
+    for col, (name, unit, q_o, q_s) in enumerate(
+        zip(titles, units, ocp_data, sim_data)
     ):
+        ax0, ax1 = axes[0, col], axes[1, col]
+        _overlay(ax0, t_ocp, q_o, q_s)
+        ax0.set_title(name)
+        ax0.set_ylabel(f"[{unit}]")
+        _headroom(ax0)
+        _corner(ax0, rf"RMSE {rmse_base[col]:.4f} {unit}")
+
         err = q_o - q_s
+        ax1.axhline(0, color="0.4", lw=0.5, ls=":")
+        ax1.fill_between(t_ocp, err, color=C_SIM, alpha=0.16, lw=0)
+        ax1.plot(t_ocp, err, color=C_SIM, lw=1.0)
+        ax1.set_xlim(t_ocp[0], t_ocp[-1])
+        ax1.grid(alpha=0.3, lw=0.4)
+        ax1.set_ylabel(f"error [{unit}]")
+        ax1.set_xlabel(r"time $t$ [s]")
 
-        # ── Row 0: overlay ───────────────────────────────────────────────
-        ax0 = fig.add_subplot(gs[0, col])
-        ax0.plot(t_ocp, q_o, color="tab:blue", lw=1.8, label="OCP")
-        ax0.plot(t_ocp, q_s, color="tab:orange", lw=1.5, ls="--", label="Sim")
-        ax0.set_title(label, fontsize=10)
-        ax0.set_ylabel(f"Δ [{unit}]" if col < 3 else f"[{unit}]", fontsize=9)
-        ax0.legend(fontsize=8, loc="best")
-        ax0.grid(True, alpha=0.3)
-        ax0.tick_params(labelbottom=False)
+    if title is None:
+        title = r"Base state: OCP solution vs.\ Gazebo simulation"
+    fig.suptitle(title)
+    _overlay_legend(fig)
+    return fig
 
-        # ── Row 1: tracking error ────────────────────────────────────────
-        ax1 = fig.add_subplot(gs[1, col], sharex=ax0)
-        ax1.plot(t_ocp, err, color="tab:red", lw=1.5)
-        ax1.axhline(0, color="k", lw=0.7, ls=":")
-        ax1.fill_between(t_ocp, err, alpha=0.18, color="tab:red")
-        ax1.set_ylabel(f"error [{unit}]", fontsize=9)
-        ax1.set_xlabel("time [s]", fontsize=9)
-        ax1.grid(True, alpha=0.3)
-        ax1.annotate(
-            f"RMSE = {rmse_base[col]:.4f} {unit}",
-            xy=(0.98, 0.92), xycoords="axes fraction",
-            ha="right", va="top", fontsize=8,
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="0.7", lw=0.7),
-        )
 
-    # ── Row 2: RMSE bar chart ────────────────────────────────────────────
-    ax2 = fig.add_subplot(gs[2, :])
-    bar_colors = ["tab:blue", "tab:blue", "tab:blue", "tab:purple"]
-    bar_short = ["x pos", "y pos", "z pos", "vx"]
-    bars = ax2.bar(
-        range(4), rmse_base,
-        color=bar_colors, edgecolor="k", linewidth=0.5,
-    )
-    ax2.set_xticks(range(4))
-    ax2.set_xticklabels(bar_short, fontsize=10)
-    ax2.set_ylabel("RMSE", fontsize=9)
-    ax2.set_title("RMSE — base state variables", fontsize=10)
-    ax2.grid(True, axis="y", alpha=0.3)
-    for bar, v, unit in zip(bars, rmse_base, units):
-        ax2.text(
-            bar.get_x() + bar.get_width() / 2, v + 0.005 * rmse_base.max(),
-            f"{v:.4f} {unit}", ha="center", va="bottom", fontsize=9,
-        )
+def plot_rmse(rmse_all, title: str | None = None):
+    """All actuated joints on one axis, grouped and coloured by leg."""
+    rmse_deg = np.degrees(rmse_all)
+    # Gap of 0.8 bar widths between legs, so the groups read as groups without
+    # needing a separator line.
+    x = np.array([i * (N_PER_LEG + 0.8) + j
+                  for i in range(len(LEG_NAMES)) for j in range(N_PER_LEG)])
+    colors = [LEG_COLORS[i % len(LEG_COLORS)]
+              for i in range(len(LEG_NAMES)) for _ in range(N_PER_LEG)]
 
-    fig.suptitle("Sim Validation — Base Position & Forward Speed", fontsize=13, fontweight="bold")
+    fig, ax = plt.subplots(figsize=(7.0, 3.0), layout="constrained")
+    bars = ax.bar(x, rmse_deg, width=0.85, color=colors, edgecolor="k", lw=0.4)
+    ax.axhline(rmse_deg.mean(), color="0.35", lw=0.9, ls="--", zorder=3)
 
-    out_path = out_dir / "validation_base.png"
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    print(f"  Saved {out_path}")
+    for bar, v in zip(bars, rmse_deg):
+        ax.text(bar.get_x() + bar.get_width() / 2, v + 0.02 * rmse_deg.max(),
+                f"{v:.2f}", ha="center", va="bottom", fontsize=6)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([tex(jt) for _ in LEG_NAMES for jt in JOINT_TYPES],
+                       rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel(rf"RMSE [{DEG}]")
+    ax.set_ylim(0, rmse_deg.max() * 1.22)
+    ax.grid(axis="y", alpha=0.3, lw=0.4)
+    ax.tick_params(axis="x", which="minor", bottom=False, top=False)
+
+    leg_handles = [Patch(facecolor=LEG_COLORS[i % len(LEG_COLORS)],
+                         edgecolor="k", lw=0.4,
+                         label=tex(leg.replace("_", " ")))
+                   for i, leg in enumerate(LEG_NAMES)]
+    mean_handle = Line2D([], [], color="0.35", lw=0.9, ls="--",
+                         label=rf"all-joint mean ({rmse_deg.mean():.2f}{DEG})")
+    fig.legend(handles=leg_handles + [mean_handle], loc="outside right upper",
+               fontsize=7.5)
+
+    if title is None:
+        title = "Per-joint tracking error over the validated cycle"
+    ax.set_title(title)
     return fig
 
 
 def show_tabbed(figures: list, titles: list):
     """Display a list of matplotlib figures as tabs in a single Tk window."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg,
+                                                   NavigationToolbar2Tk)
+
     root = tk.Tk()
     root.title("Sim Validation")
     root.attributes("-zoomed", True)  # start maximised (Linux)
@@ -442,7 +449,11 @@ def main():
         "--start", type=float, default=0.0,
         help="Sim time [s] corresponding to OCP t=0.",
     )
-    parser.add_argument("--out", default=".", help="Output directory for PNGs.")
+    parser.add_argument("--out", default=".", help="Output directory.")
+    parser.add_argument("--format", default="pdf",
+                        help="Figure format; pdf keeps the text vector for LaTeX.")
+    parser.add_argument("--no-show", action="store_true",
+                        help="Write the figures without opening the viewer.")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -472,14 +483,20 @@ def main():
     print(f"\n  Overall mean RMSE: {np.degrees(rmse.mean()):.3f}°")
 
     print("\nGenerating figures …")
-    figs = [
-        plot_leg(leg_idx, q_ocp, q_sim_aligned, t_ocp, rmse, out_dir)
-        for leg_idx in range(4)
-    ]
-    figs.append(plot_base(xyz_ocp, vx_ocp, xyz_sim_aligned, vx_sim_aligned, t_ocp, out_dir))
+    figs = {
+        "joint_tracking": plot_joint_tracking(q_ocp, q_sim_aligned, t_ocp, rmse),
+        "base": plot_base(xyz_ocp, vx_ocp, xyz_sim_aligned, vx_sim_aligned, t_ocp),
+        "rmse": plot_rmse(rmse),
+    }
+    for tag, fig in figs.items():
+        path = out_dir / f"validation_{tag}.{args.format.lstrip('.')}"
+        # pad_inches above the default: the tight bbox under-measures usetex text.
+        fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.12)
+        print(f"  Saved {path}")
 
-    titles = [leg.replace("_", " ") for leg in LEG_NAMES] + ["Base State"]
-    show_tabbed(figs, titles)
+    if not args.no_show:
+        show_tabbed(list(figs.values()),
+                    ["Joint tracking", "Base state", "RMSE"])
     print("\nDone.")
 
 
