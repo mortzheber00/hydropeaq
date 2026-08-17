@@ -28,7 +28,7 @@ ThirdParty-HSL/
 *.gif
 *.jpg
 *.jpeg
-
+*.pdf
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -252,3 +252,4 @@ stage1_gait_optimization/search_best_params.json
 # Committed documentation figures (override the blanket *.png / *.gif ignore above)
 !docs/figures/*.png
 !docs/figures/*.gif
+!docs/figures/sim/*.pdf
