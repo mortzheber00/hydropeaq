@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-SPH boundary particles vs. the ch.4 drag-cylinder model, side by side.
+SPH boundary particles overlaid on the robot's true STL mesh.
 
-Left panel: the boundary particles FluidSimulator samples on the robot's
-collision mesh (Poisson-disk surface sampling, see
-splishsplash/GazeboFluidSimulator/FluidSimulator.cpp::publishBoundaryParticles).
-Right panel: the same robot's drag-cylinder approximation from
-stage1_gait_optimization/hydro_model/visualization.py, at the same neutral
-configuration, sharing axes and scale with the left panel.
+The boundary particles FluidSimulator samples on the robot's collision mesh
+(Poisson-disk surface sampling, see
+splishsplash/GazeboFluidSimulator/FluidSimulator.cpp::publishBoundaryParticles)
+are drawn in red on top of the URDF visual meshes at the same neutral
+configuration.
 
 The boundary particles were captured once from a live run and are checked in
 at data/boundary_particles_full_robot.npy (world-frame pool/wall points
 already filtered out, and the spawn translation removed so the cloud sits in
-the same base_link-relative frame the hydro_model cylinders use, at the zero
-joint configuration).
+the base_link-relative frame the hydro_model uses, at the zero joint
+configuration).
 
 swimming_pool.launch always starts sph_replay's replay_trajectory.py, which
 drives every joint toward frame 0 of whatever ~npz_path resolves to (default:
@@ -45,17 +44,19 @@ and walls, which is everything outside the robot's own footprint), and add
 in src/amph/worlds/swimming_pool.world.
 
 Usage:
-  python boundary_vs_cylinder.py
+  python boundary_particles_on_mesh.py
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
+import warnings
+
 import matplotlib.pyplot as plt
 import numpy as np
 import scienceplots  # noqa: F401  registers the 'science' matplotlib style
-from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 
 # Professional thesis style with real LaTeX text rendering (Computer Modern).
 plt.style.use(["science"])
@@ -64,14 +65,12 @@ plt.rcParams["text.usetex"] = True
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from stage1_gait_optimization.hydro_model.robots import load_robot  # noqa: E402
 from stage1_gait_optimization.hydro_model.visualization import (  # noqa: E402
-    LINK_COLORS,
-    _draw_cylinder,
-    _link_color,
+    _make_urdf_transform_manager,
     _set_equal_aspect,
 )
 
 DATA_PATH = Path(__file__).parent / "data" / "boundary_particles_full_robot.npy"
-SAVE_PATH = Path(__file__).parents[1] / "docs" / "figures" / "sim" / "boundary_vs_cylinder.pdf"
+SAVE_PATH = Path(__file__).parents[1] / "docs" / "figures" / "sim" / "boundary_particles_on_mesh.pdf"
 
 ELEV, AZIM = 25.0, -60.0
 
@@ -80,45 +79,66 @@ def main() -> None:
     boundary_pts = np.load(DATA_PATH)
 
     robot = load_robot("amph")
+    q = robot.neutral_config()
+    robot.forward_kinematics(q)
 
-    fig = plt.figure(figsize=(12, 6))
-    ax_particles = fig.add_subplot(121, projection="3d")
-    ax_cylinders = fig.add_subplot(122, projection="3d")
+    tm = _make_urdf_transform_manager(robot)
+    # Every tree joint has to be set, not just the actuated ones: on a
+    # closed-chain robot the passive joints carry the loop closure, and leaving
+    # them at zero tears the legs off their pins.  The angle comes from the
+    # Pinocchio configuration by joint index -- for a continuous joint that
+    # configuration is a (cos, sin) pair rather than an angle.
+    for jid in range(1, robot.model.njoints):
+        joint = robot.model.joints[jid]
+        if joint.nq == 1:
+            angle = float(q[joint.idx_q])
+        elif joint.nq == 2:
+            angle = float(np.arctan2(q[joint.idx_q + 1], q[joint.idx_q]))
+        else:  # free-flyer base
+            continue
+        tm.set_joint(robot.model.names[jid], angle)
+    for v in tm.visuals:
+        v.color = [0.6, 0.62, 0.66, 1.0]
 
-    ax_particles.scatter(
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    # Axes3D normally overwrites every artist's zorder with a depth ranking
+    # computed per collection, so a link mesh whose mean depth is nearest hides
+    # the whole particle cloud (the front-right hip did exactly that).  Turning
+    # that off keeps the draw order we ask for: meshes first, particles on top.
+    ax.computed_zorder = False
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tm.plot_visuals("base_link", ax=ax, alpha=0.9, wireframe=False,
+                        convex_hull_of_mesh=False)
+    for coll in ax.collections:
+        coll.set_zorder(1)
+
+    # The particles sample the same surface the mesh draws, so they hide it
+    # unless they stay small and semi-transparent.
+    ax.scatter(
         boundary_pts[:, 0], boundary_pts[:, 1], boundary_pts[:, 2],
-        s=1.5, c="#2B2F38", alpha=0.5, linewidths=0, rasterized=True,
+        s=1.5, c="#D62728", alpha=0.45, linewidths=0, rasterized=True,
+        depthshade=False, zorder=5,
     )
 
-    all_pts = [boundary_pts]
-    for name, link in robot.links.items():
-        cyl = link.cylinder
-        if cyl is None:
-            continue
-        pts = _draw_cylinder(
-            ax_cylinders, cyl.center, cyl.axis_world, cyl.radius, cyl.length,
-            _link_color(name),
-        )
-        all_pts.append(np.array(pts))
-    all_pts = np.concatenate(all_pts)
+    ax.legend(
+        handles=[
+            Line2D([], [], marker="s", linestyle="none", color="#9A9EA8",
+                   markersize=6, label="STL mesh"),
+            Line2D([], [], marker="o", linestyle="none", color="#D62728",
+                   markersize=3, label="SPH boundary particles"),
+        ],
+        loc="upper left", fontsize=7,
+    )
 
-    legend_elements = [
-        Patch(facecolor=c, edgecolor="k", label=n.capitalize())
-        for n, c in LINK_COLORS.items()
-    ]
-    ax_cylinders.legend(handles=legend_elements, loc="upper left", fontsize=6)
+    _set_equal_aspect(ax, boundary_pts)
+    ax.set_xlabel("X [m]", fontsize=8)
+    ax.set_ylabel("Y [m]", fontsize=8)
+    ax.set_zlabel("Z [m]", fontsize=8)
+    ax.view_init(elev=ELEV, azim=AZIM)
 
-    ax_particles.set_title("SPH boundary particles (sampled collision mesh)")
-    ax_cylinders.set_title(r"Drag cylinder ($r$ = RMS vertex distance from axis)")
-
-    for ax in (ax_particles, ax_cylinders):
-        _set_equal_aspect(ax, all_pts)
-        ax.set_xlabel("X [m]", fontsize=8)
-        ax.set_ylabel("Y [m]", fontsize=8)
-        ax.set_zlabel("Z [m]", fontsize=8)
-        ax.view_init(elev=ELEV, azim=AZIM)
-
-    fig.suptitle("Full-robot boundary sampling vs. ch.4 drag-cylinder approximation")
     fig.tight_layout()
 
     SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
