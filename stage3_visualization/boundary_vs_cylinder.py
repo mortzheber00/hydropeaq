@@ -12,12 +12,29 @@ configuration, sharing axes and scale with the left panel.
 The boundary particles were captured once from a live run and are checked in
 at data/boundary_particles_full_robot.npy (world-frame pool/wall points
 already filtered out, and the spawn translation removed so the cloud sits in
-the same base_link-relative frame the hydro_model cylinders use). To
-regenerate that file:
+the same base_link-relative frame the hydro_model cylinders use, at the zero
+joint configuration).
+
+swimming_pool.launch always starts sph_replay's replay_trajectory.py, which
+drives every joint toward frame 0 of whatever ~npz_path resolves to (default:
+/home/ws/task3_solution.npz -- not the zero pose). Passing npz_path:='' on
+the roslaunch command line does NOT disable it: roslaunch treats an empty
+CLI override as not given and falls back to the arg's default, so the replay
+runs anyway. To sample at the true zero pose, point npz_path at a synthetic
+solution file whose actuated coordinates are all zero instead -- one array
+per key expected by hydro_model/trajectory.py::load_solution():
+
+    n_theta = 12; nq = 7 + n_theta; nv = 6 + n_theta
+    X = np.zeros((nq + nv, 2)); X[6, :] = 1.0   # identity quaternion
+    np.savez("zero_pose_solution.npz", T=1.0, X=X, U=np.zeros((n_theta, 1)),
+             N=1, nq=nq, version=2, robot="amph", coords="tree",
+             n_theta=n_theta)
+
+then:
 
     roscore &
-    roslaunch amph swimming_pool.launch gui_required:=false \\
-        npz_path:='' bag_path:=''
+    roslaunch amph swimming_pool.launch gui_required:=false bag_path:='' \\
+        npz_path:=/path/to/zero_pose_solution.npz
     # once "Boundary particles: N" has printed:
     gz topic -e /gazebo/swimming_pool/rigids_pos -d 1 > rigids_pos_raw.txt
 
