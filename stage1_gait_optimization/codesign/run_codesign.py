@@ -214,8 +214,12 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
     ax.set_title("Gait co-design: speed vs. efficiency (colour = T)")
     fig.tight_layout()
     OUT_DIR.mkdir(exist_ok=True)
-    fig.savefig(OUT_DIR / "pareto_front.png", dpi=120)
-    print(f"Saved Pareto plot to {OUT_DIR / 'pareto_front.png'}")
+    # Thesis figures: 300 dpi raster + vector PDF.  pad_inches above the default:
+    # the tight bbox under-measures usetex text.
+    for suffix in (".png", ".pdf"):
+        path = OUT_DIR / f"pareto_front{suffix}"
+        fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.12)
+        print(f"Saved Pareto plot to {path}")
 
 
 def _git_sha() -> str:

@@ -16,6 +16,7 @@ Left/right legs are mirror-symmetric, so only the front and hind leg are shown.
 Usage:
   python leg_configurations.py
   python leg_configurations.py --gait TLPG50 --save legs.pdf
+  python leg_configurations.py --front-only
 
 ``--save`` writes a vector PDF (plus a ``*_timing.pdf`` for the gait-timing
 diagram); the format follows the extension you give.
@@ -161,6 +162,9 @@ def main():
 
     parser.add_argument("--gait", default="LSPG33", choices=list(GAITS))
     parser.add_argument("--save", type=Path, default=None)
+    parser.add_argument("--front-only", action="store_true",
+                        help="draw only the front-leg row (hind is identical) and "
+                             "title it 'Front/Hind leg'")
     args = parser.parse_args()
 
     print("Loading robot…")
@@ -170,10 +174,12 @@ def main():
     theta1_fn, theta2_fn = paper_fourier_trajectory(pp)
     foot_paths = {ph: fourier_foot_path(robot, theta1_fn, theta2_fn, ph, pp) for ph in PHASES}
 
-    print("Building strokes (hind via IK)…")
-    fig, axes = plt.subplots(2, 2, figsize=(11, 10))
+    leg_types = ["Front"] if args.front_only else LEG_TYPES
+    print("Building strokes (hind via IK)…" if not args.front_only else "Building strokes…")
+    fig, axes = plt.subplots(len(leg_types), 2, figsize=(11, 5 * len(leg_types)),
+                             squeeze=False)
     all_pts = [p for p in foot_paths.values()]  # for a shared, comparable range
-    for row, leg_type in enumerate(LEG_TYPES):
+    for row, leg_type in enumerate(leg_types):
         leg = f"{leg_type}_Left"
         for col, phase in enumerate(PHASES):
             ax = axes[row, col]
@@ -200,7 +206,8 @@ def main():
                                 xytext=(6, 4), fontsize=8, color=color)
 
             ax.plot(0, 0, "ks", ms=7, zorder=4)  # hip
-            ax.set_title(f"{leg_type} leg, {phase} stroke")
+            title_leg = "Front/Hind" if args.front_only else leg_type
+            ax.set_title(f"{title_leg} leg, {phase} stroke")
             ax.set_xlabel(r"$x$ [m]")
             ax.set_ylabel(r"$z$ [m]")
             ax.set_aspect("equal")

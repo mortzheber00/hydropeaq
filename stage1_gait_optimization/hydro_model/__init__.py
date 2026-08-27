@@ -1,3 +1,4 @@
+from . import hydro_params
 from .coordinate_map import CoordinateMap, IdentityMap
 from .dynamics import SymbolicDynamics, fn_name
 from .hydrodynamics import SymbolicHydrodynamicModel
@@ -13,6 +14,7 @@ from .robots import (
 )
 
 __all__ = [
+    "hydro_params",
     "QuadrupedRobot",
     "SymbolicHydrodynamicModel",
     "SymbolicDynamics",

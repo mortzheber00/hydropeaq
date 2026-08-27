@@ -226,7 +226,6 @@ def main():
         ax.set_ylim(z0 - mz, z1 + mz)
     axes[0].legend(loc="lower left", fontsize=8)
 
-    fig.suptitle("Foot trajectory of the prototype (firmware) gait", y=0.99)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 
     # Gait timing (4 phases per leg) as a separate figure.

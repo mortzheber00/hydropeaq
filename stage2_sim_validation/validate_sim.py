@@ -76,9 +76,11 @@ def use_robot(name: str) -> None:
 # The comparison is binary, so it gets the two ends of the shared palette:
 # reference solid, measurement dashed on top of it.
 C_OCP, C_SIM = PALETTE[0], PALETTE[2]
-# Legs keep the shared palette order, so a leg is the same colour here as in the
-# stage-3 figures.
-LEG_COLORS = PALETTE
+# Legs keep the colours plot_solution.py gives them in the animation, in the
+# same leg order, so a leg reads the same here as in the swimming figures.  The
+# shared palette is not usable for this: its fourth entry is a pink no other
+# figure draws with.
+LEG_COLORS = ("tab:blue", "tab:orange", "tab:green", "tab:red")
 
 DEG = r"$^\circ$"   # usetex has no degree glyph in the text font
 
@@ -238,6 +240,19 @@ def compute_rmse(q_ocp, q_sim):
     return np.sqrt(np.mean((q_ocp - q_sim) ** 2, axis=1))
 
 
+def compute_base_rmse(xyz_ocp, vx_ocp, xyz_sim, vx_sim):
+    """RMSE of the four base panels: (4,) = [Δx, Δy, Δz [m], v_x [m/s]].
+
+    Positions are referenced to t=0 first, exactly as the figure draws them:
+    the OCP frame and the Gazebo spawn pose share no origin, so only the
+    displacement is comparable.
+    """
+    xyz_o = xyz_ocp - xyz_ocp[:, [0]]
+    xyz_s = xyz_sim - xyz_sim[:, [0]]
+    return np.array([np.sqrt(np.mean((o - s) ** 2))
+                     for o, s in zip([*xyz_o, vx_ocp], [*xyz_s, vx_sim])])
+
+
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
 def _overlay(ax, t, y_ocp, y_sim):
@@ -279,7 +294,7 @@ def _overlay_legend(fig):
     fig.legend(handles=handles, loc="outside lower center", ncol=3, fontsize=8)
 
 
-def plot_joint_tracking(q_ocp, q_sim, t_ocp, rmse_all, title: str | None = None):
+def plot_joint_tracking(q_ocp, q_sim, t_ocp, rmse_all):
     """Every actuated joint on one grid: legs down the rows, joints across.
 
     Columns share a y axis, so the same joint type is directly comparable
@@ -308,15 +323,11 @@ def plot_joint_tracking(q_ocp, q_sim, t_ocp, rmse_all, title: str | None = None)
     for j in range(N_PER_LEG):   # columns share a y axis: expand each once
         _headroom(axes[0, j])
 
-    if title is None:
-        title = (r"Joint tracking: OCP solution vs.\ Gazebo simulation "
-                 rf"(mean RMSE {np.degrees(rmse_all.mean()):.2f}{DEG})")
-    fig.suptitle(title)
     _overlay_legend(fig)
     return fig
 
 
-def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp, title: str | None = None):
+def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp):
     """Base position and forward speed: overlay on top, error trace below.
 
     Position is drawn as displacement from ``t=0`` for both, so the panels
@@ -333,8 +344,7 @@ def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp, title: str | None = None)
     ocp_data = [xyz_o[0], xyz_o[1], xyz_o[2], vx_ocp]
     sim_data = [xyz_s[0], xyz_s[1], xyz_s[2], vx_sim]
 
-    rmse_base = np.array([np.sqrt(np.mean((o - s) ** 2))
-                          for o, s in zip(ocp_data, sim_data)])
+    rmse_base = compute_base_rmse(xyz_ocp, vx_ocp, xyz_sim, vx_sim)
 
     fig, axes = plt.subplots(2, 4, sharex=True, squeeze=False,
                              gridspec_kw=dict(height_ratios=[2.0, 1.0]),
@@ -359,14 +369,11 @@ def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp, title: str | None = None)
         ax1.set_ylabel(f"error [{unit}]")
         ax1.set_xlabel(r"time $t$ [s]")
 
-    if title is None:
-        title = r"Base state: OCP solution vs.\ Gazebo simulation"
-    fig.suptitle(title)
     _overlay_legend(fig)
     return fig
 
 
-def plot_rmse(rmse_all, title: str | None = None):
+def plot_rmse(rmse_all):
     """All actuated joints on one axis, grouped and coloured by leg."""
     rmse_deg = np.degrees(rmse_all)
     # Gap of 0.8 bar widths between legs, so the groups read as groups without
@@ -401,9 +408,6 @@ def plot_rmse(rmse_all, title: str | None = None):
     fig.legend(handles=leg_handles + [mean_handle], loc="outside right upper",
                fontsize=7.5)
 
-    if title is None:
-        title = "Per-joint tracking error over the validated cycle"
-    ax.set_title(title)
     return fig
 
 
@@ -481,6 +485,28 @@ def main():
     for i, name in enumerate(OCP_JOINT_NAMES):
         print(f"  {name:<38} {rmse[i]:.4f} rad   {np.degrees(rmse[i]):.3f}°")
     print(f"\n  Overall mean RMSE: {np.degrees(rmse.mean()):.3f}°")
+
+    # The four base panels' RMSE, on the scale of the motion that produced it:
+    # the distance the simulation covers in one cycle.  SPH is the reference, so
+    # it is the denominator -- the same convention the relative errors used.
+    # That makes the errors comparable across the panels and between runs of
+    # different stroke sizes.  Speed is normalised by the matching mean speed,
+    # d/T, so its ratio is on the same scale as the position ones.
+    rmse_base = compute_base_rmse(xyz_ocp, vx_ocp, xyz_sim_aligned, vx_sim_aligned)
+    d_cycle = float(np.linalg.norm(xyz_sim_aligned[:, -1] - xyz_sim_aligned[:, 0]))
+    d_model = float(np.linalg.norm(xyz_ocp[:, -1] - xyz_ocp[:, 0]))
+    scales = [d_cycle, d_cycle, d_cycle, d_cycle / T]
+
+    print(f"\nBase RMSE over t=0…{t_ocp[-1]:.3f}s "
+          f"(SPH cycle distance d={d_cycle:.4f} m, d/T={d_cycle / T:.4f} m/s; "
+          f"model d={d_model:.4f} m, d/T={d_model / T:.4f} m/s):")
+    print(f"  {'':6}  {'RMSE':>12}  {'Normalised':>11}")
+    for i, (label, unit) in enumerate(
+        zip(["Δx", "Δy", "Δz", "v_x"], ["m", "m", "m", "m/s"])
+    ):
+        norm = (f"{100 * rmse_base[i] / scales[i]:.2f}%"
+                if scales[i] > 1e-9 else "n/a")
+        print(f"  {label:<6}  {rmse_base[i]:8.4f} {unit:<3}  {norm:>11}")
 
     print("\nGenerating figures …")
     figs = {

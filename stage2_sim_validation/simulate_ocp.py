@@ -13,13 +13,18 @@ trajectory, making it the right tool for tuning Cd_t / Cd_a against a bag.
 Usage:
     python3 simulate_ocp.py [options]
 
+All hydrodynamic coefficients default to the fitted values in
+``hydro_model/hydro_params.py``, the same ones the OCP is solved with, so an
+unflagged run compares like with like.  Override a flag only to probe a
+parameter; to change the model everywhere, edit that file.
+
 Options:
     --ocp PATH          Input OCP .npz                    (default: task3_solution.npz)
     --out PATH          Output .npz path                  (default: <stem>_rollout.npz)
-    --Cd_t FLOAT        Transverse drag coefficient        (default: 1.0)
-    --Cd_a FLOAT        Axial drag coefficient             (default: 0.8)
-    --Ca_t FLOAT        Transverse added-mass coefficient  (default: 1.0)
-    --Ca_a FLOAT        Axial added-mass coefficient       (default: 0.1)
+    --Cd_t FLOAT        Transverse drag coefficient
+    --Cd_a FLOAT        Axial drag coefficient
+    --Ca_t FLOAT        Transverse added-mass coefficient
+    --Ca_a FLOAT        Axial added-mass coefficient
 """
 
 import argparse
@@ -30,7 +35,11 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from stage1_gait_optimization.hydro_model import SymbolicDynamics, load_robot
+from stage1_gait_optimization.hydro_model import (
+    SymbolicDynamics,
+    hydro_params,
+    load_robot,
+)
 from stage1_gait_optimization.hydro_model.trajectory import (
     coords_of,
     load_solution,
@@ -98,9 +107,11 @@ def dq_base_dt(q_base: np.ndarray, v_base: np.ndarray) -> np.ndarray:
 def rk4_base_step(
     q_base: np.ndarray,
     v_base: np.ndarray,
-    theta: np.ndarray,
-    theta_dot: np.ndarray,
-    tau_r: np.ndarray,
+    theta_k: np.ndarray,
+    theta_k1: np.ndarray,
+    theta_dot_k: np.ndarray,
+    theta_dot_k1: np.ndarray,
+    a_joints: np.ndarray,
     dyn: SymbolicDynamics,
     dt: float,
 ):
@@ -108,21 +119,30 @@ def rk4_base_step(
 
     Works in the robot's own coordinates: ``theta`` is the tree joint vector
     for a serial robot and the reduced coordinate vector for a closed-chain
-    one.  ``eval_reduced_forward_dynamics`` dispatches accordingly, so a serial
+    one.  ``eval_reduced_base_acceleration`` dispatches accordingly, so a serial
     robot follows exactly the tree path it always did.
 
-    Joint torques are included because they couple into base acceleration
-    through the off-diagonal blocks of the mass matrix.
-    """
-    def f(qb, vb):
-        v_r = np.concatenate([vb, theta_dot])
-        a_r = dyn.eval_reduced_forward_dynamics(qb, theta, v_r, tau_r)
-        return dq_base_dt(qb, vb), a_r[:6]
+    The prescribed joints are linearly interpolated between the interval's two
+    nodes and sampled at each stage's own time (0, dt/2, dt/2, dt).  Holding
+    them at the left node instead lags the joint motion by half a step, which
+    at these step sizes excites a large spurious roll.
 
-    dq1, dv1 = f(q_base, v_base)
-    dq2, dv2 = f(q_base + dt/2*dq1, v_base + dt/2*dv1)
-    dq3, dv3 = f(q_base + dt/2*dq2, v_base + dt/2*dv2)
-    dq4, dv4 = f(q_base + dt*dq3,   v_base + dt*dv3)
+    The joints reach the base through the off-diagonal mass-matrix block, which
+    multiplies their *acceleration*: ``a_joints``, differenced once per interval
+    because linear interpolation of the joint velocity makes it constant there.
+    The OCP's torques are not used — see ``eval_reduced_base_acceleration``.
+    """
+    def f(qb, vb, s):
+        theta = (1 - s) * theta_k + s * theta_k1
+        theta_dot = (1 - s) * theta_dot_k + s * theta_dot_k1
+        v_r = np.concatenate([vb, theta_dot])
+        a_base = dyn.eval_reduced_base_acceleration(qb, theta, v_r, a_joints)
+        return dq_base_dt(qb, vb), a_base
+
+    dq1, dv1 = f(q_base, v_base, 0.0)
+    dq2, dv2 = f(q_base + dt/2*dq1, v_base + dt/2*dv1, 0.5)
+    dq3, dv3 = f(q_base + dt/2*dq2, v_base + dt/2*dv2, 0.5)
+    dq4, dv4 = f(q_base + dt*dq3,   v_base + dt*dv3,   1.0)
 
     q_next = q_base + (dt/6) * (dq1 + 2*dq2 + 2*dq3 + dq4)
     v_next = v_base + (dt/6) * (dv1 + 2*dv2 + 2*dv3 + dv4)
@@ -135,7 +155,6 @@ def rk4_base_step(
 
 def rollout(
     X_ocp: np.ndarray,
-    U: np.ndarray,
     dyn: SymbolicDynamics,
     T: float,
     N: int,
@@ -163,12 +182,13 @@ def rollout(
     q_base = X_ocp[:7, 0].copy()
     v_base = X_ocp[nq:i_vbase_end, 0].copy()
     for k in range(N):
-        theta = X_ocp[7:nq, k]
-        theta_dot = X_ocp[i_vbase_end:, k]
-        tau_r = np.concatenate([np.zeros(6), U[:, k]])
+        a_joints = (X_ocp[i_vbase_end:, k+1] - X_ocp[i_vbase_end:, k]) / dt
 
         q_base, v_base = rk4_base_step(
-            q_base, v_base, theta, theta_dot, tau_r, dyn, dt
+            q_base, v_base,
+            X_ocp[7:nq, k], X_ocp[7:nq, k+1],
+            X_ocp[i_vbase_end:, k], X_ocp[i_vbase_end:, k+1],
+            a_joints, dyn, dt,
         )
 
         X_sim[:7, k+1]             = q_base
@@ -193,18 +213,20 @@ def main():
     parser.add_argument("--ocp", default="task3_solution.npz")
     parser.add_argument("--out", default=None,
                         help="Output path (default: <stem>_rollout.npz)")
-    parser.add_argument("--Cd_t", type=float, default=1.0)
-    parser.add_argument("--Cd_a", type=float, default=0.8)
-    parser.add_argument("--Ca_t", type=float, default=1.0)
-    parser.add_argument("--Ca_a", type=float, default=0.1)
-    parser.add_argument("--Cd_lin_t", type=float, default=None,
-                        help="Linear transverse damping coeff (Fossen D_S; default: = Cd_t)")
-    parser.add_argument("--Cd_lin_a", type=float, default=None,
-                        help="Linear axial damping coeff (Fossen D_S; default: = Cd_a)")
-    parser.add_argument("--v_lin", type=float, default=0.7,
+    parser.add_argument("--Cd_t", type=float, default=hydro_params.CD_T)
+    parser.add_argument("--Cd_a", type=float, default=hydro_params.CD_A)
+    parser.add_argument("--Ca_t", type=float, default=hydro_params.CA_T)
+    parser.add_argument("--Ca_a", type=float, default=hydro_params.CA_A)
+    parser.add_argument("--Cd_lin_t", type=float, default=hydro_params.CD_LIN_T,
+                        help="Linear transverse damping coeff (Fossen D_S)")
+    parser.add_argument("--Cd_lin_a", type=float, default=hydro_params.CD_LIN_A,
+                        help="Linear axial damping coeff (Fossen D_S)")
+    parser.add_argument("--v_lin", type=float,
+                        default=hydro_params.V_LINEAR_THRESHOLD,
                         help="Linear-damping velocity scale [m/s]: speed about which "
                              "the quadratic drag is linearized (D_S = 0.5*rho*Cd_lin*A*v_lin)")
-    parser.add_argument("--leg_thrust_scale", type=float, default=1.0,
+    parser.add_argument("--leg_thrust_scale", type=float,
+                        default=hydro_params.LEG_THRUST_SCALE,
                         help="Scale factor on drag for non-trunk links (wake slip)")
     args = parser.parse_args()
 
@@ -226,7 +248,7 @@ def main():
           f"(linear damping)")
 
     dyn = build_dynamics(args, robot)
-    X_sim = rollout(X_ocp, U, dyn, T, N)
+    X_sim = rollout(X_ocp, dyn, T, N)
 
     save_solution(out_path, T=T, X=X_sim, U=U, N=N, nq=nq,
                   robot=robot.spec.name, coords=coords_of(robot))

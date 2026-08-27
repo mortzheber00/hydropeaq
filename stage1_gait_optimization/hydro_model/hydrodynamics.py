@@ -31,6 +31,7 @@ import numpy as np
 import pinocchio as pin
 import pinocchio.casadi as cpin
 
+from . import hydro_params
 from .robot import CylinderPrimitive, QuadrupedRobot
 
 # ---------------------------------------------------------------------------
@@ -114,15 +115,15 @@ class SymbolicHydrodynamicModel:
         nv: int,
         a_sym: ca.SX | None = None,
         rho: float = RHO_WATER,
-        Cd_transverse: float = 0.7,
-        Cd_axial: float = 0.275,
-        Cd_lin_transverse: float = 0.1,
-        Cd_lin_axial: float = 0.5,
-        Ca_transverse: float = 1.3,
-        Ca_axial: float = 0.3,
+        Cd_transverse: float = hydro_params.CD_T,
+        Cd_axial: float = hydro_params.CD_A,
+        Cd_lin_transverse: float = hydro_params.CD_LIN_T,
+        Cd_lin_axial: float = hydro_params.CD_LIN_A,
+        Ca_transverse: float = hydro_params.CA_T,
+        Ca_axial: float = hydro_params.CA_A,
         z_surface: float = 0.0,
-        v_linear_threshold: float = 0.7,
-        leg_thrust_scale: float = 1.0,
+        v_linear_threshold: float = hydro_params.V_LINEAR_THRESHOLD,
+        leg_thrust_scale: float = hydro_params.LEG_THRUST_SCALE,
     ):
         self.robot = robot
         self.cmodel = cmodel

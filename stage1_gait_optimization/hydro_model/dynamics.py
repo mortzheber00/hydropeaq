@@ -24,6 +24,7 @@ import numpy as np
 import pinocchio as pin
 import pinocchio.casadi as cpin
 
+from . import hydro_params
 from .coordinate_map import IdentityMap
 from .hydrodynamics import RHO_WATER, SymbolicHydrodynamicModel
 from .robot import QuadrupedRobot
@@ -55,25 +56,30 @@ class SymbolicDynamics:
         Transverse / axial quadratic form-drag coefficients.
     Cd_lin_t, Cd_lin_a : float, optional
         Independent linear (skin-friction) damping coefficients — Fossen's D_S.
-        Default None falls back to Cd_t / Cd_a.  Tune together with
+        Passing None falls back to Cd_t / Cd_a.  Tune together with
         v_linear_threshold.
     Ca_t, Ca_a : float
         Transverse / axial added-mass coefficients.
+
+    Every coefficient defaults to the fitted value in ``hydro_params`` — the
+    single place to change them.  Callers that build the dynamics without
+    overriding (the OCP, the codesign solver, the diagnostics) follow it
+    automatically.
     """
 
     def __init__(
         self,
         robot: QuadrupedRobot,
         rho: float = RHO_WATER,
-        Cd_t: float = 0.7,
-        Cd_a: float = 0.275,
-        Cd_lin_t: float = 0.1,
-        Cd_lin_a: float = 0.5,
-        Ca_t: float = 1.3,
-        Ca_a: float = 0.3,
+        Cd_t: float = hydro_params.CD_T,
+        Cd_a: float = hydro_params.CD_A,
+        Cd_lin_t: float = hydro_params.CD_LIN_T,
+        Cd_lin_a: float = hydro_params.CD_LIN_A,
+        Ca_t: float = hydro_params.CA_T,
+        Ca_a: float = hydro_params.CA_A,
         z_surface: float = 0.0,
-        v_linear_threshold: float = 0.7,
-        leg_thrust_scale: float = 1.0,
+        v_linear_threshold: float = hydro_params.V_LINEAR_THRESHOLD,
+        leg_thrust_scale: float = hydro_params.LEG_THRUST_SCALE,
     ):
         self.robot = robot
         self.nq = robot.nq
@@ -526,6 +532,53 @@ class SymbolicDynamics:
 
         M_r, b_r = self.build_reduced_dynamics()(q_base, theta, v_r)
         return np.linalg.solve(np.asarray(M_r), np.asarray(tau_r) - np.asarray(b_r).ravel())
+
+    def eval_reduced_base_acceleration(
+        self,
+        q_base: np.ndarray,
+        theta: np.ndarray,
+        v_r: np.ndarray,
+        a_joints: np.ndarray,
+    ) -> np.ndarray:
+        """Base acceleration with the actuated joints *kinematically prescribed*.
+
+        The counterpart of ``eval_reduced_forward_dynamics`` for a replay whose
+        joints follow a reference rather than a torque: Gazebo drives them with
+        a position controller, so the actuator supplies whatever torque tracking
+        demands and the joint torque is a constraint force, not an input.  It
+        therefore drops out of the base rows entirely, leaving
+
+            M_bb a_b + M_bj a_j + b_b = 0
+
+        which is the same constraint the OCP imposes on those rows
+        (``ocp_common.build_collocation_nlp`` requires ``f_inv_dyn(x, a) ==
+        vertcat(zeros(6), U)``).  Passing the OCP's ``U`` into a full n_v solve
+        instead answers "same motors, different water" rather than "same joint
+        path, different water"; the two agree only where ``U`` is the inverse-
+        dynamics torque for that motion, i.e. at the coefficients the trajectory
+        was solved with.
+
+        Dispatches on the coordinate map exactly as its sibling does.
+        """
+        nv_base = 6
+        if isinstance(self.robot.coord_map, IdentityMap):
+            q = np.concatenate([np.asarray(q_base), np.asarray(theta)])
+            v = np.asarray(v_r)
+            M = np.array(self.f_M_rb(q)) + np.array(self.f_M_added(q))
+            b = (np.array(self.f_C_rb(q, v)) @ v
+                 + np.array(self.f_C_A_v(q, v)).flatten()
+                 + np.array(self.f_g_rb(q)).flatten()
+                 - np.array(self.f_tau_buoyancy(q)).flatten()
+                 - np.array(self.f_tau_drag(q, v)).flatten())
+        else:
+            M_r, b_r = self.build_reduced_dynamics()(q_base, theta, v_r)
+            M = np.asarray(M_r)
+            b = np.asarray(b_r).ravel()
+
+        return np.linalg.solve(
+            M[:nv_base, :nv_base],
+            -b[:nv_base] - M[:nv_base, nv_base:] @ np.asarray(a_joints),
+        )
 
     def find_trim_state(
         self,
