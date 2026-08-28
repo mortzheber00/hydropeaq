@@ -9,7 +9,8 @@ For a chosen leg, evaluates the SAME drag model used by thrust_heatmap.py
 against the OCP's actual joint state (q(t), v(t)) — not a unit probe — and
 plots three stacked panels over one gait cycle:
 
-  1. Foot velocity         v_foot_x(t)  (signed) and |v_foot|(t)
+  1. Foot velocity         v_foot_x(t)  (signed) and |v_foot|(t), both
+                           relative to the hull and in the base frame
   2. Instantaneous thrust  F_drag_x(t)  on the three leg links combined
   3. Cumulative impulse    ∫ F_drag_x dt  (final value = net thrust per cycle)
 
@@ -62,7 +63,17 @@ def compute_traces(robot: QuadrupedRobot, leg: str, X: np.ndarray, nq: int):
             robot.model, robot.data, q, foot_fid,
             pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
         )
-        v_foot = J[:3, :] @ v
+        # Foot velocity relative to the hull, in the base frame: zero the base
+        # twist so only joint motion contributes, then rotate out of the world
+        # axes.  The world-frame velocity would fold in the body's own 0.15 m/s
+        # of forward travel, which shortens the power window by up to 18 points
+        # of the cycle and answers a different question -- "is this foot pushing
+        # water backwards" rather than "is this leg sweeping backwards".  The
+        # kinematic definition is the one plot_solution_legs.py already uses,
+        # and this is what its docstring has always claimed the two share.
+        v_rel = np.asarray(v, dtype=float).copy()
+        v_rel[:6] = 0.0
+        v_foot = np.array(robot.data.oMi[1].rotation).T @ (J[:3, :] @ v_rel)
         v_foot_x[t] = v_foot[0]
         v_foot_mag[t] = float(np.linalg.norm(v_foot))
     return v_foot_x, v_foot_mag, F_drag_x

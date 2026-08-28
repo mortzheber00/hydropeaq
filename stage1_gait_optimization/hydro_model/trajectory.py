@@ -29,17 +29,28 @@ _LEGACY_ROBOT = "amph"
 
 
 def save_solution(path, *, T, X, U, N, nq, robot: str, coords: str = "tree",
-                  n_theta: int | None = None) -> Path:
-    """Write a solution.  ``coords`` is ``"tree"`` or ``"reduced"``."""
+                  n_theta: int | None = None, Xc=None) -> Path:
+    """Write a solution.  ``coords`` is ``"tree"`` or ``"reduced"``.
+
+    ``Xc`` is optional: the ``(2*nv, N*d)`` tangent states at the collocation
+    points, in the transcription's own column order ``k*d + i``.  Grid states
+    alone cannot reproduce any integral the OCP took over an interval — the
+    objective's Radau quadrature included — so a solution written without it
+    can only be re-measured by resampling, which is what made the old
+    grid-node energy figures 30-40% low.  Written when the caller has it;
+    files without it stay readable.
+    """
     if coords not in ("tree", "reduced"):
         raise ValueError(f"coords must be 'tree' or 'reduced', got {coords!r}")
     path = Path(path)
-    np.savez(
-        path,
+    arrays = dict(
         T=T, X=X, U=U, N=N, nq=nq,
         version=SOLUTION_VERSION, robot=robot, coords=coords,
         n_theta=int(nq - 7 if n_theta is None else n_theta),
     )
+    if Xc is not None:
+        arrays["Xc"] = np.asarray(Xc)
+    np.savez(path, **arrays)
     return path
 
 
@@ -53,6 +64,8 @@ def load_solution(path) -> dict:
         "N": int(data["N"]),
         "nq": int(data["nq"]),
     }
+    if "Xc" in data.files:
+        out["Xc"] = data["Xc"]
     if "version" in data.files:
         out["version"] = int(data["version"])
         out["robot"] = str(data["robot"])

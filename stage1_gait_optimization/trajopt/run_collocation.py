@@ -292,8 +292,11 @@ def build_ocp(robot_name: str = "amph"):
             print(f"  solved phase {r_leg}: {solved:.4f} cycles")
         X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model,
                                   nq=robot.nq_reduced, nv=robot.nv_reduced)
+        # Tangent, not legacy: Xc is what the objective's quadrature ran on, so
+        # it is saved in the coordinates the transcription used.
         extract_solution(X_val, U_val, nq, N, T_val,
-                         robot=robot_name, coords=COORDS)
+                         robot=robot_name, coords=COORDS,
+                         Xc_val=src.value(nlp["Xc"]))
 
     try:
         sol = opti.solve()

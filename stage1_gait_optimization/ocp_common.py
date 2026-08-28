@@ -6,6 +6,12 @@ import numpy as np
 import pinocchio as pin
 from hydro_model.trajectory import save_solution
 
+# Grid size W_VEL_SMOOTH was tuned at.  vel_smooth_cost is calibrated to keep
+# its old magnitude here, so the tuned weight still means what it did; see the
+# term's construction in build_collocation_nlp.  Changing this rescales the
+# smoothness penalty for every robot and every N, so it is a retune, not a knob.
+VEL_SMOOTH_REF_N = 32
+
 
 def _base_ref(model: pin.Model, q_ref_quat: np.ndarray) -> np.ndarray:
     """Full-size configuration holding only the reference base orientation.
@@ -115,6 +121,14 @@ def diagnose_initial_guess(
     # ── Cost-term breakdown ──────────────────────────────────────────────
     # Per-joint mechanical power (τ_j · q̇_j); legacy state stores joint
     # velocities at [nq+6 : nq+6+n_act]. Match U_guess width (N).
+    #
+    # This stays a node sum while the OCP's power_cost integrates on the
+    # collocation points: a guess has grid states only, no Xc to integrate
+    # over.  So the number below is a first-order estimate of the term the
+    # solver will actually minimise — fine for the weight-balance check it
+    # exists for, but do not read it as the objective's starting value, and
+    # do not compare it across N (the rectangle rule's error shrinks with N,
+    # which on its own moves this number).
     n_act = U_guess.shape[0]
     joint_vels = X_guess[nq + 6 : nq + 6 + n_act, :N]
     power_cost = float(np.sum((U_guess * joint_vels) ** 2)) / N
@@ -224,7 +238,7 @@ def _log_solver_stats(stats: dict) -> None:
 
 def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float,
                      robot: str = "amph", coords: str = "tree",
-                     out_path: str = "task3_solution.npz") -> None:
+                     out_path: str = "task3_solution.npz", Xc_val=None) -> None:
     print(f"  Cycle period T       = {T_FIXED:.4f} s")
     print(f"  Forward distance     = {X_val[0, -1] - X_val[0, 0]:.4f} m")
     print(f"  Average forward vel  = {(X_val[0, -1] - X_val[0, 0]) / T_FIXED:.4f} m/s")
@@ -242,7 +256,7 @@ def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float,
     print(f"    dv     = {np.linalg.norm(xN[nq:] - x0[nq:]):.2e}")
 
     save_solution(out_path, T=T_FIXED, X=X_val, U=U_val, N=N, nq=nq,
-                  robot=robot, coords=coords)
+                  robot=robot, coords=coords, Xc=Xc_val)
     mlflow.log_metrics({
         "forward_dist": float(X_val[0, -1] - X_val[0, 0]),
         "forward_vel":  float((X_val[0, -1] - X_val[0, 0]) / T_FIXED),
@@ -257,15 +271,20 @@ def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float,
 
 
 def collocation_coefficients(d: int):
-    """Lagrange basis derivative matrix C and endpoint vector D for Radau collocation.
+    """Lagrange basis derivative matrix C, endpoint vector D and quadrature
+    weights B for Radau collocation.
 
     tau_root = [0, tau_1, ..., tau_d]  (d+1 points)
     C[i, r] = d/dtau L_i(tau_root[r+1])   (r = 0..d-1, the d Radau points)
     D[i]    = L_i(1)
+    B[r]    = int_0^1 L_r(tau) dtau, over the d Radau points; sums to 1 and
+              integrates polynomials up to degree 2d-2 exactly.  This is what
+              makes an integral cost consistent with the dynamics it is solved
+              against — a sum over grid nodes instead is only first order.
     """
     tau_root = np.concatenate([[0.0], np.array(ca.collocation_points(d, "radau"))])
-    C, D, _ = ca.collocation_coeff(ca.collocation_points(d, "radau"))
-    return tau_root, np.array(C), np.array(D).flatten()
+    C, D, B = ca.collocation_coeff(ca.collocation_points(d, "radau"))
+    return tau_root, np.array(C), np.array(D).flatten(), np.array(B).flatten()
 
 
 def build_collocation_nlp(
@@ -318,7 +337,7 @@ def build_collocation_nlp(
                 f"{n_act} — set RobotSpec.theta_* for this robot"
             )
 
-    tau_root, C, D = collocation_coefficients(d_colloc)
+    tau_root, C, D, B = collocation_coefficients(d_colloc)
     d = d_colloc
 
     # Reference quaternion anchors the tangent representation at the guess's
@@ -340,11 +359,26 @@ def build_collocation_nlp(
     opti.set_initial(T, t_init)
 
     # Common cost terms (the objective itself is assembled by the caller).
-    power_cost = sum(ca.sumsqr(U[:, k] * X[V_J, k]) for k in range(n)) / n
-    vel_smooth_cost = sum(ca.sumsqr(X[V_B, k + 1] - X[V_B, k]) for k in range(n)) / n
+    #
+    # Power is integrated on the collocation points with the Radau weights B,
+    # not sampled at the grid nodes.  The node sum this replaces was a
+    # left-rectangle rule: first order, and blind to everything between nodes.
+    # The optimiser exploited that — in an N=64 solution the penalised value
+    # was 15.4 while the same trajectory's interval mean was 61.8, because
+    # large torques had been parked at nodes where the sampled velocity
+    # happened to be small.  U is piecewise constant, so the integrand is a
+    # polynomial and B integrates it to the order of the scheme.
+    #
+    # T cancels, leaving the same normalisation (a mean, so W_POWER keeps its
+    # scale):  (1/T) * sum_k sum_i B_i * dt * f  ==  (1/n) * sum_k sum_i B_i * f.
+    power_cost = sum(
+        B[i] * ca.sumsqr(U[:, k] * Xc[V_J, k * d + i])
+        for k in range(n) for i in range(d)
+    ) / n
     drift_cost = sum(X[1, k] ** 2 + (X[2, k] - X[2, 0]) ** 2 for k in range(n + 1)) / (n + 1)
 
     # Collocation constraints (kinematic + inverse-dynamics split — no M⁻¹)
+    a_base = []          # (weight, base acceleration) at every collocation point
     for k in range(n):
         uk_full = ca.vertcat(ca.DM.zeros(6, 1), U[:, k])
         x_all = [X[:, k]] + [Xc[:, k * d + j] for j in range(d)]
@@ -353,8 +387,28 @@ def build_collocation_nlp(
             opti.subject_to(dt * f_kin(x_all[j]) == xp[:n_kin])
             a_poly = xp[n_kin:] / dt
             opti.subject_to(f_inv_dyn(x_all[j], a_poly) == uk_full)
+            # a_poly is d(v)/dt of the state polynomial; V_B's rows are the
+            # first six of the velocity block, so a_poly[:6] is the base.
+            a_base.append((B[j - 1], a_poly[:6]))
         x_end = sum(D[i] * x_all[i] for i in range(d + 1))
         opti.subject_to(X[:, k + 1] == x_end)
+
+    # Base-motion smoothness as (1/T)∫‖v̇_B‖²dt, quadrature on the collocation
+    # points, replacing sum‖v_{k+1} − v_k‖²/n.  That difference sum is dt²
+    # times a mean square acceleration, so its weighted share of the objective
+    # fell 1.52 -> 0.29 of the power term across an N = 16..64 ladder: the
+    # trade-off being optimised changed with the mesh, which a refinement study
+    # cannot tolerate.  The mean square acceleration itself is mesh-independent.
+    #
+    # VEL_SMOOTH_REF_N restores the old magnitude at one N so W_VEL_SMOOTH keeps
+    # the scale it was tuned at; the difference sum equals dt² · mean‖a‖² there,
+    # with dt = t_init / VEL_SMOOTH_REF_N.  "Roughly": the old sum measured that
+    # mean by finite difference and under-read it exactly as the power node sum
+    # did, so expect the term to sit somewhat above its old value even at the
+    # reference N.  Away from it the drift with N is gone, which is the point.
+    vel_smooth_cost = (t_init / VEL_SMOOTH_REF_N) ** 2 * sum(
+        b * ca.sumsqr(a) for b, a in a_base
+    ) / n
 
     # Per-configuration constraints supplied by the robot: equalities (amph
     # pins its side joints to zero) and inequalities (a closed-chain robot
@@ -443,6 +497,9 @@ def build_collocation_nlp(
     return {
         "opti": opti, "X": X, "Xc": Xc, "U": U, "T": T,
         "alpha": alpha, "q_ref_quat": q_ref_quat,
+        # Quadrature weights and degree, so a caller measuring energy off the
+        # solution integrates it the same way the objective did.
+        "B": B, "d": d,
         "Q_J": Q_J, "V_B": V_B, "V_J": V_J,
         "power_cost": power_cost,
         "vel_smooth_cost": vel_smooth_cost,
