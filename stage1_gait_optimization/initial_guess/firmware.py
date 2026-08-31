@@ -42,10 +42,10 @@ _DEFAULT_GAIT = {
     "ratio_lift": 0.2,
     "stroke_len": 0.05,
     "stand_h": 0.14,
-    "depth_surface": 0.14,
+    "depth_surface": 0.15,
     "depth_deep": 0.2,
-    "center_x_front": -0.04,
-    "center_x_rear": 0.0,
+    "center_x_front": 0.0145,
+    "center_x_rear": -0.02,
 }
 
 # Foot-tracking error above which the requested stroke is reported as not

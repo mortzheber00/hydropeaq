@@ -8,6 +8,11 @@ Front-leg joints map from the paper angles by an affine relation calibrated
 on the hardware (see ``_THIGH_OFFSET_DEG`` / ``_CALF_OFFSET_DEG``).  The hind
 legs are mounted rotated 180 deg about the vertical axis, so the same foot
 path requires different joint angles; these are solved per timestep.
+
+Because of that mounting the hind reachable set is the front one mirrored, and
+the shared path need not lie inside it.  ``RobotSpec.paper_gait`` may therefore
+carry a rigid transform that places the path into the hind legs' reach; it is
+per robot, since the right placement depends on the geometry.
 """
 
 from __future__ import annotations
@@ -131,6 +136,32 @@ def paper_fourier_trajectory(pp_ratio: float, n_harmonics: int = 3):
     return (lambda t: _eval(t, c1), lambda t: _eval(t, c2))
 
 
+# Identity: no robot is required to declare a transform, and one that does not
+# gets exactly the behaviour this module had before the field existed.
+_PAPER_GAIT_DEFAULTS = {"hind_rotation_deg": 0.0, "hind_dx": 0.0, "hind_dz": 0.0}
+
+
+def hind_target_path(front_xz: np.ndarray, spec) -> np.ndarray:
+    """The front foot path placed where the hind legs can actually reach it.
+
+    ``RobotSpec.paper_gait`` carries the transform because it is a property of
+    how a particular robot's hind legs are mounted, not of the paper gait: a
+    different quadruped running the same gait needs a different placement, or
+    none.  Rotation is about the hip and is applied before the translation.
+    """
+    p = {**_PAPER_GAIT_DEFAULTS, **spec.paper_gait}
+    unknown = set(spec.paper_gait) - set(_PAPER_GAIT_DEFAULTS)
+    if unknown:
+        raise TypeError(
+            f"{spec.name}: unknown paper_gait key(s) {sorted(unknown)}; "
+            f"choose from {sorted(_PAPER_GAIT_DEFAULTS)}"
+        )
+    # Clockwise in the sagittal view (+x forward, +z up) is a negative rotation.
+    c, s_ = np.cos(np.radians(-p["hind_rotation_deg"])), np.sin(np.radians(-p["hind_rotation_deg"]))
+    R = np.array([[c, -s_], [s_, c]])
+    return front_xz @ R.T + np.array([p["hind_dx"], p["hind_dz"]])
+
+
 def _leg_foot_xz(robot, leg: str, q_thigh: float, q_calf: float) -> np.ndarray:
     """Foot position relative to the leg's hip, in the sagittal (x, z) plane.
 
@@ -242,12 +273,15 @@ def build_initial_guess(
         [_leg_foot_xz(robot, "Front_Left", a, b) for a, b in zip(front_thigh, front_calf)]
     )
 
-    print("  Solving hind-leg IK (matching front foot path)...")
+    hind_xz = hind_target_path(front_xz, robot.spec)
+    moved = not np.allclose(hind_xz, front_xz)
+    print(f"  Solving hind-leg IK ({'transformed' if moved else 'matching'} "
+          f"front foot path)...")
     hind_thigh = np.zeros(N)
     hind_calf = np.zeros(N)
-    seed = _grid_seed(robot, "Hind_Left", front_xz[0])
+    seed = _grid_seed(robot, "Hind_Left", hind_xz[0])
     for k in range(N):
-        seed = _ik_leg(robot, "Hind_Left", front_xz[k], seed)
+        seed = _ik_leg(robot, "Hind_Left", hind_xz[k], seed)
         hind_thigh[k], hind_calf[k] = seed
 
     # ── Step 2: assemble per-leg joint trajectory with phase offsets ─────

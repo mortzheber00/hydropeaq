@@ -76,11 +76,11 @@ class OCPSettings:
     """
 
     gait: str = "Prototype"   # initial-guess builder; see run_collocation.build_ocp
-    n: int = 32               # collocation intervals
+    n: int = 48               # collocation intervals
     d_colloc: int = 3         # polynomial degree (Radau collocation points)
     t_init: float = 1.0       # initial-guess cycle period [s] (warm start)
-    t_min: float = 1.0        # cycle-period bounds [s]
-    t_max: float = 1.0
+    t_min: float = 0.5        # cycle-period bounds [s]
+    t_max: float = 1.5
     d_target: float = 0.2     # forward distance per nominal cycle [m]
     tau_max: float = 3.5      # joint torque limit [Nm]
     f_c: float = 20.0         # actuator bandwidth [Hz] — first-order filter cutoff
@@ -91,7 +91,7 @@ class OCPSettings:
     heading_tol: float = 0.05   # max yaw angle at endpoint [rad]
 
     # Mirror each RobotSpec.lr_leg_pairs left leg onto its right, phase-shifted.
-    enforce_symmetry: bool = True
+    enforce_symmetry: bool = False
     # Seed for the cycle fraction the right leg lags the left; the OCP solves
     # for it from there.  None reads it off the initial guess (prefer that);
     # set a scalar, or one value per pair, to force a different phasing.
@@ -160,6 +160,17 @@ class RobotSpec:
     # Keys are the tunable parameters of ``build_robot_ik_initial_guess``;
     # anything omitted keeps that function's default.
     firmware_gait: Dict[str, float] = field(default_factory=dict)
+
+    # Rigid transform placing the paper gait's foot path into the *hind* legs'
+    # reach.  paper.py builds one path from the front leg's kinematics and asks
+    # every leg to trace it, but the hind legs are mounted rotated 180 deg, so
+    # their reachable set is the front one mirrored in x and the shared path can
+    # fall outside it.  Applied in the sagittal hip-relative plane, about the
+    # hip, rotation before translation.  Keys: ``hind_rotation_deg`` (clockwise
+    # positive, viewed with +x forward and +z up), ``hind_dx`` and ``hind_dz``
+    # in metres.  Empty -> the hind feet trace the front path unchanged, which
+    # is what paper.py did before this field existed.
+    paper_gait: Dict[str, float] = field(default_factory=dict)
 
     # Gait-OCP horizon and cost weights; see OCPSettings.
     ocp: OCPSettings = field(default_factory=OCPSettings)

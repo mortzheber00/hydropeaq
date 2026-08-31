@@ -505,3 +505,153 @@ def build_collocation_nlp(
         "vel_smooth_cost": vel_smooth_cost,
         "drift_cost": drift_cost,
     }
+
+
+# ── Left–right symmetry, phase free ─────────────────────────────────────────
+# Shape resolution of the symmetry parametrisation below; Nyquist caps it at n/2.
+N_HARMONICS = 5
+
+
+def _fourier_basis(N: int, n_harmonics: int) -> np.ndarray:
+    """``(N, 1 + 2H)`` unshifted series basis on the grid.
+
+    Constant rather than a function of the free period: T cancels out of
+    ``2*pi*m*t_k/T = 2*pi*m*k/N``.
+    """
+    k = np.arange(N)
+    cols = [np.ones(N)]
+    for m in range(1, n_harmonics + 1):
+        cols.append(np.cos(2.0 * np.pi * m * k / N))
+        cols.append(np.sin(2.0 * np.pi * m * k / N))
+    return np.column_stack(cols)
+
+
+def _detect_mirror_phase(right, left, N):
+    """Cycle fraction at which ``left`` already mirrors onto ``right``.
+
+    Both are ``(n_joints, N)`` with the mirror sign folded into ``left``.
+    Returns ``(phase, residual)``.  Node resolution is enough for a seed since
+    the OCP solves for the phase from there; a large residual means the guess
+    is not mirror-symmetric at any phase.
+    """
+    # np.roll(left, s)[k] is left[k - s], matching _fourier_at's delay of s / N.
+    err = [float(np.abs(right - np.roll(left, s, axis=1)).max()) for s in range(N)]
+    best = int(np.argmin(err))
+    return best / N, err[best]
+
+
+def _fourier_at(coeffs, k: int, N: int, n_harmonics: int, delay):
+    """Series for one joint at node ``k``, delayed by ``delay`` cycles.
+
+    ``delay`` may be a CasADi variable — it enters only through sin/cos, so the
+    expression stays smooth in it.
+    """
+    out = coeffs[0]
+    for m in range(1, n_harmonics + 1):
+        arg = 2.0 * np.pi * m * (k / N - delay)
+        out = out + coeffs[2 * m - 1] * ca.cos(arg) + coeffs[2 * m] * ca.sin(arg)
+    return out
+
+
+def add_symmetry_constraints(opti, X, X_guess, robot, N, phases=None, verbose=True):
+    """Constrain each left–right leg pair to one shape at a free phase offset.
+
+        theta_left(t)  = series(c)(t)
+        theta_right(t) = mirror_joint_sign * series(c)(t - delta * T)
+
+    Harmonics are what make delta a decision variable: shifting a series is an
+    exact rotation of its coefficients, where shifting a collocation trajectory
+    would need non-differentiable interpolation.  One delta per pair suffices —
+    a pair's own shift is absorbed into its coefficients, so the front–hind
+    phase needs no variable.  Positions only; the velocities follow from the
+    kinematic collocation constraint (q̇ = v).
+
+    ``phases`` seeds the per-pair delay in cycles (scalar, one per pair, or None
+    to read it off the guess).  Returns the solved-for delta variables, in
+    ``robot.spec.lr_leg_pairs`` order, for the caller to report after the solve.
+
+    Shared by the standalone driver and the co-design evaluator so both solve
+    the same NLP; see ``build_collocation_nlp``.
+    """
+    pairs = robot.spec.lr_leg_pairs
+    signs = robot.spec.mirror_joint_sign
+    if not pairs or signs is None:
+        raise ValueError(
+            f"{robot.spec.name}: enforce_symmetry needs lr_leg_pairs and "
+            f"mirror_joint_sign on the RobotSpec"
+        )
+    n_per_leg = robot.n_actuated // len(robot.spec.leg_names)
+    if len(signs) != n_per_leg:
+        raise ValueError(
+            f"{robot.spec.name}: mirror_joint_sign has {len(signs)} entries, "
+            f"expected {n_per_leg} (one per joint of a leg)"
+        )
+    sym_joints = robot.spec.symmetry_joints
+    if sym_joints is None:
+        sym_joints = tuple(range(n_per_leg))
+    if not sym_joints or any(not 0 <= j < n_per_leg for j in sym_joints):
+        raise ValueError(
+            f"{robot.spec.name}: symmetry_joints {sym_joints} out of range for "
+            f"{n_per_leg} joints per leg"
+        )
+    sym_signs = np.array([signs[j] for j in sym_joints])
+    # None -> read the phase off the guess; set it only to force a phasing
+    # other than the guess's own.
+    if phases is not None:
+        if np.isscalar(phases):
+            phases = (float(phases),) * len(pairs)
+        if len(phases) != len(pairs):
+            raise ValueError(
+                f"{robot.spec.name}: symmetry_phase has {len(phases)} entries, "
+                f"expected {len(pairs)} (one per left-right pair) or a scalar"
+            )
+
+    basis = _fourier_basis(N, N_HARMONICS)
+    leg_index = {leg: i for i, leg in enumerate(robot.spec.leg_names)}
+    qj0 = 6           # first joint-position row in tangent state
+    qj0_legacy = 7    # ... and in the legacy guess, which carries a quaternion
+
+    sym_phase = []
+    worst_fit = 0.0
+    for i, (r_leg, l_leg) in enumerate(pairs):
+        l0 = qj0 + n_per_leg * leg_index[l_leg]
+        r0 = qj0 + n_per_leg * leg_index[r_leg]
+        gl0 = qj0_legacy + n_per_leg * leg_index[l_leg]
+        gr0 = qj0_legacy + n_per_leg * leg_index[r_leg]
+
+        g_left = X_guess[[gl0 + j for j in sym_joints], :N]
+        g_right = X_guess[[gr0 + j for j in sym_joints], :N]
+
+        detected, mirror_err = _detect_mirror_phase(
+            g_right, g_left * sym_signs[:, None], N)
+        phase0 = detected if phases is None else phases[i]
+        if verbose:
+            print(f"  {r_leg}/{l_leg}: guess mirrors at phase {detected:.4f} "
+                  f"(residual {np.degrees(mirror_err):.2f} deg), seeding {phase0:.4f}")
+
+        coeffs = opti.variable(len(sym_joints), 1 + 2 * N_HARMONICS)
+        # Unbounded: delta is periodic, so a bound would be a false edge.
+        delta = opti.variable()
+        opti.set_initial(delta, phase0)
+        sym_phase.append(delta)
+
+        target = g_left.T                             # seed coeffs from the guess
+        fit, *_ = np.linalg.lstsq(basis, target, rcond=None)
+        opti.set_initial(coeffs, fit.T)
+        worst_fit = max(worst_fit, float(np.abs(basis @ fit - target).max()))
+
+        for k in range(N):
+            for row, j in enumerate(sym_joints):
+                c = coeffs[row, :].T
+                opti.subject_to(
+                    X[l0 + j, k] == _fourier_at(c, k, N, N_HARMONICS, 0.0))
+                opti.subject_to(
+                    X[r0 + j, k] == signs[j] * _fourier_at(c, k, N, N_HARMONICS, delta))
+
+    if verbose:
+        # Large fit error -> the stroke needs more than N_HARMONICS to describe.
+        print(f"  symmetry: {len(pairs)} pair(s), joints {list(sym_joints)}, "
+              f"{N_HARMONICS} harmonics, phase free")
+        print(f"  worst harmonic fit error on a left leg of the guess: "
+              f"{np.degrees(worst_fit):.2f} deg")
+    return sym_phase

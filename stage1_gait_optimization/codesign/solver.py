@@ -4,17 +4,22 @@ Importable collocation-OCP evaluator for the (gait, T) co-design sweep.
 
 Wraps the shared collocation transcription (``ocp_common.build_collocation_nlp``)
 into a pure function ``solve_gait_ocp`` that the outer loop (see
-``run_codesign.py``) calls per design point.  Compared with the standalone
-``trajopt/run_collocation.py`` driver:
+``run_codesign.py``) calls per design point.  Same NLP the standalone
+``trajopt/run_collocation.py`` driver builds — same transcription, the same
+``RobotSpec.ocp`` settings, the same left–right symmetry constraints and the
+same solver options — with exactly three deliberate differences:
 
   * No module-level mutable state, no MLflow, no interactive prompts — the
     function is callable from worker processes.
   * The cycle period T does a **narrow free-T refine**: IPOPT may move T within
-    ``[t_center - free_T_band, t_center + free_T_band]`` (band = 0 pins it).
+    ``[t_center - free_T_band, t_center + free_T_band]`` (band = 0 pins it),
+    rather than over the spec's ``[t_min, t_max]``.
   * The objective is a clean effort/energy minimisation (no forward-distance
     reward); the forward-speed floor stays a hard constraint.  Speed and energy
     are returned as metrics so the outer loop owns the speed-vs-efficiency
     tradeoff.
+
+Anything else that differs is drift and should be fixed here, not worked around.
 """
 
 from __future__ import annotations
@@ -28,8 +33,13 @@ sys.path.insert(0, str(STAGE1_DIR))
 import numpy as np
 import pinocchio as pin
 from hydro_model import SymbolicDynamics, load_robot
+from hydro_model.robots import get_spec
 from initial_guess import build_initial_guess, build_robot_ik_initial_guess
-from ocp_common import build_collocation_nlp, tangent_to_legacy
+from ocp_common import (
+    add_symmetry_constraints,
+    build_collocation_nlp,
+    tangent_to_legacy,
+)
 
 ROBOT = "amph"   # registered robot name; see hydro_model/robots/
 
@@ -38,17 +48,12 @@ PAPER_GAITS = ("LSPG25", "LSPG33", "TLPG50")
 FIRMWARE_GAITS = ("Prototype",)
 GAITS = PAPER_GAITS + FIRMWARE_GAITS
 
-# ── OCP parameters (mirror run_collocation.py defaults) ─────────────────────
-N = 32           # collocation intervals
-D_TARGET = 0.2   # forward distance per nominal cycle [m] -> speed floor
-V_TARGET = 0.2   # required average forward speed [m/s]
-TAU_MAX = 3.5    # joint torque limit [Nm]
-F_C = 20.0       # actuator bandwidth [Hz] — first-order filter cutoff
-W_POWER = 2.0       # weight for sum-of-squared per-joint mechanical power (τ·q̇)²
-W_VEL_SMOOTH = 20.0  # weight for velocity smoothing
-W_DRIFT = 10.0      # weight for drift penalty
-HEADING_TOL = 0.05  # max yaw angle at endpoint (radians)
-D_COLLOC = 3        # polynomial degree (Radau collocation points)
+# ── OCP parameters ──────────────────────────────────────────────────────────
+# Read off the robot's spec, the same block run_collocation.py reads, so the two
+# drivers keep solving the same problem.  They were copied constants here, which
+# silently went stale the first time OCPSettings was retuned.  Cheap at import:
+# get_spec only imports the robot's module, it does not build the model.
+CFG = get_spec(ROBOT).ocp
 
 GRAVITY = 9.81
 
@@ -72,9 +77,9 @@ def get_robot_dyn():
 
 def _build_guess(dyn, gait, n, t_center):
     if gait in PAPER_GAITS:
-        return build_initial_guess(dyn, gait, n, t_center, TAU_MAX)
+        return build_initial_guess(dyn, gait, n, t_center, CFG.tau_max)
     if gait in FIRMWARE_GAITS:
-        return build_robot_ik_initial_guess(dyn, n, t_center, TAU_MAX)
+        return build_robot_ik_initial_guess(dyn, n, t_center, CFG.tau_max)
     raise ValueError(f"Unknown gait: {gait!r} (expected one of {GAITS})")
 
 
@@ -82,13 +87,14 @@ def solve_gait_ocp(
     gait: str,
     t_center: float,
     *,
-    v_target: float = V_TARGET,
+    v_target: float = CFG.v_target,
     free_T_band: float = 0.1,
     robot=None,
     dyn=None,
-    n: int = N,
+    n: int = CFG.n,
     weights: dict | None = None,
     print_level: int = 5,
+    warm_start: np.ndarray | None = None,
 ) -> dict:
     """Solve the collocation OCP for one (gait, T, target-speed) design point.
 
@@ -99,17 +105,23 @@ def solve_gait_ocp(
     ``[t_center - free_T_band, t_center + free_T_band]`` (band 0 pins it) and acts
     as the efficiency knob at each target speed.
 
+    ``warm_start`` is the decision vector returned by a previous solve of the
+    *same* (gait, T centre, n) at a neighbouring target speed — see
+    ``run_codesign.build_chains``.  It seeds the iterate; the solver options are
+    the same either way.
+
     Returns a dict with ``feasible``, the converged ``speed`` and
-    ``energy``/``cot`` metrics, the solved ``T``, and the legacy-state / control
-    trajectories ``X`` / ``U``.
+    ``energy``/``cot`` metrics, the solved ``T``, the legacy-state / control
+    trajectories ``X`` / ``U``, solver stats, and a ``warm_start`` vector to seed
+    the next link (``None`` if this solve did not converge).
     """
     if robot is None or dyn is None:
         robot, dyn = get_robot_dyn()
 
     w = {
-        "power": W_POWER,
-        "vel_smooth": W_VEL_SMOOTH,
-        "drift": W_DRIFT,
+        "power": CFG.w_power,
+        "vel_smooth": CFG.w_vel_smooth,
+        "drift": CFG.w_drift,
     }
     if weights:
         w.update(weights)
@@ -122,9 +134,9 @@ def solve_gait_ocp(
         t_hi=t_center + free_T_band,
         t_init=t_center,
         v_target=v_target,
-        f_c=F_C,
-        heading_tol=HEADING_TOL,
-        d_colloc=D_COLLOC,
+        f_c=CFG.f_c,
+        heading_tol=CFG.heading_tol,
+        d_colloc=CFG.d_colloc,
     )
     opti = nlp["opti"]
 
@@ -134,6 +146,32 @@ def solve_gait_ocp(
         + w["vel_smooth"] * nlp["vel_smooth_cost"]
         + w["drift"] * nlp["drift_cost"]
     )
+
+    # Same left–right symmetry the driver imposes — without it the co-design
+    # sweep would be scoring a different problem than the one that gets solved.
+    if CFG.enforce_symmetry:
+        add_symmetry_constraints(opti, nlp["X"], X_guess, robot, n,
+                                 phases=CFG.symmetry_phase,
+                                 verbose=print_level > 0)
+
+    # Seeding the whole vector replaces the per-variable seeds that
+    # build_collocation_nlp took from the analytic guess.  It carries more than
+    # the N ladder's resampled (X, U) does: Xc gets the converged collocation
+    # states rather than a linear interpolation, and T the previously solved
+    # period rather than t_center.
+    #
+    # Primal only, and the solver options below are left exactly as a cold solve
+    # has them.  Restoring the multipliers too would need warm_start_init_point
+    # — IPOPT ignores supplied duals without it — and that flag drags its
+    # barrier settings along with it.  That package came out slower than a cold
+    # sweep on an n=12 chain, so it is not used.
+    if warm_start is not None:
+        if warm_start.shape[0] != opti.nx:
+            raise ValueError(
+                f"warm start has {warm_start.shape[0]} primals, this NLP has "
+                f"{opti.nx} — a chain must hold gait, t_center and n fixed"
+            )
+        opti.set_initial(opti.x, warm_start)
 
     opti.solver(
         "ipopt",
@@ -161,9 +199,18 @@ def solve_gait_ocp(
         feasible = False
         src = opti.debug
 
-    return _extract(src, nlp["X"], nlp["Xc"], nlp["U"], nlp["T"], nlp["V_J"],
-                    nlp["B"], nlp["d"], nlp["q_ref_quat"], robot, robot.nq, n,
-                    gait, t_center, v_target, feasible)
+    stats = opti.stats()
+    row = _extract(src, nlp["X"], nlp["Xc"], nlp["U"], nlp["T"], nlp["V_J"],
+                   nlp["B"], nlp["d"], nlp["q_ref_quat"], robot, robot.nq, n,
+                   gait, t_center, v_target, feasible)
+    row["iterations"] = int(stats.get("iter_count", 0))
+    row["wall_time_s"] = float(stats.get("t_wall_total", 0.0))
+    row["status"] = str(stats.get("return_status", ""))
+    row["warm_started"] = warm_start is not None
+    # Only a converged point is worth passing on: seeding the next link from a
+    # failed iterate would propagate the failure down the rest of the chain.
+    row["warm_start"] = np.array(src.value(opti.x)).ravel() if feasible else None
+    return row
 
 
 def _extract(src, X, Xc, U, T, V_J, B, d, q_ref_quat, robot, nq, n,

@@ -11,6 +11,11 @@ This supersedes the sinusoid-only ``run_search.py``.  It is structured so the
 sweep driver can later be swapped for a pymoo NSGA-II driver (adding leg
 dimensions as co-design variables) while reusing ``solve_gait_ocp`` unchanged.
 
+Solves are grouped into *chains*: one chain per (gait, T centre), sweeping the
+speed targets in ascending order, each link warm-started from the previous
+link's converged primal-dual point.  The chain is also the unit of parallelism,
+so continuation stays sequential where it has to be while the workers stay busy.
+
 Run:
     python run_codesign.py
 Toggle ``PARALLEL`` below: serial (default) keeps RAM bounded on a laptop;
@@ -44,7 +49,7 @@ except ImportError:
 # Target-speed axis (ε-constraint): the inner solve minimises energy subject to
 # speed >= v_target, the floor binds, so each value yields a point at that speed.
 # Sweeping it is what spans the speed axis of the Pareto front.
-SPEED_TARGETS = np.linspace(0.1, 0.3, 25)  # m/s; 0.025 spacing gives ~10% speed resolution
+SPEED_TARGETS = np.linspace(0.1, 0.2, 7)  # m/s; 0.025 spacing gives ~10% speed resolution
 
 # Pareto dominance tolerance on speed.  The ε-constraint floor binds, so
 # converged speeds cluster at the targets up to solver/float noise (~1e-8).
@@ -57,11 +62,11 @@ SPEED_TOL = 1e-4
 # (each point free-T-refined) explores cadences and the Pareto filter keeps the
 # most efficient one per (gait, speed).  Keep it small — total solves = gaits ×
 # speeds × T-centres.  Each gait may override with its own cadence range.
-T_GRID_DEFAULT = np.linspace(0.5, 1.4, 7)
+T_GRID_DEFAULT = np.linspace(0.8, 1.2, 3)
 GAIT_T_OVERRIDE: dict[str, np.ndarray] = {
     # "LSPG25": np.linspace(0.5, 1.2, 3),
 }
-FREE_T_BAND = 0.15   # δ: free-T half-window; > grid spacing/2 so bands overlap
+FREE_T_BAND = 0.2   # δ: free-T half-window; > grid spacing/2 so bands overlap
 
 PARALLEL = True     # serial keeps RAM bounded; set True to use a process pool
 N_WORKERS = 4        # processes when PARALLEL
@@ -90,20 +95,44 @@ def gait_t_centers(gait: str) -> np.ndarray:
     return GAIT_T_OVERRIDE.get(gait, T_GRID_DEFAULT)
 
 
-def build_tasks() -> list[tuple[str, float, float]]:
-    return [
-        (g, float(v), float(t))
-        for g in ev.GAITS
-        for v in SPEED_TARGETS
-        for t in gait_t_centers(g)
-    ]
+def build_chains() -> list[tuple[str, float, list[float]]]:
+    """One continuation chain per (gait, T centre): its speed targets, ascending.
+
+    Only ``v_target`` is a parameter of the NLP (it scales the speed floor), so
+    it is the only axis a solution can be continued along.  The gait is not —
+    it merely picks the analytic initial guess — and the four gaits exist
+    precisely to sample different basins: ``guess_multistart`` has them landing
+    on distinct minima (torque_max spread 40%, base_z_min nearly 2x) at COT
+    within 5% of each other.  Warm-starting across gaits would pull them all
+    into one basin and report it four times, so chains never cross a gait.
+
+    T centres stay separate too: the v grid is the finer axis (0.008 m/s steps
+    against 0.15 s), and a smaller step is a smaller perturbation to continue
+    over.  Ascending order starts each chain at the loosest speed floor.
+    """
+    speeds = sorted(float(v) for v in SPEED_TARGETS)
+    return [(g, float(t), speeds) for g in ev.GAITS for t in gait_t_centers(g)]
 
 
-def _eval_point(task: tuple[str, float, float]) -> dict:
-    """Worker entry: solve one (gait, speed, T) point. Robot/dyn cached per process."""
-    gait, v_target, t_center = task
-    with _maybe_quiet(QUIET_SOLVES):
-        return ev.solve_gait_ocp(gait, t_center, v_target=v_target, free_T_band=FREE_T_BAND)
+def _eval_chain(chain: tuple[str, float, list[float]], robot=None, dyn=None) -> list[dict]:
+    """Worker entry: solve one chain, each link warm-started from the last.
+
+    Robot/dyn are cached per process when not supplied.  A link that fails
+    returns no warm start, so the next speed restarts cold rather than
+    inheriting a broken iterate.
+    """
+    gait, t_center, speeds = chain
+    rows, warm = [], None
+    for v in speeds:
+        with _maybe_quiet(QUIET_SOLVES):
+            r = ev.solve_gait_ocp(gait, t_center, v_target=v,
+                                  free_T_band=FREE_T_BAND,
+                                  robot=robot, dyn=dyn, warm_start=warm)
+        # Popped, not kept: the decision vector is large and would otherwise be
+        # pickled back to the parent for every one of the 700 points.
+        warm = r.pop("warm_start")
+        rows.append(r)
+    return rows
 
 
 def pareto_front(rows: list[dict]) -> list[int]:
@@ -145,6 +174,12 @@ def _save(rows: list[dict], pareto_idx: list[int]) -> None:
             "cot": r["cot"],
             "feasible": r["feasible"],
             "pareto": i in pareto_set,
+            # Solver cost, so the warm-start chaining can be measured rather
+            # than assumed: compare warm links against each chain's cold head.
+            "iterations": r["iterations"],
+            "wall_time_s": r["wall_time_s"],
+            "status": r["status"],
+            "warm_started": r["warm_started"],
         })
         # Per-point trajectory for feasible solves.
         if r["feasible"]:
@@ -250,13 +285,18 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
                 "speed_targets": np.array2string(np.asarray(SPEED_TARGETS), precision=3),
                 "t_grid": np.array2string(np.asarray(T_GRID_DEFAULT), precision=3),
                 "free_T_band": FREE_T_BAND,
-                "N_collocation": ev.N,
-                "tau_max": ev.TAU_MAX,
-                "f_c": ev.F_C,
-                "heading_tol": ev.HEADING_TOL,
-                "w_power": ev.W_POWER,
-                "w_vel_smooth": ev.W_VEL_SMOOTH,
-                "w_drift": ev.W_DRIFT,
+                # From the robot's OCPSettings, the same source run_collocation
+                # logs, so a sweep records the settings it actually solved with.
+                "N_collocation": ev.CFG.n,
+                "d_colloc": ev.CFG.d_colloc,
+                "tau_max": ev.CFG.tau_max,
+                "f_c": ev.CFG.f_c,
+                "heading_tol": ev.CFG.heading_tol,
+                "enforce_symmetry": ev.CFG.enforce_symmetry,
+                "symmetry_phase": ev.CFG.symmetry_phase,
+                "w_power": ev.CFG.w_power,
+                "w_vel_smooth": ev.CFG.w_vel_smooth,
+                "w_drift": ev.CFG.w_drift,
                 "gaits": ",".join(ev.GAITS),
                 "n_tasks": n_tasks,
                 "parallel": PARALLEL,
@@ -273,6 +313,17 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
             if feasible:
                 metrics["min_cot"] = min(r["cot"] for r in feasible)
                 metrics["max_speed"] = max(r["speed"] for r in feasible)
+            # Warm vs cold solver cost — the whole point of the chaining.
+            warm = [r for r in rows if r["warm_started"]]
+            cold = [r for r in rows if not r["warm_started"]]
+            metrics["total_iterations"] = sum(r["iterations"] for r in rows)
+            metrics["total_solve_wall_s"] = sum(r["wall_time_s"] for r in rows)
+            for label, group in (("warm", warm), ("cold", cold)):
+                if group:
+                    metrics[f"mean_iters_{label}"] = float(
+                        np.mean([r["iterations"] for r in group]))
+                    metrics[f"mean_wall_s_{label}"] = float(
+                        np.mean([r["wall_time_s"] for r in group]))
             # Best (lowest) COT achieved at each target speed.
             for v in SPEED_TARGETS:
                 at_v = [r["cot"] for r in feasible if abs(r["v_target"] - v) < 1e-9]
@@ -288,35 +339,39 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
 
 
 def main() -> None:
-    tasks = build_tasks()
-    print(f"Co-design sweep: {len(tasks)} (gait, speed, T) points "
+    chains = build_chains()
+    n_solves = sum(len(c[2]) for c in chains)
+    print(f"Co-design sweep: {len(chains)} chains x {len(chains[0][2])} speeds "
+          f"= {n_solves} solves "
           f"[{'parallel x' + str(N_WORKERS) if PARALLEL else 'serial'}]")
 
-    use_bar = tqdm is not None
+    rows = []
+    bar = tqdm(total=n_solves, desc="co-design sweep") if tqdm is not None else None
     if PARALLEL:
         with Pool(N_WORKERS) as pool:
-            results = pool.imap_unordered(_eval_point, tasks)
-            if use_bar:
-                results = tqdm(results, total=len(tasks), desc="co-design sweep")
-            rows = list(results)
+            # Chains, not points: continuation is sequential inside a chain.
+            for i, chain_rows in enumerate(pool.imap_unordered(_eval_chain, chains), 1):
+                rows.extend(chain_rows)
+                if bar is not None:
+                    bar.update(len(chain_rows))
+                else:
+                    print(f"  [{i}/{len(chains)}] chain done "
+                          f"({chain_rows[0]['gait']} T={chain_rows[0]['t_center']:.3f})",
+                          flush=True)
     else:
         robot, dyn = ev.get_robot_dyn()   # build once, reuse across solves
-        rows = []
-        bar = tqdm(total=len(tasks), desc="co-design sweep") if use_bar else None
-        for i, (gait, v_target, t_center) in enumerate(tasks, 1):
+        for i, chain in enumerate(chains, 1):
             if bar is not None:
-                bar.set_postfix_str(f"{gait} v={v_target:.2f} T={t_center:.3f}")
+                bar.set_postfix_str(f"{chain[0]} T={chain[1]:.3f}")
             else:
-                print(f"  [{i}/{len(tasks)}] {gait} @ v={v_target:.2f} T={t_center:.3f} ...",
+                print(f"  [{i}/{len(chains)}] {chain[0]} @ T={chain[1]:.3f} ...",
                       flush=True)
-            with _maybe_quiet(QUIET_SOLVES and bar is not None):
-                rows.append(ev.solve_gait_ocp(gait, t_center, v_target=v_target,
-                                              free_T_band=FREE_T_BAND,
-                                              robot=robot, dyn=dyn))
+            chain_rows = _eval_chain(chain, robot, dyn)
+            rows.extend(chain_rows)
             if bar is not None:
-                bar.update(1)
-        if bar is not None:
-            bar.close()
+                bar.update(len(chain_rows))
+    if bar is not None:
+        bar.close()
 
     pareto_idx = pareto_front(rows)
 
@@ -328,9 +383,15 @@ def main() -> None:
     n_feasible = sum(r["feasible"] for r in rows)
     print(f"\n  feasible: {n_feasible}/{len(rows)}   pareto points: {len(pareto_idx)}")
 
+    warm = [r["iterations"] for r in rows if r["warm_started"]]
+    cold = [r["iterations"] for r in rows if not r["warm_started"]]
+    if warm and cold:
+        print(f"  mean IPOPT iterations: {np.mean(cold):.0f} cold ({len(cold)}) "
+              f"vs {np.mean(warm):.0f} warm ({len(warm)})")
+
     _save(rows, pareto_idx)
     _plot(rows, pareto_idx)
-    _log_mlflow(rows, pareto_idx, len(tasks))
+    _log_mlflow(rows, pareto_idx, n_solves)
 
 
 if __name__ == "__main__":

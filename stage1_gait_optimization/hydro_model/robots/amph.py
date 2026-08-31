@@ -112,6 +112,11 @@ SPEC = RobotSpec(
     + tuple(c for leg in LEG_NAMES for c in _leg_cylinders(leg)),
     coordinate_map=None,          # IdentityMap
     pose_constraints=_pose_constraints,
+    # The paper path as published leaves amph's hind reach: 59% of it sits
+    # outside, and the unconstrained IK tracks it anyway by driving the hind
+    # thigh 29 deg through its lower stop.  Rotating the path 40 deg clockwise
+    # about the hip and shifting it 3 cm aft brings it into range.
+    paper_gait={"hind_rotation_deg": 45.0, "hind_dx": 0.01},
     # OCPSettings' defaults are amph's own numbers, so this is spelled out only
     # to say the gait explicitly.  Do not tune them for another robot here.
     ocp=OCPSettings(gait="LSPG25"),
