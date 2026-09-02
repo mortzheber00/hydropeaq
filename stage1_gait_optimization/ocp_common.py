@@ -379,6 +379,7 @@ def build_collocation_nlp(
 
     # Collocation constraints (kinematic + inverse-dynamics split — no M⁻¹)
     a_base = []          # (weight, base acceleration) at every collocation point
+    a_joint = []         # (weight, joint acceleration), same points
     for k in range(n):
         uk_full = ca.vertcat(ca.DM.zeros(6, 1), U[:, k])
         x_all = [X[:, k]] + [Xc[:, k * d + j] for j in range(d)]
@@ -390,6 +391,7 @@ def build_collocation_nlp(
             # a_poly is d(v)/dt of the state polynomial; V_B's rows are the
             # first six of the velocity block, so a_poly[:6] is the base.
             a_base.append((B[j - 1], a_poly[:6]))
+            a_joint.append((B[j - 1], a_poly[6:]))
         x_end = sum(D[i] * x_all[i] for i in range(d + 1))
         opti.subject_to(X[:, k + 1] == x_end)
 
@@ -408,6 +410,18 @@ def build_collocation_nlp(
     # reference N.  Away from it the drift with N is gone, which is the point.
     vel_smooth_cost = (t_init / VEL_SMOOTH_REF_N) ** 2 * sum(
         b * ca.sumsqr(a) for b, a in a_base
+    ) / n
+
+    # The same measure over the joint accelerations.  Without it nothing in the
+    # objective is a function of joint motion alone: power_cost is (tau.qdot)²,
+    # which collapses wherever the torques are small, and vel_smooth_cost sees
+    # only the six base rows.  Solves that use a fraction of tau_max therefore
+    # left the joint trajectories effectively unregularised and came back with
+    # interior chatter -- ~58 rad/s² RMS joint acceleration at 15% of the torque
+    # limit, on joints nowhere near a position stop.  Same normalisation as the
+    # base term, so the two weights are on the same footing.
+    joint_smooth_cost = (t_init / VEL_SMOOTH_REF_N) ** 2 * sum(
+        b * ca.sumsqr(a) for b, a in a_joint
     ) / n
 
     # Per-configuration constraints supplied by the robot: equalities (amph
@@ -503,13 +517,49 @@ def build_collocation_nlp(
         "Q_J": Q_J, "V_B": V_B, "V_J": V_J,
         "power_cost": power_cost,
         "vel_smooth_cost": vel_smooth_cost,
+        "joint_smooth_cost": joint_smooth_cost,
         "drift_cost": drift_cost,
     }
 
 
+# ── Cycle energy and cost of transport ──────────────────────────────────────
+# Shared by every driver that reports COT, so a nominal single solve and a
+# co-design sweep point are the same number and can go on the same axes.
+GRAVITY = 9.81
+
+
+def cycle_energy(U_val, vc, B, d: int, n: int, T_val: float) -> float:
+    """Mechanical work over the cycle, ∫Σ_j|τ_j·q̇_j|dt.
+
+    Integrated the same way the objective is: on the collocation points with
+    the Radau weights ``B``.  ``vc`` is the joint-velocity block of the
+    collocation states, i.e. ``Xc[V_J, :]``.
+
+    The grid-node sum this replaces was a left-rectangle rule and came out
+    30-40% low on solved trajectories, so every COT it produced was too.
+
+    One caveat this does not remove: |·| kinks wherever a joint velocity
+    crosses zero inside an interval, and B is exact only for polynomials.  It
+    is high order between sign changes and first order across them; an exact
+    figure would split each interval at the roots of q̇.
+    """
+    dt = T_val / n
+    return float(sum(
+        B[i] * dt * np.sum(np.abs(U_val[:, k] * vc[:, k * d + i]))
+        for k in range(n) for i in range(d)
+    ))
+
+
+def cost_of_transport(energy: float, robot, forward: float) -> float:
+    """Dimensionless COT, ``E / (m g |d|)``; infinite for a stalled cycle."""
+    if abs(forward) <= 1e-9:
+        return np.inf
+    return energy / (pin.computeTotalMass(robot.model) * GRAVITY * abs(forward))
+
+
 # ── Left–right symmetry, phase free ─────────────────────────────────────────
 # Shape resolution of the symmetry parametrisation below; Nyquist caps it at n/2.
-N_HARMONICS = 5
+N_HARMONICS = 8
 
 
 def _fourier_basis(N: int, n_harmonics: int) -> np.ndarray:

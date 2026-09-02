@@ -31,13 +31,14 @@ STAGE1_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(STAGE1_DIR))
 
 import numpy as np
-import pinocchio as pin
 from hydro_model import SymbolicDynamics, load_robot
 from hydro_model.robots import get_spec
 from initial_guess import build_initial_guess, build_robot_ik_initial_guess
 from ocp_common import (
     add_symmetry_constraints,
     build_collocation_nlp,
+    cost_of_transport,
+    cycle_energy,
     tangent_to_legacy,
 )
 
@@ -54,8 +55,6 @@ GAITS = PAPER_GAITS + FIRMWARE_GAITS
 # silently went stale the first time OCPSettings was retuned.  Cheap at import:
 # get_spec only imports the robot's module, it does not build the model.
 CFG = get_spec(ROBOT).ocp
-
-GRAVITY = 9.81
 
 # Per-process cache of the (expensive) robot + symbolic dynamics build.
 _ROBOT_DYN = None
@@ -121,6 +120,7 @@ def solve_gait_ocp(
     w = {
         "power": CFG.w_power,
         "vel_smooth": CFG.w_vel_smooth,
+        "joint_smooth": CFG.w_joint_smooth,
         "drift": CFG.w_drift,
     }
     if weights:
@@ -144,6 +144,7 @@ def solve_gait_ocp(
     opti.minimize(
         w["power"] * nlp["power_cost"]
         + w["vel_smooth"] * nlp["vel_smooth_cost"]
+        + w["joint_smooth"] * nlp["joint_smooth_cost"]
         + w["drift"] * nlp["drift_cost"]
     )
 
@@ -225,24 +226,9 @@ def _extract(src, X, Xc, U, T, V_J, B, d, q_ref_quat, robot, nq, n,
     forward = float(X_val[0, -1] - X_val[0, 0])
     speed = forward / T_val
 
-    # Mechanical work over the cycle, ∫Σ_j|τ_j·q̇_j|dt, integrated the same way
-    # the objective is: on the collocation points with the Radau weights B.
-    # The grid-node sum this replaces was a left-rectangle rule and came out
-    # 30-40% low on solved trajectories, so every COT it produced was too.
-    #
-    # One caveat this does not remove: |·| kinks wherever a joint velocity
-    # crosses zero inside an interval, and B is exact only for polynomials.
-    # It is high order between sign changes and first order across them; an
-    # exact figure would split each interval at the roots of q̇.
-    dt = T_val / n
     vc = src.value(Xc)[V_J, :]             # joint velocities at the collocation points
-    energy = float(sum(
-        B[i] * dt * np.sum(np.abs(U_val[:, k] * vc[:, k * d + i]))
-        for k in range(n) for i in range(d)
-    ))
-
-    mass = pin.computeTotalMass(robot.model)
-    cot = energy / (mass * GRAVITY * abs(forward)) if abs(forward) > 1e-9 else np.inf
+    energy = cycle_energy(U_val, vc, B, d, n, T_val)
+    cot = cost_of_transport(energy, robot, forward)
 
     return {
         "gait": gait,

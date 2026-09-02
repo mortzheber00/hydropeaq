@@ -28,6 +28,8 @@ from ocp_common import (
     _log_solver_stats,
     add_symmetry_constraints,
     build_collocation_nlp,
+    cost_of_transport,
+    cycle_energy,
     diagnose_initial_guess,
     extract_solution,
     tangent_to_legacy,
@@ -63,6 +65,7 @@ def build_ocp(robot_name: str = "amph"):
         "SYMMETRY_PHASE": cfg.symmetry_phase,
         "W_POWER": cfg.w_power, "W_DIST": cfg.w_dist,
         "W_VEL_SMOOTH": cfg.w_vel_smooth, "W_DRIFT": cfg.w_drift,
+        "W_JOINT_SMOOTH": cfg.w_joint_smooth,
     })
 
     # ── 2. Initial guess ────────────────────────────────────────────────
@@ -117,6 +120,7 @@ def build_ocp(robot_name: str = "amph"):
         cfg.w_power * nlp["power_cost"]
         + dist_cost
         + cfg.w_vel_smooth * nlp["vel_smooth_cost"]
+        + cfg.w_joint_smooth * nlp["joint_smooth_cost"]
         + cfg.w_drift * nlp["drift_cost"]
     )
 
@@ -164,9 +168,19 @@ def build_ocp(robot_name: str = "amph"):
                                   nq=robot.nq_reduced, nv=robot.nv_reduced)
         # Tangent, not legacy: Xc is what the objective's quadrature ran on, so
         # it is saved in the coordinates the transcription used.
+        Xc_val = src.value(nlp["Xc"])
+        # COT on the same quadrature the co-design sweep uses, so a nominal
+        # solve can be placed on the sweep's Pareto front.
+        forward = float(X_val[0, -1] - X_val[0, 0])
+        energy = cycle_energy(U_val, Xc_val[nlp["V_J"], :],
+                              nlp["B"], nlp["d"], N, T_val)
+        cot = cost_of_transport(energy, robot, forward)
+        print(f"  Cycle energy         = {energy:.4f} J")
+        print(f"  Cost of transport    = {cot:.4f}")
+        mlflow.log_metrics({"energy": energy, "cot": cot})
         extract_solution(X_val, U_val, nq, N, T_val,
                          robot=robot_name, coords=COORDS,
-                         Xc_val=src.value(nlp["Xc"]))
+                         Xc_val=Xc_val)
 
     try:
         sol = opti.solve()

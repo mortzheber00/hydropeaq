@@ -79,19 +79,25 @@ class OCPSettings:
     n: int = 48               # collocation intervals
     d_colloc: int = 3         # polynomial degree (Radau collocation points)
     t_init: float = 1.0       # initial-guess cycle period [s] (warm start)
-    t_min: float = 0.5        # cycle-period bounds [s]
-    t_max: float = 1.5
-    d_target: float = 0.2     # forward distance per nominal cycle [m]
+    t_min: float = 0.8        # cycle-period bounds [s]
+    t_max: float = 1.2
+    d_target: float = 0.1     # forward distance per nominal cycle [m]
     tau_max: float = 3.5      # joint torque limit [Nm]
     f_c: float = 20.0         # actuator bandwidth [Hz] — first-order filter cutoff
     w_power: float = 2.0      # weight for sum-of-squared per-joint power (τ·q̇)²
-    w_dist: float = 0.5       # weight for forward distance reward
-    w_vel_smooth: float = 20.0  # weight for velocity smoothing
+    w_dist: float = 0.0       # weight for forward distance reward
+    w_vel_smooth: float = 20.0  # weight for base velocity smoothing
+    # Joint-acceleration smoothing.  Sized so the term contributes ~15% of the
+    # power term at the low-speed corner (v=0.10, T=1.4), matching the share
+    # w_vel_smooth carries there; that corner is where low torque utilisation
+    # leaves the joint motion otherwise unregularised.  Retune with the power
+    # weight, and check the share again if tau_max or the speed range moves.
+    w_joint_smooth: float = 0.2
     w_drift: float = 10.0     # weight for drift penalty
     heading_tol: float = 0.05   # max yaw angle at endpoint [rad]
 
     # Mirror each RobotSpec.lr_leg_pairs left leg onto its right, phase-shifted.
-    enforce_symmetry: bool = False
+    enforce_symmetry: bool = True
     # Seed for the cycle fraction the right leg lags the left; the OCP solves
     # for it from there.  None reads it off the initial guess (prefer that);
     # set a scalar, or one value per pair, to force a different phasing.

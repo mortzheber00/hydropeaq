@@ -246,7 +246,6 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
 
     ax.set_xlabel("forward speed [m/s]")
     ax.set_ylabel("cost of transport [-]")
-    ax.set_title("Gait co-design: speed vs. efficiency (colour = T)")
     fig.tight_layout()
     OUT_DIR.mkdir(exist_ok=True)
     # Thesis figures: 300 dpi raster + vector PDF.  pad_inches above the default:
@@ -296,6 +295,7 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
                 "symmetry_phase": ev.CFG.symmetry_phase,
                 "w_power": ev.CFG.w_power,
                 "w_vel_smooth": ev.CFG.w_vel_smooth,
+                "w_joint_smooth": ev.CFG.w_joint_smooth,
                 "w_drift": ev.CFG.w_drift,
                 "gaits": ",".join(ev.GAITS),
                 "n_tasks": n_tasks,
