@@ -35,6 +35,37 @@ def style_for(gait: str) -> tuple[str, str]:
     return PALETTE[i % len(PALETTE)], MARKERS[i % len(MARKERS)]
 
 
+# Canvas for a figure that shares a row with another one: 0.49\textwidth of a
+# 15.2 cm text block.  Both figures take this exact canvas and are included
+# unscaled, so the point sizes in half_width() are the point sizes on the page.
+HALF = (2.94, 2.2)
+
+def half_width() -> None:
+    """Type and canvas settings for figures placed side by side.
+
+    Call it once at import in a script whose figures go in a half-width slot.
+    Scaling a full-width figure into that slot instead would put its 10 pt tick
+    labels on the page at under 6 pt, and thin its 0.5 pt spines to a hairline.
+    """
+    plt.rcParams.update({
+        "font.size": 9,
+        "axes.labelsize": 9,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+        # 'science' sets this to 'tight', which crops each figure to its own
+        # content and so gives two figures two different page sizes — they then
+        # scale differently in LaTeX and their type no longer matches.  None
+        # keeps the canvas.  Note savefig(bbox_inches=None) does *not* do this:
+        # that means "use this rcParam".
+        "savefig.bbox": None,
+        # Spines and ticks at the default 0.5 print unevenly once this small.
+        "axes.linewidth": 0.6,
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
+    })
+
+
 def tex(s: str) -> str:
     """Escape the characters that break usetex in a run/gait name."""
     return (s.replace("\\", r"\textbackslash{}").replace("_", r"\_")

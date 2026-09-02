@@ -7,20 +7,23 @@ heatmap region, where does its net forward thrust come from?"
 
 For a chosen leg, evaluates the SAME drag model used by thrust_heatmap.py
 against the OCP's actual joint state (q(t), v(t)) — not a unit probe — and
-plots three stacked panels over one gait cycle:
+plots three standalone figures over one gait cycle, sharing a time axis:
 
-  1. Foot velocity         v_foot_x(t)  (signed) and |v_foot|(t), both
-                           relative to the hull and in the base frame
-  2. Instantaneous thrust  F_drag_x(t)  on the three leg links combined
-  3. Cumulative impulse    ∫ F_drag_x dt  (final value = net thrust per cycle)
+  velocity  Foot velocity         v_foot_x(t)  (signed) and |v_foot|(t), both
+                                  relative to the hull and in the base frame
+  thrust    Instantaneous thrust  F_drag_x(t)  on the three leg links combined
+  impulse   Cumulative impulse    ∫ F_drag_x dt  (final value = net per cycle)
 
 Power-stroke timesteps (v_foot_x < 0) are shaded green so the asymmetry
-between the two halves of the cycle is visually obvious.
+between the two halves of the cycle is visually obvious.  ``--save x.pdf``
+writes ``x_velocity.pdf``, ``x_thrust.pdf`` and ``x_impulse.pdf`` (with the leg
+name folded in under ``--leg all``); the power/recovery speeds and impulses go
+to stdout.
 
 Usage:
   python gait_diagnostics.py
   python gait_diagnostics.py --solution ../task3_solution.npz --leg Hind_Left
-  python gait_diagnostics.py --legs all
+  python gait_diagnostics.py --leg all --save diag.pdf
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pinocchio as pin
 import scienceplots  # noqa: F401  registers the 'science' matplotlib style
+from matplotlib.patches import Patch
 
 # Professional thesis style with real LaTeX text rendering (Computer Modern).
 plt.style.use(["science"])
@@ -93,78 +97,83 @@ def _shade_power(ax, t_arr, v_foot_x):
         ax.axvspan(start, t_arr[-1], alpha=0.10, color="green", zorder=0)
 
 
+def stroke_stats(t_arr, v_foot_x, v_foot_mag, F_drag_x):
+    """Cumulative impulse plus the power/recovery split, printed by ``main``.
+
+    The split used to be figure text; it is reported on stdout now that the
+    figures carry no titles.
+    """
+    dt = t_arr[1] - t_arr[0]
+    impulse = np.cumsum(F_drag_x) * dt
+    power = v_foot_x < 0
+    return {
+        "impulse": impulse,
+        "net": impulse[-1],
+        "I_power": (F_drag_x[power] * dt).sum(),
+        "I_recovery": (F_drag_x[~power] * dt).sum(),
+        "s_power": v_foot_mag[power].mean() if power.any() else 0.0,
+        "s_recovery": v_foot_mag[~power].mean() if (~power).any() else 0.0,
+    }
+
+
+# Green shading means the same thing in all three figures, and is the only
+# encoding that no line or fill in them explains.
+_POWER_PATCH = Patch(facecolor="green", alpha=0.10,
+                     label=r"power stroke ($v_{\mathrm{foot},x} < 0$)")
+
+
 def plot_diagnostic(
     t_arr: np.ndarray,
     v_foot_x: np.ndarray,
     v_foot_mag: np.ndarray,
     F_drag_x: np.ndarray,
-    leg: str,
-    save: Path | None = None,
+    impulse: np.ndarray,
 ):
-    dt = t_arr[1] - t_arr[0]
-    impulse = np.cumsum(F_drag_x) * dt
-    net = impulse[-1]
+    """The three diagnostics as standalone figures, keyed by name.
 
-    # Split power/recovery impulse contributions
-    power_mask = v_foot_x < 0
-    I_power = (F_drag_x[power_mask] * dt).sum()
-    I_recovery = (F_drag_x[~power_mask] * dt).sum()
+    Separate rather than stacked so each can stand on its own in the text; they
+    keep the shared time axis, which is all the stack really bought.
+    """
+    figs = {}
 
-    # Mean speed in each phase
-    s_power = v_foot_mag[power_mask].mean() if power_mask.any() else 0.0
-    s_recovery = v_foot_mag[~power_mask].mean() if (~power_mask).any() else 0.0
+    def panel(name):
+        fig, ax = plt.subplots(figsize=(8.8, 3.4))
+        _shade_power(ax, t_arr, v_foot_x)
+        ax.axhline(0, color="k", lw=0.5, alpha=0.5)
+        ax.set_xlim(t_arr[0], t_arr[-1])
+        ax.set_xlabel("Time [s]")
+        ax.grid(alpha=0.3)
+        figs[name] = fig
+        return ax
 
-    fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
-
-    # ── Panel 1: foot velocities ─────────────────────────────────────────────
-    ax = axes[0]
-    _shade_power(ax, t_arr, v_foot_x)
+    # ── Foot velocities ──────────────────────────────────────────────────────
+    ax = panel("velocity")
     ax.plot(t_arr, v_foot_x, "C0-", lw=2, label=r"$v_{\mathrm{foot},x}$ (signed)")
     ax.plot(t_arr, v_foot_mag, "C1--", lw=1.5, label=r"$|v_{\mathrm{foot}}|$ (magnitude)")
-    ax.axhline(0, color="k", lw=0.5, alpha=0.5)
     ax.set_ylabel("Foot velocity [m/s]")
-    ax.set_title(
-        leg.replace("_", " ") + ": gait time-asymmetry diagnostic\n"
-        r"green shading = power stroke ($v_{\mathrm{foot},x} < 0$);  "
-        r"$\langle |v_{\mathrm{foot}}| \rangle$  "
-        f"power: {s_power:.3f} m/s,  recovery: {s_recovery:.3f} m/s"
-    )
-    ax.legend(loc="upper right")
-    ax.grid(alpha=0.3)
+    ax.legend(handles=ax.get_legend_handles_labels()[0] + [_POWER_PATCH],
+              loc="upper right")
 
-    # ── Panel 2: instantaneous drag-thrust ──────────────────────────────────
-    ax = axes[1]
-    _shade_power(ax, t_arr, v_foot_x)
+    # ── Instantaneous drag-thrust ────────────────────────────────────────────
+    ax = panel("thrust")
     ax.plot(t_arr, F_drag_x, "C2-", lw=2)
     ax.fill_between(t_arr, 0, F_drag_x, where=F_drag_x > 0,
                      alpha=0.35, color="forestgreen", label=r"thrust ($+x$)")
     ax.fill_between(t_arr, 0, F_drag_x, where=F_drag_x < 0,
                      alpha=0.35, color="crimson", label=r"anti-thrust ($-x$)")
-    ax.axhline(0, color="k", lw=0.5, alpha=0.5)
     ax.set_ylabel(r"$F_{\mathrm{drag},x}$ on leg [N]")
-    ax.legend(loc="upper right")
-    ax.grid(alpha=0.3)
+    ax.legend(handles=ax.get_legend_handles_labels()[0] + [_POWER_PATCH],
+              loc="upper right")
 
-    # ── Panel 3: cumulative impulse ──────────────────────────────────────────
-    ax = axes[2]
-    _shade_power(ax, t_arr, v_foot_x)
+    # ── Cumulative impulse ───────────────────────────────────────────────────
+    ax = panel("impulse")
     ax.plot(t_arr, impulse, "C3-", lw=2)
-    ax.axhline(0, color="k", lw=0.5, alpha=0.5)
     ax.set_ylabel(r"$\int F_{\mathrm{drag},x}\,\mathrm{d}t$  [N$\cdot$s]")
-    ax.set_xlabel("Time [s]")
-    ax.set_title(
-        rf"Power-stroke impulse: {I_power:+.4f} N$\cdot$s;  "
-        rf"recovery-stroke impulse: {I_recovery:+.4f} N$\cdot$s;  "
-        rf"net per cycle: {net:+.4f} N$\cdot$s"
-    )
-    ax.grid(alpha=0.3)
+    ax.legend(handles=[_POWER_PATCH], loc="upper right")
 
-    plt.tight_layout()
-    if save:
-        fig.savefig(save, dpi=150, bbox_inches="tight")
-        print(f"Saved → {save}")
-    else:
-        plt.show()
+    for fig in figs.values():
+        fig.tight_layout()
+    return figs
 
 
 def main():
@@ -195,13 +204,21 @@ def main():
     legs = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"] if args.leg == "all" else [args.leg]
     for leg in legs:
         v_foot_x, v_foot_mag, F_drag_x = compute_traces(robot, leg, X, nq)
+        st = stroke_stats(t_arr, v_foot_x, v_foot_mag, F_drag_x)
+        print(f"{leg}:  <|v_foot|> power {st['s_power']:.3f} m/s, "
+              f"recovery {st['s_recovery']:.3f} m/s;  impulse power "
+              f"{st['I_power']:+.4f}, recovery {st['I_recovery']:+.4f}, "
+              f"net {st['net']:+.4f} N·s")
+        figs = plot_diagnostic(t_arr, v_foot_x, v_foot_mag, F_drag_x, st["impulse"])
         if args.save is None:
-            save = None
-        elif len(legs) == 1:
-            save = args.save
-        else:
-            save = args.save.with_name(f"{args.save.stem}_{leg}{args.save.suffix}")
-        plot_diagnostic(t_arr, v_foot_x, v_foot_mag, F_drag_x, leg=leg, save=save)
+            continue
+        stem = args.save.stem + (f"_{leg}" if len(legs) > 1 else "")
+        for name, fig in figs.items():
+            path = args.save.with_name(f"{stem}_{name}{args.save.suffix}")
+            fig.savefig(path, dpi=150, bbox_inches="tight")
+            print(f"Saved → {path}")
+    if args.save is None:
+        plt.show()
 
 
 if __name__ == "__main__":

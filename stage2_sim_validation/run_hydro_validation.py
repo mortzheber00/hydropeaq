@@ -35,8 +35,18 @@ from stage1_gait_optimization.hydro_model.visualization import (
 # Professional thesis style with real LaTeX text rendering (Computer Modern).
 plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
+# 'science' sets savefig.bbox to 'tight', which crops every figure to its own
+# content and so hands LaTeX five slightly different page sizes; at a common
+# \includegraphics width they would each scale differently and their type would
+# not match.  None keeps the canvas, which FIGSIZE makes identical for all five.
+# (savefig(bbox_inches=None) would not do this — that means "use this rcParam".)
+plt.rcParams["savefig.bbox"] = None
 
-ROBOT = "body2"   # registered robot name; see hydro_model/robots/
+ROBOT = "amph"   # registered robot name; see hydro_model/robots/
+
+# One canvas for every figure here.  The 3D content only reaches ~5.9 x 5.8 in
+# of it, so the rest is margin: nothing is clipped by dropping the crop above.
+FIGSIZE = (5.0, 4.0)
 
 
 def _derived(base: Path, tag: str) -> str:
@@ -110,25 +120,17 @@ def main():
 
     # ── 4. Visualise ───────────────────────────────────────────────────
     save = args.save
-    visualize_skeleton(
-        robot,
-        q,
-        title=f"{robot.spec.name} -- Kinematic Skeleton (Neutral Pose)",
-        save_path=_derived(save, "skeleton") if save else None,
-    )
-
-    visualize_robot_representations(
-        robot,
-        q,
-        title=f"{robot.spec.name} -- Geometry (Neutral Pose)",
-        save_prefix=str(save.with_suffix("")) if save else None,
-        save_suffix=save.suffix if save else ".png",
-    )
+    # Untitled: each of these goes into its own LaTeX float, where the caption
+    # describes it.  Saved here rather than through the builders' own save
+    # arguments, which crop to content — writing them from one place is what
+    # keeps the five files a single page size.
+    figs = {"skeleton": visualize_skeleton(robot, q, figsize=FIGSIZE)}
+    figs.update(visualize_robot_representations(robot, q, figsize=FIGSIZE))
 
     if save:
-        print(f"Saved → {_derived(save, 'skeleton')}")
-        for kind in ("mesh", "drag", "buoyancy", "overlay"):
-            print(f"Saved → {_derived(save, kind)}")
+        for tag, fig in figs.items():
+            fig.savefig(_derived(save, tag), dpi=300)
+            print(f"Saved → {_derived(save, tag)}")
     else:
         plt.show()
 

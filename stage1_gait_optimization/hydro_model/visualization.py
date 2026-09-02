@@ -10,6 +10,7 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
+from matplotlib.ticker import MaxNLocator
 
 from .robot import QuadrupedRobot
 
@@ -95,7 +96,7 @@ def visualize_skeleton(
     robot: QuadrupedRobot,
     q: np.ndarray | None = None,
     centerline: bool = True,
-    title: str = "Robot Kinematic Skeleton",
+    title: str | None = None,
     elev: float = 25.0,
     azim: float = -60.0,
     figsize: tuple[float, float] = (12, 9),
@@ -112,7 +113,8 @@ def visualize_skeleton(
         leg is drawn sagittally projected is now a property of the robot: the
         skeleton follows its cylinder chain, and ``CylinderSpec.project_leg``
         decides the projection.
-    title : plot title.
+    title : plot title, or None (the default) for none — these figures go
+        into LaTeX floats, where the caption carries the description.
     elev, azim : camera angles.
     figsize : figure size.
     save_path : if given, save figure to this path.
@@ -187,11 +189,20 @@ def visualize_skeleton(
 
     all_pts = np.array(all_pts)
     _set_equal_aspect(ax, all_pts)
+    # The skeleton spans only the joint positions, the geometry figures span the
+    # mesh too — 0.38 m against 0.44 m, which falls either side of the automatic
+    # locator's threshold and gives this figure alone 0.05 m ticks and twice the
+    # labels.  Capping the count puts both back on the same 0.1 m spacing.
+    # steps= as well as nbins: left to choose freely it lands on 0.08 m here,
+    # and the ticks should read 0.1, 0.2 like the other figures'.
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10]))
 
-    ax.set_xlabel("X [m]")
-    ax.set_ylabel("Y [m]")
-    ax.set_zlabel("Z [m]")
-    ax.set_title(title)
+    ax.set_xlabel("X [m]", fontsize=8)
+    ax.set_ylabel("Y [m]", fontsize=8)
+    ax.set_zlabel("Z [m]", fontsize=8)
+    if title:
+        ax.set_title(title)
     ax.view_init(elev=elev, azim=azim)
 
     legend_elements = [
@@ -242,7 +253,7 @@ def _draw_cylinder(ax, center, axis_world, radius, length, color, alpha=0.6, n=1
 def visualize_robot_representations(
     robot: QuadrupedRobot,
     q: np.ndarray | None = None,
-    title: str = "Robot Geometry",
+    title: str | None = None,
     elev: float = 25.0,
     azim: float = -60.0,
     figsize: tuple[float, float] = (7, 6),
@@ -362,8 +373,9 @@ def visualize_robot_representations(
         ax.set_zlabel("Z [m]", fontsize=8)
         ax.view_init(elev=elev, azim=azim)
         ax.legend(handles=overlay_legend if kind == "overlay" else legend_elements,
-                  loc="upper left", fontsize=6)
-        fig.suptitle(f"{title}: {subtitles[kind]}", fontsize=10)
+                  loc="upper left", fontsize=8)
+        if title:
+            fig.suptitle(f"{title}: {subtitles[kind]}", fontsize=10)
         fig.tight_layout()
         if save_prefix is not None:
             fig.savefig(f"{save_prefix}_{kind}{save_suffix}", dpi=150, bbox_inches="tight")

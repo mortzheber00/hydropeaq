@@ -74,6 +74,13 @@ SAVE_PATH = Path(__file__).parents[1] / "docs" / "figures" / "sim" / "boundary_p
 
 ELEV, AZIM = 25.0, -60.0
 
+# What a point of legend text is worth on the page depends on how far LaTeX
+# scales the figure, so the size is set relative to the sibling robot figures
+# rather than in isolation: run_hydro_validation's are 8 pt on a 5.0 in page,
+# this one is 5.91 in wide once savefig's tight bbox has cropped it, and
+# 8 * 5.91 / 5.0 puts the two at the same size in the document.
+LEGEND_PT = 9.5
+
 
 def main() -> None:
     boundary_pts = np.load(DATA_PATH)
@@ -130,7 +137,7 @@ def main() -> None:
             Line2D([], [], marker="o", linestyle="none", color="#D62728",
                    markersize=3, label="SPH boundary particles"),
         ],
-        loc="upper left", fontsize=7,
+        loc="upper left", fontsize=LEGEND_PT,
     )
 
     _set_equal_aspect(ax, boundary_pts)

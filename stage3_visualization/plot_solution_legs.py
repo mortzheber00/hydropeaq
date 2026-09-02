@@ -25,6 +25,13 @@ Encoding:
 All panels share one set of axis limits and an equal aspect ratio, so leg
 lengths and stroke envelopes are directly comparable across legs and solutions.
 
+A second figure shows the gait timing — the power stroke marked over the whole
+cycle, one bar per leg — as ``leg_configurations.py`` does for the initial
+gaits.  There the power phase is a prescribed fraction at a prescribed offset;
+here it is read back off the solved foot velocity, so the bars show what the
+optimiser chose.  ``--save`` writes it next to the main figure as
+``*_timing.<ext>``.
+
 Usage:
   python plot_solution_legs.py
   python plot_solution_legs.py --solutions a.npz b.npz --labels "baseline" "symmetric"
@@ -41,6 +48,7 @@ import numpy as np
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from thesis_style import tex  # also activates the shared plot style
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -56,13 +64,18 @@ DEFAULT_SOLUTION = Path(__file__).resolve().parents[1] / "task3_solution.npz"
 # already makes obvious.
 CYCLE_CMAP = "viridis"
 
+# Same power/recovery blues the initial-gait timing diagram uses.
+POWER_COLOR, RECOVERY_COLOR = "#1f77b4", "#dbe7f3"
+
 
 def leg_traces(robot, X: np.ndarray, nq: int, leg: str):
     """Base-frame ``(x, z)`` centreline per grid point, and the foot path.
 
-    Returns ``(chains, foot_xz, power)`` where ``chains`` is ``(K, 4, 2)`` over
-    ``[hip, thigh, calf, foot]``, ``foot_xz`` is ``(K, 2)``, and ``power`` is a
-    ``(K,)`` bool marking the power stroke.
+    Returns ``(chains, foot_xz, vx)`` where ``chains`` is ``(K, 4, 2)`` over
+    ``[hip, thigh, calf, foot]``, ``foot_xz`` is ``(K, 2)``, and ``vx`` is the
+    ``(K,)`` foot velocity along x, negative on the power stroke.  The velocity
+    rather than the ``vx < 0`` flag, so ``power_segments`` can interpolate where
+    the stroke actually turns instead of rounding it to a grid point.
     """
     X_tree = expand_to_tree(robot, X, nq)
     nq_tree = robot.nq
@@ -87,7 +100,7 @@ def leg_traces(robot, X: np.ndarray, nq: int, leg: str):
     # difference on the closed cycle; X's last column repeats the first.
     x = foot_xz[:, 0]
     vx = np.gradient(np.concatenate([x[:-1], x[:-1], x[:-1]]))[K - 1: 2 * (K - 1) + 1]
-    return chains, foot_xz, vx < 0
+    return chains, foot_xz, vx
 
 
 def load_all(paths, labels):
@@ -113,12 +126,12 @@ def load_all(paths, labels):
     return out
 
 
-def plot_solution_legs(sols, legs, n_frames: int, title: str | None):
-    robot = load_robot(sols[0]["robot"])
-    if not hasattr(robot, "leg_centerline_positions"):
-        raise SystemExit(f"{sols[0]['robot']}: no sagittal centreline available")
+def all_traces(robot, sols, legs):
+    """``leg_traces`` for every (solution, leg) pair, keyed by ``(label, leg)``.
 
-    # Pre-compute every trace so the shared axis limits can be set up front.
+    Computed up front so the shared axis limits can be set before drawing, and
+    so the timing figure reuses the same power/recovery split.
+    """
     traces = {}
     for s in sols:
         for leg in legs:
@@ -129,7 +142,83 @@ def plot_solution_legs(sols, legs, n_frames: int, title: str | None):
                     f"{s['robot']}: cannot build a sagittal centreline for "
                     f"{leg!r} ({e})"
                 )
+    return traces
 
+
+def power_segments(vx: np.ndarray):
+    """``(start, width)`` cycle-fraction spans where the foot sweeps backwards.
+
+    ``vx`` carries one value per grid point; its last entry repeats the first
+    and is dropped.  Each sign change is placed by linear interpolation between
+    the two points bracketing it rather than snapped to a point, for two
+    reasons: the bar edges land where the stroke actually turns, to within the
+    interpolation, instead of up to a grid step away; and a left-right pair
+    constrained to one stroke at a free phase offset (``add_symmetry_constraints``)
+    comes out as an exact shift.  Rounding to grid points does not — the offset
+    is continuous, so the two legs sample the same stroke at different points
+    and disagree by a step wherever a turn falls between their samples.
+
+    A span that wraps past fraction 1 comes back as two, which is what
+    ``broken_barh`` wants anyway.
+    """
+    v = vx[:-1]
+    n = len(v)
+    if (v < 0).all():
+        return [(0.0, 1.0)]
+    if (v >= 0).all():
+        return []
+
+    def turn(k):
+        """Where vx crosses zero between point ``k`` and the next."""
+        a, b = v[k], v[(k + 1) % n]
+        return (k + a / (a - b)) / n
+
+    # Equal counts, alternating around the cycle, so each start pairs with the
+    # next end; the one start with no end after it closes past fraction 1.
+    starts = [turn(k) for k in range(n) if v[k] >= 0 > v[(k + 1) % n]]
+    ends = [turn(k) for k in range(n) if v[k] < 0 <= v[(k + 1) % n]]
+    segs = []
+    for a in starts:
+        later = [e for e in ends if e > a]
+        b = min(later) if later else min(ends) + 1.0
+        segs += [(a, 1.0 - a), (0.0, b - 1.0)] if b > 1.0 else [(a, b - a)]
+    return segs
+
+
+def plot_gait_timing(sols, legs, traces):
+    """Power/recovery bars per leg over one cycle, one panel per solution."""
+    n = len(legs)
+    fig, axes = plt.subplots(len(sols), 1, squeeze=False, sharex=True,
+                             figsize=(7.0, (0.42 * n + 0.5) * len(sols) + 1.0))
+    for ax, s in zip(axes[:, 0], sols):
+        for i, leg in enumerate(legs):
+            y = n - 1 - i                     # first leg drawn on top
+            ax.broken_barh([(0.0, 1.0)], (y - 0.4, 0.8),
+                           facecolors=RECOVERY_COLOR, edgecolors="0.6", lw=0.8)
+            ax.broken_barh(power_segments(traces[s["label"], leg][2]),
+                           (y - 0.4, 0.8),
+                           facecolors=POWER_COLOR, edgecolors="0.3", lw=0.8)
+        ax.set_yticks(range(n))
+        ax.set_yticklabels([tex(l.replace("_", " ")) for l in legs[::-1]])
+        ax.set_ylim(-0.6, n - 0.4)
+        ax.set_xlim(0.0, 1.0)
+        ax.set_xticks(np.linspace(0.0, 1.0, 5))
+        if len(sols) > 1:
+            ax.set_title(rf"{tex(s['label'])} ($T={s['T']:.3f}$ s)")
+    axes[-1, 0].set_xlabel("cycle fraction")
+
+    handles = [
+        Patch(facecolor=POWER_COLOR, edgecolor="0.3",
+              label=r"power stroke ($v_{\mathrm{foot},x} < 0$)"),
+        Patch(facecolor=RECOVERY_COLOR, edgecolor="0.6", label="recovery stroke"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=8,
+               frameon=True, framealpha=0.9)
+    fig.tight_layout(rect=(0, 0.09, 1, 1))
+    return fig
+
+
+def plot_solution_legs(sols, legs, n_frames: int, traces):
     stacked = np.vstack([c.reshape(-1, 2) for c, _, _ in traces.values()])
     (x0, z0), (x1, z1) = stacked.min(0), stacked.max(0)
     mx, mz = 0.08 * (x1 - x0), 0.08 * (z1 - z0)
@@ -164,7 +253,8 @@ def plot_solution_legs(sols, legs, n_frames: int, title: str | None):
     for row, col, leg, s in cells:
         ax = axes[row, col]
         ax.set_visible(True)
-        chains, foot_xz, power = traces[s["label"], leg]
+        chains, foot_xz, vx = traces[s["label"], leg]
+        power = vx < 0
         K = chains.shape[0]
 
         # Closed foot path for the whole cycle, under the stick figures.
@@ -215,13 +305,9 @@ def plot_solution_legs(sols, legs, n_frames: int, title: str | None):
     fig.legend(handles=handles, loc="lower center", ncol=4, fontsize=8,
                frameon=True, framealpha=0.9, bbox_to_anchor=(0.45, 0.0))
 
-    if title is None:
-        title = ("Leg configurations over the swim cycle (OCP solution"
-                 + ("s)" if len(sols) > 1 else ")"))
-    fig.suptitle(title, y=0.995)
     # Reserve the right column for the colourbar and a bottom strip for the
     # legend; tight_layout accounts for neither.
-    fig.tight_layout(rect=(0, 0.05, 0.90, 0.98))
+    fig.tight_layout(rect=(0, 0.05, 0.90, 1.0))
 
     # One shared colourbar: the phase encoding is identical in every panel.
     cax = fig.add_axes((0.92, 0.18, 0.015, 0.66))
@@ -243,9 +329,9 @@ def main():
                         help="legs to draw as rows; default: all of them")
     parser.add_argument("--frames", type=int, default=12,
                         help="stick figures drawn per cycle")
-    parser.add_argument("--title", default=None)
     parser.add_argument("--save", type=Path, default=None,
-                        help="write the figure here (format from the extension)")
+                        help="write the figure here (format from the extension); "
+                             "the timing figure goes to *_timing.<ext>")
     args = parser.parse_args()
 
     for p in args.solutions:
@@ -268,11 +354,19 @@ def main():
         print(f"  {s['label']:<28s} T = {s['T']:.4f} s, N = {s['N']}, "
               f"{s['path']}")
 
-    fig = plot_solution_legs(sols, legs, args.frames, args.title)
+    if not hasattr(robot, "leg_centerline_positions"):
+        raise SystemExit(f"{sols[0]['robot']}: no sagittal centreline available")
+    traces = all_traces(robot, sols, legs)
+
+    fig = plot_solution_legs(sols, legs, args.frames, traces)
+    fig_timing = plot_gait_timing(sols, legs, traces)
     if args.save:
         # pad above the default: the tight bbox under-measures usetex text.
         fig.savefig(args.save, dpi=300, bbox_inches="tight", pad_inches=0.15)
         print(f"Saved → {args.save}")
+        timing_path = args.save.with_name(f"{args.save.stem}_timing{args.save.suffix}")
+        fig_timing.savefig(timing_path, dpi=300, bbox_inches="tight", pad_inches=0.15)
+        print(f"Saved → {timing_path}")
     else:
         plt.show()
 
