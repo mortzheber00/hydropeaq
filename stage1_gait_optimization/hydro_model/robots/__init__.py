@@ -81,7 +81,7 @@ class OCPSettings:
     t_init: float = 1.0       # initial-guess cycle period [s] (warm start)
     t_min: float = 0.8        # cycle-period bounds [s]
     t_max: float = 1.2
-    d_target: float = 0.1     # forward distance per nominal cycle [m]
+    d_target: float = 0.15     # forward distance per nominal cycle [m]
     tau_max: float = 3.5      # joint torque limit [Nm]
     f_c: float = 20.0         # actuator bandwidth [Hz] — first-order filter cutoff
     w_power: float = 2.0      # weight for sum-of-squared per-joint power (τ·q̇)²

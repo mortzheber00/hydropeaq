@@ -70,6 +70,11 @@ FREE_T_BAND = 0.2   # δ: free-T half-window; > grid spacing/2 so bands overlap
 
 PARALLEL = True     # serial keeps RAM bounded; set True to use a process pool
 N_WORKERS = 4        # processes when PARALLEL
+# Continuation within a chain: each speed seeded from the previous link's
+# solution.  Off means every point starts cold from its analytic guess — slower,
+# but the points are then independent, so a bad solve cannot propagate down the
+# chain and the sweep is a clean multistart.
+WARM_START = True
 QUIET_SOLVES = False  # suppress per-solve guess/IPOPT prints for a clean bar
 
 # ── Experiment tracking ─────────────────────────────────────────────────────
@@ -119,7 +124,8 @@ def _eval_chain(chain: tuple[str, float, list[float]], robot=None, dyn=None) -> 
 
     Robot/dyn are cached per process when not supplied.  A link that fails
     returns no warm start, so the next speed restarts cold rather than
-    inheriting a broken iterate.
+    inheriting a broken iterate.  With ``WARM_START`` off every link is cold and
+    the chain is only a grouping of solves.
     """
     gait, t_center, speeds = chain
     rows, warm = [], None
@@ -130,7 +136,8 @@ def _eval_chain(chain: tuple[str, float, list[float]], robot=None, dyn=None) -> 
                                   robot=robot, dyn=dyn, warm_start=warm)
         # Popped, not kept: the decision vector is large and would otherwise be
         # pickled back to the parent for every one of the 700 points.
-        warm = r.pop("warm_start")
+        nxt = r.pop("warm_start")
+        warm = nxt if WARM_START else None
         rows.append(r)
     return rows
 
@@ -300,6 +307,7 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
                 "gaits": ",".join(ev.GAITS),
                 "n_tasks": n_tasks,
                 "parallel": PARALLEL,
+                "warm_start": WARM_START,
                 "git_sha": _git_sha(),
             })
 
@@ -343,7 +351,8 @@ def main() -> None:
     n_solves = sum(len(c[2]) for c in chains)
     print(f"Co-design sweep: {len(chains)} chains x {len(chains[0][2])} speeds "
           f"= {n_solves} solves "
-          f"[{'parallel x' + str(N_WORKERS) if PARALLEL else 'serial'}]")
+          f"[{'parallel x' + str(N_WORKERS) if PARALLEL else 'serial'}, "
+          f"{'warm-started chains' if WARM_START else 'all cold'}]")
 
     rows = []
     bar = tqdm(total=n_solves, desc="co-design sweep") if tqdm is not None else None
