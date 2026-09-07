@@ -287,6 +287,39 @@ def collocation_coefficients(d: int):
     return tau_root, np.array(C), np.array(D).flatten(), np.array(B).flatten()
 
 
+def limits_for(robot):
+    """``(q_lb, q_ub, v_ub, tau_ub)`` over the actuated joints, one array each.
+
+    Limits come from the spec when it supplies them; otherwise from the URDF,
+    which is what the pipeline always did.  A closed-chain robot must supply
+    them: its tree limits are indexed over joints it does not control, and
+    continuous joints carry no limits at all.
+
+    Shared with the figures that draw the box rather than enforce it
+    (``stage3_visualization/plot_limit_activity.py``).  A figure that repeated
+    the fallback below would keep drawing the URDF's limits the first time a
+    spec set ``theta_*``, and report a solution as slack against a box the
+    solver never used.  Velocity and effort bounds are symmetric, so only the
+    upper half is returned.
+    """
+    spec = robot.spec
+
+    def _limit(given, fallback):
+        return fallback if given is None else np.asarray(given, dtype=float)
+
+    q_lb = _limit(spec.theta_lower, robot.model.lowerPositionLimit[7:])
+    q_ub = _limit(spec.theta_upper, robot.model.upperPositionLimit[7:])
+    v_ub = _limit(spec.theta_vel_limit, robot.model.velocityLimit[6:])
+    tau_ub = _limit(spec.theta_effort_limit, robot.model.effortLimit[6:])
+    for label, arr in (("position", q_lb), ("velocity", v_ub), ("effort", tau_ub)):
+        if len(arr) != robot.n_actuated:
+            raise ValueError(
+                f"{spec.name}: {label} limits have length {len(arr)}, expected "
+                f"{robot.n_actuated} — set RobotSpec.theta_* for this robot"
+            )
+    return q_lb, q_ub, v_ub, tau_ub
+
+
 def build_collocation_nlp(
     dyn, robot, X_guess, U_guess, n, *,
     t_lo, t_hi, t_init, v_target, f_c, heading_tol, d_colloc=3,
@@ -316,26 +349,8 @@ def build_collocation_nlp(
     V_B = slice(6 + n_act, 12 + n_act)
     V_J = slice(12 + n_act, nx)
 
-    # Limits come from the spec when it supplies them; otherwise from the URDF,
-    # which is what the pipeline always did.  A closed-chain robot must supply
-    # them: its tree limits are indexed over joints it does not control, and
-    # continuous joints carry no limits at all.
-    spec = robot.spec
-
-    def _limit(given, fallback):
-        return fallback if given is None else np.asarray(given, dtype=float)
-
-    q_lb = _limit(spec.theta_lower, robot.model.lowerPositionLimit[7:])
-    q_ub = _limit(spec.theta_upper, robot.model.upperPositionLimit[7:])
-    v_ub = _limit(spec.theta_vel_limit, robot.model.velocityLimit[6:])
-    tau_ub = _limit(spec.theta_effort_limit, robot.model.effortLimit[6:])
+    q_lb, q_ub, v_ub, tau_ub = limits_for(robot)
     v_lb, tau_lb = -v_ub, -tau_ub
-    for label, arr in (("position", q_lb), ("velocity", v_ub), ("effort", tau_ub)):
-        if len(arr) != n_act:
-            raise ValueError(
-                f"{spec.name}: {label} limits have length {len(arr)}, expected "
-                f"{n_act} — set RobotSpec.theta_* for this robot"
-            )
 
     tau_root, C, D, B = collocation_coefficients(d_colloc)
     d = d_colloc
@@ -430,9 +445,9 @@ def build_collocation_nlp(
     # matching where the side-joint pinning has always lived; inequalities go
     # everywhere, because a branch flip mid-interval would corrupt the solve.
     def _pose(theta):
-        if spec.pose_constraints is None:
+        if robot.spec.pose_constraints is None:
             return [], []
-        return spec.pose_constraints(theta)
+        return robot.spec.pose_constraints(theta)
 
     # Bounds at grid points on tangent state
     for k in range(n + 1):

@@ -90,9 +90,6 @@ PROTOTYPE = "Prototype"      # the firmware IK gait, not one of paper.py's
 # shrinking it.
 half_width()
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_GUESS = REPO_ROOT / "task3_guess.npz"
-
 # paper.py defines the commanded foot path as this leg's own foot path.
 FRONT_LEG = "Front_Left"
 DEFAULT_LEG = "Hind_Left"   # the leg paper.py solves by IK, and the one at risk

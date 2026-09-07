@@ -42,22 +42,28 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
-from thesis_style import style_for, tex  # also activates the shared plot style
+from thesis_style import (  # also activates the shared plot style
+    TEXT_WIDTH_IN,
+    full_width,
+    legend_row,
+    style_for,
+    tex,
+)
+
+import sweep_io
 
 DEFAULT_SUMMARY = (Path(__file__).resolve().parents[1] / "stage1_gait_optimization" /
                    "codesign" / "codesign_results" / "codesign_summary.json")
 DEFAULT_SPEED = 0.2      # m/s — the pipeline's nominal design speed (V_TARGET)
 
-# Tolerance on |T - t_center| for calling the free-T window active.
-BAND_TOL = 1e-3
+full_width()
 
 
-def load_slice(path: Path, speed: float, gaits=None):
+def load_slice(rows: list, speed: float, gaits=None):
     """Feasible rows at the ``v_target`` nearest ``speed``, grouped by gait.
 
     Returns ``(v_target, {gait: rows sorted by solved T}, n_dropped)``.
     """
-    rows = json.loads(path.read_text())
     targets = sorted({r["v_target"] for r in rows})
     v = min(targets, key=lambda t: abs(t - speed))
 
@@ -76,21 +82,11 @@ def load_slice(path: Path, speed: float, gaits=None):
     return v, by_gait, len(at_v) - len(good)
 
 
-def detect_band(path: Path) -> float:
-    """Free-T half-window used by the sweep, read off the data.
-
-    ``FREE_T_BAND`` lives in run_codesign.py and is not written to the summary,
-    but every solve that hit the window sits exactly at ``t_center ± band``, so
-    the largest observed excursion is the band.
-    """
-    rows = json.loads(path.read_text())
-    devs = [abs(r["T"] - r["t_center"]) for r in rows if r["feasible"]]
-    return max(devs) if devs else 0.0
-
-
-def plot_cot_vs_period(by_gait: dict, v_target: float, band: float,
-                       title: str | None):
-    fig, ax = plt.subplots(figsize=(8.8, 4.2))
+def plot_cot_vs_period(by_gait: dict, v_target: float, band: float):
+    # The text-block canvas, so the figure goes in unscaled and its type matches
+    # the rest of the thesis.  It used to be 8.8 in wide against a 5.98 in block,
+    # which LaTeX shrank to 68% and took the tick labels with it.
+    fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 3.0))
 
     for gait, rows in by_gait.items():
         colour, marker = style_for(gait)
@@ -98,12 +94,22 @@ def plot_cot_vs_period(by_gait: dict, v_target: float, band: float,
         cot = np.array([r["cot"] for r in rows])
         # Pinned at a window edge -> the cadence is the constraint's, not the
         # solver's choice.  Drawn open; interior optima drawn filled.
-        pinned = np.array([abs(r["T"] - r["t_center"]) >= band - BAND_TOL
-                           for r in rows])
+        pinned = np.array([sweep_io.is_pinned(r, band) for r in rows])
+        # On the sweep's own Pareto front: this point is the one the front
+        # figure carries at this speed, so a reader can find it on the curve
+        # rather than inferring it from the minimum.
+        front = np.array([bool(r.get("pareto")) for r in rows])
 
         best = int(np.argmin(cot))
+        # Name only.  The per-gait minimum used to ride along in the label, but
+        # at text width that column is 1.8 in and the numbers no longer fit;
+        # they are printed to stdout, which is where a caption takes them from.
         ax.plot(T, cot, color=colour, lw=1.2, alpha=0.85, zorder=2,
-                label=rf"{tex(gait)}: {cot[best]:.2f} at $T={T[best]:.2f}$ s")
+                label=tex(gait))
+        # Ring under the marker, wide enough to stay visible around it.
+        ax.plot(T[front], cot[front], color="0.25", linestyle="none", marker="o",
+                markersize=10, markerfacecolor="none", markeredgewidth=0.8,
+                zorder=2.5)
         ax.plot(T[~pinned], cot[~pinned], color=colour, linestyle="none",
                 marker=marker, markersize=5.5, zorder=3)
         ax.plot(T[pinned], cot[pinned], color=colour, linestyle="none",
@@ -116,25 +122,19 @@ def plot_cot_vs_period(by_gait: dict, v_target: float, band: float,
     ax.set_xlabel(r"cycle period $T$ [s]")
     ax.set_ylabel(r"cost of transport $\mathrm{COT} = \int|\tau\dot{q}|\,"
                   r"\mathrm{d}t \,/\, (m g d)$ [-]")
-    if title is None:
-        title = (r"Efficiency vs.\ cadence at fixed forward speed "
-                 rf"$v = {v_target:.3f}$ m/s")
-    ax.set_title(title)
+    # No title: this goes into the thesis via \includegraphics and the LaTeX
+    # caption describes it, as it does for every other figure here.  The speed
+    # the slice is taken at is the one thing the axes do not carry, so it is
+    # annotated inside them instead.
+    ax.annotate(rf"$v = {v_target:.3f}$ m\,s$^{{-1}}$", xy=(0.99, 0.97),
+                xycoords="axes fraction", ha="right", va="top", fontsize=8,
+                color="0.35")
     ax.grid(alpha=0.3)
     ax.margins(y=0.08)
 
-    # Both legends sit in a column to the right: the curves cross each other
-    # freely, so an in-axes box lands on data.
-    gait_legend = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0),
-                            fontsize=8, frameon=True, framealpha=0.9,
-                            title="initial gait (lowest COT)", title_fontsize=8)
-    ax.add_artist(gait_legend)
-
-    # tight_layout ignores artists anchored outside the axes, so reserve the
-    # right column explicitly.  Do it before measuring the legend below: it
-    # resizes the axes, and the second legend is anchored in axes coordinates.
-    fig.tight_layout(rect=(0, 0, 0.70, 1))
-
+    # Both legends go above the axes, in one block: at text width there is no
+    # room for a right-hand column, and the curves cross freely so an in-axes
+    # box lands on data.
     marks = [
         Line2D([], [], color="0.35", linestyle="none", marker="o",
                markersize=5.5, label=r"$T$ interior to refine window"),
@@ -143,14 +143,19 @@ def plot_cot_vs_period(by_gait: dict, v_target: float, band: float,
                label=rf"$T$ pinned at edge ($\pm{band:.2f}$ s)"),
         Line2D([], [], color="0.35", linestyle="none", marker="*",
                markersize=11, label="lowest COT of the gait"),
+        Line2D([], [], color="0.25", linestyle="none", marker="o",
+               markersize=9, markerfacecolor="none", markeredgewidth=0.8,
+               label="on the sweep's Pareto front"),
     ]
-    # Butt the mark key directly under the gait legend rather than pinning it to
-    # the bottom of the axes, which leaves a tall empty gap between the two.
-    fig.canvas.draw()
-    bb = gait_legend.get_window_extent(fig.canvas.get_renderer())
-    y = bb.transformed(ax.transAxes.inverted()).y0 - 0.04
-    ax.legend(handles=marks, loc="upper left", bbox_to_anchor=(1.02, y),
-              fontsize=7.5, frameon=True, framealpha=0.9)
+    handles, _ = ax.get_legend_handles_labels()
+    ax.legend(handles=handles + marks, loc="lower center",
+              bbox_to_anchor=(0.5, 1.0), ncol=4, fontsize=7,
+              columnspacing=1.2, handlelength=1.6, frameon=False,
+              borderaxespad=0.2)
+
+    # An outside legend is invisible to tight_layout, so buy its rows here.
+    legend_row(fig, ax, rows=2)
+    fig.tight_layout(pad=0.3)
     return fig
 
 
@@ -166,15 +171,16 @@ def main():
                         help="keep only these gaits, in this plot order")
     parser.add_argument("--free-t-band", type=float, default=None,
                         help="free-T half-window; default: read off the data")
-    parser.add_argument("--title", default=None)
     parser.add_argument("--save", type=Path, default=None,
                         help="write the figure here (format from the extension)")
     args = parser.parse_args()
 
     if not args.summary.exists():
         raise SystemExit(f"no sweep summary at {args.summary}")
-    v, by_gait, n_dropped = load_slice(args.summary, args.speed, args.gaits)
-    band = args.free_t_band if args.free_t_band is not None else detect_band(args.summary)
+    rows = json.loads(args.summary.read_text())
+    v, by_gait, n_dropped = load_slice(rows, args.speed, args.gaits)
+    band = (args.free_t_band if args.free_t_band is not None
+            else sweep_io.detect_band(rows))
 
     if abs(v - args.speed) > 1e-9:
         print(f"Requested v = {args.speed:.4f} m/s -> nearest swept target "
@@ -182,14 +188,16 @@ def main():
     print(f"Slice at v_target = {v:.4f} m/s, free-T window +/- {band:.3f} s:")
     for gait, rows in by_gait.items():
         best = min(rows, key=lambda r: r["cot"])
-        pinned = sum(abs(r["T"] - r["t_center"]) >= band - BAND_TOL for r in rows)
-        print(f"  {gait:<11s} {len(rows):>2d} pts ({pinned} pinned)  "
+        pinned = sum(sweep_io.is_pinned(r, band) for r in rows)
+        front = sum(bool(r.get("pareto")) for r in rows)
+        print(f"  {gait:<11s} {len(rows):>2d} pts ({pinned} pinned, "
+              f"{front} on front)  "
               f"T in [{rows[0]['T']:.3f}, {rows[-1]['T']:.3f}] s  "
               f"min COT {best['cot']:.3f} at T = {best['T']:.3f} s")
     if n_dropped:
         print(f"  ({n_dropped} infeasible point(s) at this speed dropped)")
 
-    fig = plot_cot_vs_period(by_gait, v, band, args.title)
+    fig = plot_cot_vs_period(by_gait, v, band)
     if args.save:
         # pad_inches above the default: the tight bbox under-measures usetex
         # text, which shaves the last glyph off the widest legend entry.

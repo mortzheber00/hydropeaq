@@ -24,21 +24,19 @@ from pathlib import Path
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
-import scienceplots  # noqa: F401  registers the 'science' matplotlib style
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
-sys.path.insert(0, str(Path(__file__).parents[1] / "stage1_gait_optimization"))
-from stage1_gait_optimization.hydro_model import get_spec, load_robot
-from stage1_gait_optimization.hydro_model.trajectory import expand_to_tree
-from stage1_gait_optimization.hydro_model.trajectory import load_solution as _load
+_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT / "stage1_gait_optimization"))
+import thesis_style  # noqa: E402,F401  activates the shared style on import
 
-# Professional thesis style with real LaTeX text rendering (Computer Modern).
-plt.style.use(["science"])
-plt.rcParams["text.usetex"] = True
-
-def load_solution(path: str):
-    d = _load(path)
-    return d["X"], d["U"], d["T"], d["N"], d["nq"]
+from stage1_gait_optimization.hydro_model import get_spec, load_robot  # noqa: E402
+from stage1_gait_optimization.hydro_model.trajectory import (  # noqa: E402
+    expand_to_tree,
+)
+from stage1_gait_optimization.hydro_model.trajectory import (  # noqa: E402
+    load_solution as _load,
+)
 
 
 def plot_joint_angles(spec, X, T, N, nq):

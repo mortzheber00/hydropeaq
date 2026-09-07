@@ -54,7 +54,10 @@ from thesis_style import tex  # also activates the shared plot style
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "stage1_gait_optimization"))
 from stage1_gait_optimization.hydro_model import load_robot
-from stage1_gait_optimization.hydro_model.trajectory import expand_to_tree, load_solution
+from stage1_gait_optimization.hydro_model.trajectory import (
+    expand_to_tree,
+    load_solution,
+)
 
 DEFAULT_SOLUTION = Path(__file__).resolve().parents[1] / "task3_solution.npz"
 

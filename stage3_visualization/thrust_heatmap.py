@@ -47,33 +47,29 @@ import pinocchio as pin
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch
+from matplotlib.ticker import MaxNLocator
 from matplotlib.widgets import Slider
 from scipy.interpolate import LinearNDInterpolator, griddata
 from scipy.spatial import cKDTree
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
-from stage1_gait_optimization.hydro_model import get_spec, load_robot
-from stage1_gait_optimization.hydro_model.hydrodynamics import RHO_WATER
-from stage1_gait_optimization.hydro_model.robot import QuadrupedRobot
+# resolve() first: run as "python thrust_heatmap.py" from this directory,
+# __file__ is relative and parents[1] does not exist — which is what the usage
+# line above asks for.
+_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT / "stage1_gait_optimization"))
+from drag_model import LEG_SEGMENTS, drag_force, link_drag_terms  # noqa: E402
+from thesis_style import HALF, half_width  # noqa: E402
 
-# This tool is still amph-specific: it assumes a 3-joint serial leg and builds
-# a 2x2 sagittal Jacobian over (thigh, calf) with the side joint pinned.  The
-# BODY2 analogue -- sweep (theta1, theta2), mask by assemblability, sum drag
-# over the leg's six links -- is a separate piece of work.
-SUPPORTED_ROBOTS = ("amph",)
-URDF_PATH = get_spec("amph").urdf_path
+from stage1_gait_optimization.hydro_model import load_robot  # noqa: E402
+from stage1_gait_optimization.hydro_model.robot import QuadrupedRobot  # noqa: E402
 
-
-def _require_supported(robot_name: str) -> None:
-    if robot_name not in SUPPORTED_ROBOTS:
-        raise NotImplementedError(
-            f"thrust_heatmap supports {SUPPORTED_ROBOTS}, not {robot_name!r}: its "
-            f"thrust model assumes a 3-joint serial leg. See the plan, stage3 section."
-        )
-
-CD_T = 1.0
-CD_A = 0.1
-RHO = RHO_WATER
+# Half-width canvas for --save-map: thesis_style.HALF's width, which is what has
+# to match the LaTeX slot, but taller.  With the colourbar under the map the
+# equal-aspect region is height-limited, so height is what sizes it — at HALF's
+# own 2.2 in the map measures 1.40 in^2 against 1.84 for a colourbar on the
+# right, and it only overtakes past ~2.4 in.  See plot_thrust_map.
+HALF_MAP = (HALF[0], 3.0)
 
 # Link colors matching visualization.py
 _LEG_COLORS = {"side": "#E8A838", "thigh": "#5CB85C", "calf": "#D9534F"}
@@ -104,38 +100,6 @@ def _leg_q_indices(robot: QuadrupedRobot, leg: str) -> tuple[int, int, int]:
     )
 
 
-def _link_drag_x(robot: QuadrupedRobot, link_name: str, q: np.ndarray, v: np.ndarray) -> float:
-    link = robot.links.get(link_name)
-    if link is None or link.cylinder is None:
-        return 0.0
-    cyl = link.cylinder
-    R = np.array(robot.data.oMf[link.frame_id].rotation)
-    J = pin.computeFrameJacobian(
-        robot.model, robot.data, q, link.frame_id,
-        pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
-    )
-    # Velocity at the cylinder midpoint, not just the frame origin.
-    # Frame origin may be at a joint pivot (zero linear velocity there),
-    # so we add the rotational contribution: v_mid = v_origin + omega x r_offset
-    v_origin = J[:3, :] @ v
-    omega = J[3:, :] @ v
-    r_offset = R @ cyl.center_local
-    v_link = v_origin + np.cross(omega, r_offset)
-
-    axis = R @ cyl.axis_local
-    axis /= np.linalg.norm(axis) + 1e-15
-    v_ax_mag = float(np.dot(v_link, axis))
-    v_ax = v_ax_mag * axis
-    v_tr = v_link - v_ax
-    F_drag = (
-        -0.5 * RHO * CD_T * cyl.cross_section_transverse * np.linalg.norm(v_tr) * v_tr
-        - 0.5 * RHO * CD_A * cyl.cross_section_axial * abs(v_ax_mag) * v_ax
-    )
-    # F_drag is the fluid force ON the link (opposes motion).
-    # For a backward-sweeping link (v_x < 0), F_drag[0] > 0 = forward thrust.
-    return float(F_drag[0])
-
-
 def compute_max_thrust(
     robot: QuadrupedRobot, q: np.ndarray, leg: str, n_angles: int = 72,
 ) -> tuple[float, np.ndarray]:
@@ -156,43 +120,24 @@ def compute_max_thrust(
     )
     J_tc = J_foot[np.ix_([0, 2], [thigh_nv, calf_nv])]  # 2×2 sagittal
 
-    # Cache per-link drag parameters (frame rotations / Jacobians are pose-only).
+    # Per-link drag terms are pose-only, so they are resolved once and the whole
+    # velocity sweep is then one vectorised call per link.
     link_cache = []
-    for tname in ("Thigh", "Calf", "Foot"):
-        link = robot.links.get(f"{leg}_{tname}_link")
-        if link is None or link.cylinder is None:
-            continue
-        cyl = link.cylinder
-        R = np.array(robot.data.oMf[link.frame_id].rotation)
-        J = pin.computeFrameJacobian(
-            robot.model, robot.data, q, link.frame_id,
-            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
-        )
-        axis = R @ cyl.axis_local
-        axis /= np.linalg.norm(axis) + 1e-15
-        # We only need the columns acting on (v_thigh, v_calf)
-        link_cache.append((
-            J[:3, [thigh_nv, calf_nv]],
-            J[3:, [thigh_nv, calf_nv]],
-            R @ cyl.center_local, axis,
-            0.5 * RHO * CD_T * cyl.cross_section_transverse,
-            0.5 * RHO * CD_A * cyl.cross_section_axial,
-        ))
+    for tname in LEG_SEGMENTS:
+        terms = link_drag_terms(robot, f"{leg}_{tname}_link", q)
+        if terms is not None:
+            link_cache.append(terms)
 
     # Vectorised angle sweep
     angles = np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False)
     v_tc_all = np.stack([np.cos(angles), np.sin(angles)], axis=1)  # (n_angles, 2)
 
     thrust = np.zeros(n_angles)
-    for J_lin_tc, J_ang_tc, r_off, axis, k_t, k_a in link_cache:
-        v_origin = v_tc_all @ J_lin_tc.T              # (n_angles, 3)
-        omega = v_tc_all @ J_ang_tc.T                 # (n_angles, 3)
-        v_link = v_origin + np.cross(omega, r_off)    # (n_angles, 3)
-        v_ax_mag = v_link @ axis                      # (n_angles,)
-        v_ax = v_ax_mag[:, None] * axis[None, :]
-        v_tr = v_link - v_ax
-        v_tr_norm = np.linalg.norm(v_tr, axis=1)
-        thrust += -k_t * v_tr_norm * v_tr[:, 0] - k_a * np.abs(v_ax_mag) * v_ax[:, 0]
+    for cyl, R, alpha, axis, J in link_cache:
+        # Only the two columns the sweep actually drives.
+        v_origin = v_tc_all @ J[:3, [thigh_nv, calf_nv]].T   # (n_angles, 3)
+        omega = v_tc_all @ J[3:, [thigh_nv, calf_nv]].T      # (n_angles, 3)
+        thrust += drag_force(cyl, R, alpha, axis, v_origin, omega)[:, 0]
 
     best_idx = int(np.argmax(thrust))
     best_v_tc = v_tc_all[best_idx]
@@ -428,19 +373,48 @@ def plot_thrust_map(
     The panel ``plot`` puts top left, without what only makes sense on screen:
     no title (the LaTeX caption carries it) and no timestep cursor.
 
-    Drawn under the thesis style rather than this module's plain-matplotlib
-    default, so it sets in the same face as the rest of the figures; that is
-    scoped to this function, since the interactive figure's labels carry unicode
-    arrows that usetex would choke on.
-    """
-    import scienceplots  # noqa: F401  registers the 'science' matplotlib style
+    On a narrow canvas the colourbar goes under the map rather than beside it,
+    and that is a trade rather than a free win: the map is ``aspect="equal"``,
+    so whichever dimension runs out first sizes it in *both*.  Beside the map it
+    is width-limited and extra canvas height buys nothing (1.84 in^2 at every
+    height tried); under it, it is height-limited and grows with the canvas —
+    1.40 in^2 at 2.2 in, 2.34 at 2.6, 3.06 at 3.0.  So the bottom colourbar pays
+    only together with ``HALF_MAP``'s taller canvas, and ``--figsize 2.94 2.2``
+    would be the worst of both.
 
+    Drawn under ``thesis_style`` rather than this module's plain-matplotlib
+    default, so it sets in the same face and at the same sizes as the rest of
+    the chapter — a raw ``science`` context matched the face but not the type
+    scale.  Both stay scoped to this function: the interactive figure's labels
+    carry unicode arrows that usetex would choke on.
+    """
     Xg, Zg, Eg, tree = _interp_grid(xs, zs, eff)
     with plt.style.context(["science"]), plt.rc_context({"text.usetex": True}):
+        # A half-width canvas needs the smaller type *and* a stacked legend:
+        # the two entries side by side are wider than 2.94 in and run into the
+        # colourbar label.
+        narrow = figsize[0] < 4.0
+        if narrow:
+            half_width()
         fig, ax = plt.subplots(figsize=figsize)
         cf = ax.contourf(Xg, Zg, Eg, levels=40, cmap="viridis")
         ax.contour(Xg, Zg, Eg, levels=12, colors="k", linewidths=0.4, alpha=0.4)
-        fig.colorbar(cf, ax=ax, label="max thrust [N at unit joint speed]")
+        # Under the map on the narrow canvas, not beside it.  Width is the
+        # scarce dimension at 2.94 in and an equal-aspect map is sized by
+        # whichever of the two runs out first, so a bar on the right shrinks the
+        # map itself; below, it costs height the map was not using.  It also
+        # gets the label back onto one line.
+        cb = fig.colorbar(cf, ax=ax, **(dict(location="bottom", pad=0.15,
+                                             fraction=0.075, aspect=30)
+                                        if narrow else {}))
+        cb.set_label("max thrust [N at unit joint speed]")
+        if narrow:
+            # pad is a fraction of the parent axes, and has to clear the
+            # x-label a bottom colourbar is otherwise drawn straight over.  The
+            # 40 contour levels also put a tick on every other one, which at
+            # this width is a grey smear.
+            cb.locator = MaxNLocator(5)
+            cb.update_ticks()
 
         handles = []
         if dirs is not None:
@@ -462,9 +436,21 @@ def plot_thrust_map(
         ax.set_xlabel(r"foot $x$ [m]")
         ax.set_ylabel(r"foot $z$ [m]")
         ax.set_aspect("equal")
+        # 'science' sets axisbelow="line", so the grid lands above the fill
+        # (a patch) and below the contour lines, quiver and trajectory.
+        ax.grid(alpha=0.3)
         if handles:
-            ax.legend(handles=handles, loc="upper right", fontsize=7,
-                      framealpha=0.9)
+            # Above the axes, not in a corner of them.  The reachable region is
+            # a crescent that fills one upper corner and leaves the other empty,
+            # and which corner that is flips with the leg — a front leg reaches
+            # forward, a hind leg's workspace is its fore-aft mirror — so any
+            # in-axes placement covers the map for half the legs.  ``savefig``
+            # crops to ``bbox_inches="tight"``, so the row costs no canvas.
+            ax.legend(handles=handles, loc="lower center",
+                      bbox_to_anchor=(0.5, 1.0),
+                      ncol=1 if narrow else len(handles), fontsize=7,
+                      frameon=False, borderaxespad=0.4, handlelength=1.6,
+                      columnspacing=1.4, labelspacing=0.3)
         fig.tight_layout()
 
         if save_path:
@@ -539,7 +525,12 @@ def plot(
     )
     ax1.set_aspect("equal")
     if foot_traj is not None or dirs is not None:
-        ax1.legend(fontsize=8, loc="upper right")
+        # Below the axes, for the reason plot_thrust_map gives: the crescent
+        # fills one upper corner and which one flips with the leg.  Below rather
+        # than above, because this panel carries a two-line title and the row
+        # under it is empty in this layout.
+        ax1.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.14),
+                   ncol=2, frameon=False)
 
     # ── Top-right: 3D topographic surface ────────────────────────────────
     # NaN straight through: masked cells become holes in the surface.  Filling
@@ -640,7 +631,14 @@ def main():
         help="OCP solution .npz — enables leg animation panel + slider",
     )
     parser.add_argument("--grid", type=int, default=250,
-                        help="Pose-sweep resolution per joint (default 150)")
+                        help="pose-sweep resolution per joint (default: %(default)s)")
+    parser.add_argument("--half", action="store_true",
+                        help=f"render --save-map at half text width "
+                             f"({HALF_MAP[0]} x {HALF_MAP[1]} in) instead of the "
+                             f"default")
+    parser.add_argument("--figsize", type=float, nargs=2, default=None,
+                        metavar=("W", "H"),
+                        help="explicit --save-map canvas in inches; overrides --half")
     parser.add_argument("--save", type=Path, default=None, help="Save figure to path")
     parser.add_argument(
         "--save-map", type=Path, default=None,
@@ -669,8 +667,11 @@ def main():
             print(f"Warning: solution not found: {args.solution}")
 
     if args.save_map:
+        figsize = (tuple(args.figsize) if args.figsize
+                   else HALF_MAP if args.half else (5.6, 4.0))
         plot_thrust_map(xs, zs, eff, leg=args.leg, dirs=dirs,
-                        foot_traj=foot_traj, save_path=args.save_map)
+                        foot_traj=foot_traj, save_path=args.save_map,
+                        figsize=figsize)
     else:
         plot(xs, zs, eff, leg=args.leg, dirs=dirs, foot_traj=foot_traj,
              anim_data=anim_data, save_path=args.save)

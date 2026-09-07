@@ -55,14 +55,11 @@ import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scienceplots  # noqa: F401  registers the 'science' matplotlib style
 from matplotlib.lines import Line2D
 
-# Professional thesis style with real LaTeX text rendering (Computer Modern).
-plt.style.use(["science"])
-plt.rcParams["text.usetex"] = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import thesis_style  # noqa: E402,F401  activates the shared style on import
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
 from stage1_gait_optimization.hydro_model.robots import load_robot  # noqa: E402
 from stage1_gait_optimization.hydro_model.visualization import (  # noqa: E402
     _make_urdf_transform_manager,

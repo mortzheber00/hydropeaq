@@ -35,10 +35,40 @@ def style_for(gait: str) -> tuple[str, str]:
     return PALETTE[i % len(PALETTE)], MARKERS[i % len(MARKERS)]
 
 
-# Canvas for a figure that shares a row with another one: 0.49\textwidth of a
-# 15.2 cm text block.  Both figures take this exact canvas and are included
-# unscaled, so the point sizes in half_width() are the point sizes on the page.
+# Canvas widths, both for figures included unscaled so that the point sizes set
+# here are the point sizes on the page: the full 15.2 cm text block, and
+# 0.49\textwidth of it for a figure sharing a row with another.
+TEXT_WIDTH_IN = 5.98
 HALF = (2.94, 2.2)
+
+# Height to add to a canvas for one row of legend placed above the axes.  A
+# legend outside the axes is not counted by tight_layout when the canvas is
+# fixed (savefig.bbox is None), so the row has to be paid for explicitly.
+LEGEND_ROW_IN = 0.30
+
+
+def full_width() -> None:
+    """Keep the canvas a figure asked for, for the full-text-width slot.
+
+    'science' sets ``savefig.bbox='tight'``, which crops each figure to its own
+    content, so two figures reach the page at two widths and scale differently
+    under \\includegraphics — their type then no longer matches.  Note that
+    ``savefig(bbox_inches=None)`` does *not* do this: that means "use the
+    rcParam".
+    """
+    plt.rcParams["savefig.bbox"] = None
+
+
+def legend_row(fig, ax, rows: int = 1) -> None:
+    """Grow the canvas by ``rows`` legend rows and pin the axes to the bottom.
+
+    The companion to a ``legend(loc="lower center", bbox_to_anchor=(0.5, 1.0))``
+    above the axes, which would otherwise be drawn off the fixed canvas.
+    """
+    w, h = fig.get_size_inches()
+    fig.set_size_inches(w, h + rows * LEGEND_ROW_IN)
+    ax.set_anchor("S")
+
 
 def half_width() -> None:
     """Type and canvas settings for figures placed side by side.
@@ -47,18 +77,13 @@ def half_width() -> None:
     Scaling a full-width figure into that slot instead would put its 10 pt tick
     labels on the page at under 6 pt, and thin its 0.5 pt spines to a hairline.
     """
+    full_width()          # the uncropped canvas, for the same reason
     plt.rcParams.update({
         "font.size": 9,
         "axes.labelsize": 9,
         "xtick.labelsize": 8,
         "ytick.labelsize": 8,
         "legend.fontsize": 8,
-        # 'science' sets this to 'tight', which crops each figure to its own
-        # content and so gives two figures two different page sizes — they then
-        # scale differently in LaTeX and their type no longer matches.  None
-        # keeps the canvas.  Note savefig(bbox_inches=None) does *not* do this:
-        # that means "use this rcParam".
-        "savefig.bbox": None,
         # Spines and ticks at the default 0.5 print unevenly once this small.
         "axes.linewidth": 0.6,
         "xtick.major.width": 0.6,
