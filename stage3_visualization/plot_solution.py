@@ -118,7 +118,7 @@ def plot_foot_positions(robot, X, T, N, nq):
             foot_traj[leg]["z"].append(pos[2])
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-    colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    colors = thesis_style.LEG_COLORS
     ylabel = [r"$x_{\mathrm{body}}$ [m]", r"$y_{\mathrm{body}}$ [m]",
               r"$z_{\mathrm{body}}$ [m]"]
 
@@ -179,7 +179,7 @@ def animate_skeleton(robot, X, T, N, nq):
     ax.view_init(elev=25, azim=-60)
 
     ax.set_title("")
-    colors_leg = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    colors_leg = thesis_style.LEG_COLORS
 
     def draw_frame(k):
         LEG_NAMES = robot.spec.leg_names

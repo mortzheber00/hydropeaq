@@ -54,7 +54,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-from thesis_style import tex  # also activates the shared plot style
+from thesis_style import PALETTE, tex  # also activates the shared plot style
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "stage1_gait_optimization"))
@@ -72,8 +72,9 @@ DEFAULT_SOLUTION = Path(__file__).resolve().parents[1] / "task3_solution.npz"
 # already makes obvious.
 CYCLE_CMAP = "viridis"
 
-# Same power/recovery blues the initial-gait timing diagram uses.
-POWER_COLOR, RECOVERY_COLOR = "#1f77b4", "#dbe7f3"
+# Same power/recovery blues the initial-gait timing diagram uses: PALETTE[0],
+# and PALETTE[0] at 15 % on white.
+POWER_COLOR, RECOVERY_COLOR = PALETTE[0], "#D9EAF3"
 
 
 def leg_traces(robot, X: np.ndarray, nq: int, leg: str):

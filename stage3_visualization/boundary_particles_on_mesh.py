@@ -123,7 +123,7 @@ def main() -> None:
     # unless they stay small and semi-transparent.
     ax.scatter(
         boundary_pts[:, 0], boundary_pts[:, 1], boundary_pts[:, 2],
-        s=1.5, c="#D62728", alpha=0.45, linewidths=0, rasterized=True,
+        s=1.5, c=thesis_style.PALETTE[2], alpha=0.45, linewidths=0, rasterized=True,
         depthshade=False, zorder=5,
     )
 
@@ -131,7 +131,7 @@ def main() -> None:
         handles=[
             Line2D([], [], marker="s", linestyle="none", color="#9A9EA8",
                    markersize=6, label="STL mesh"),
-            Line2D([], [], marker="o", linestyle="none", color="#D62728",
+            Line2D([], [], marker="o", linestyle="none", color=thesis_style.PALETTE[2],
                    markersize=3, label="SPH boundary particles"),
         ],
         loc="upper left", fontsize=LEGEND_PT,

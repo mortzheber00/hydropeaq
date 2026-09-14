@@ -48,7 +48,7 @@ from scipy.interpolate import interp1d
 sys.path.insert(0, str(Path(__file__).parents[1]))
 sys.path.insert(0, str(Path(__file__).parents[1] / "stage3_visualization"))
 from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
-from thesis_style import PALETTE, tex  # noqa: E402  also activates the plot style
+from thesis_style import LEG_COLORS, PALETTE, tex  # noqa: E402  also activates the plot style
 
 # ── Canonical ordering, taken from the robot's spec ─────────────────────────
 # The plots below lay one column out per actuated joint of a leg, so this
@@ -76,11 +76,6 @@ def use_robot(name: str) -> None:
 # The comparison is binary, so it gets the two ends of the shared palette:
 # reference solid, measurement dashed on top of it.
 C_OCP, C_SIM = PALETTE[0], PALETTE[2]
-# Legs keep the colours plot_solution.py gives them in the animation, in the
-# same leg order, so a leg reads the same here as in the swimming figures.  The
-# shared palette is not usable for this: its fourth entry is a pink no other
-# figure draws with.
-LEG_COLORS = ("tab:blue", "tab:orange", "tab:green", "tab:red")
 
 DEG = r"$^\circ$"   # usetex has no degree glyph in the text font
 
@@ -284,9 +279,9 @@ def _corner(ax, text):
 
 def _overlay_legend(fig):
     handles = [
-        Line2D([], [], color=C_OCP, lw=1.3, label="OCP solution"),
+        Line2D([], [], color=C_OCP, lw=1.3, label="reduced-order model"),
         Line2D([], [], color=C_SIM, lw=1.1, ls=(0, (4, 1.6)),
-               label="Gazebo simulation"),
+               label="SPH--Gazebo reference"),
         Patch(facecolor=C_SIM, alpha=0.16, label="tracking error"),
     ]
     # "outside" placement is what constrained layout reserves room for, so the
@@ -339,7 +334,7 @@ def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp):
     xyz_s = xyz_sim - xyz_sim[:, [0]]
 
     titles = [r"$\Delta x$ (forward)", r"$\Delta y$ (lateral)",
-              r"$\Delta z$ (heave)", r"forward speed $v_x$"]
+              r"$\Delta z$ (heave)", r"forward velocity $v_x$"]
     units = ["m", "m", "m", "m/s"]
     ocp_data = [xyz_o[0], xyz_o[1], xyz_o[2], vx_ocp]
     sim_data = [xyz_s[0], xyz_s[1], xyz_s[2], vx_sim]

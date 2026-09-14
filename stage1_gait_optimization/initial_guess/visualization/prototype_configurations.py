@@ -40,6 +40,8 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
+sys.path.insert(0, str(Path(__file__).parents[3] / "stage3_visualization"))
+from thesis_style import PALETTE
 from hydro_model import SymbolicDynamics, get_spec, load_robot
 from initial_guess import firmware
 
@@ -64,10 +66,10 @@ RATIOS = [R_REC, R_STR, R_POW, R_LIFT]
 BOUNDS = np.concatenate([[0.0], np.cumsum(RATIOS)])  # phase edges in [0, 1]
 PHASES = ["recovery", "strike", "power", "lift"]
 PHASE_COLORS = {
-    "recovery": "#2ca02c",  # green
-    "strike":   "#ff7f0e",  # orange
-    "power":    "#d62728",  # red
-    "lift":     "#1f77b4",  # blue
+    "recovery": PALETTE[1],  # green
+    "strike":   PALETTE[3],  # pink
+    "power":    PALETTE[2],  # red
+    "lift":     PALETTE[0],  # blue
 }
 
 LEG_LABELS = ["FL", "FR", "HL", "HR"]  # firmware leg order

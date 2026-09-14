@@ -103,6 +103,7 @@ from drag_model import (  # noqa: E402
 from thesis_style import (  # noqa: E402
     HALF,
     LEGEND_ROW_IN,
+    LEG_COLORS,
     PALETTE,
     TEXT_WIDTH_IN,
     full_width,
@@ -208,10 +209,10 @@ def _shade_power(ax, t_arr, v_foot_x):
         if p and start is None:
             start = t_arr[i]
         elif not p and start is not None:
-            ax.axvspan(start, t_arr[i], alpha=0.10, color="green", zorder=0)
+            ax.axvspan(start, t_arr[i], alpha=0.10, color=PALETTE[1], zorder=0)
             start = None
     if start is not None:
-        ax.axvspan(start, t_arr[-1], alpha=0.10, color="green", zorder=0)
+        ax.axvspan(start, t_arr[-1], alpha=0.10, color=PALETTE[1], zorder=0)
 
 
 def stroke_stats(w, N, T, v_foot_x, v_foot_mag, F_drag_x, area, area_v2):
@@ -252,7 +253,7 @@ def stroke_stats(w, N, T, v_foot_x, v_foot_mag, F_drag_x, area, area_v2):
 
 # Green shading means the same thing in all three figures, and is the only
 # encoding that no line or fill in them explains.
-_POWER_PATCH = Patch(facecolor="green", alpha=0.10,
+_POWER_PATCH = Patch(facecolor=PALETTE[1], alpha=0.10,
                      label=r"power stroke ($v_{\mathrm{foot},x} < 0$)")
 
 
@@ -275,7 +276,7 @@ def plot_impulse_overlay(phase, per_leg, legs):
     the collocation points are unevenly spaced, so a crossing has to be
     interpolated in phase to land where the stroke actually turns.
     """
-    colours = dict(zip(legs, PALETTE))
+    colours = dict(zip(legs, LEG_COLORS))
     # Constrained rather than tight layout: on a canvas this small, with a 5:1
     # height ratio and a legend outside the axes, tight_layout declares the axes
     # incompatible and leaves the y-label hanging 0.1 in off the left edge.
@@ -358,11 +359,12 @@ def plot_diagnostic(
 
     # ── Instantaneous drag-thrust ────────────────────────────────────────────
     ax = panel("thrust")
-    ax.plot(t_arr, F_drag_x, "C2-", lw=2)
+    # C4, not C2: C2 is the red of the anti-thrust fill.
+    ax.plot(t_arr, F_drag_x, "C4-", lw=2)
     ax.fill_between(t_arr, 0, F_drag_x, where=F_drag_x > 0,
-                     alpha=0.35, color="forestgreen", label=r"thrust ($+x$)")
+                     alpha=0.35, color=PALETTE[1], label=r"thrust ($+x$)")
     ax.fill_between(t_arr, 0, F_drag_x, where=F_drag_x < 0,
-                     alpha=0.35, color="crimson", label=r"anti-thrust ($-x$)")
+                     alpha=0.35, color=PALETTE[2], label=r"anti-thrust ($-x$)")
     ax.set_ylabel(r"$F_{\mathrm{drag},x}$ on leg [N]")
     ax.legend(handles=ax.get_legend_handles_labels()[0] + [_POWER_PATCH],
               loc="upper right")

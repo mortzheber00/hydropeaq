@@ -37,6 +37,8 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))  # stage1_gait_optimization/
+sys.path.insert(0, str(Path(__file__).parents[3] / "stage3_visualization"))
+from thesis_style import PALETTE
 from hydro_model import load_robot
 from initial_guess.paper import (
     GAITS,
@@ -61,7 +63,7 @@ LEG_TYPES = ["Front", "Hind"]  # plotted; left/right are mirror-symmetric
 LEG_LABELS = ["FL", "FR", "HL", "HR"]  # phase-offset order (paper.py offsets)
 
 # One colour per keyframe (init / mid / end); intermediates blend between them.
-KEY_COLORS = ["#2ca02c", "#ff7f0e", "#d62728"]  # green → orange → red
+KEY_COLORS = [PALETTE[1], PALETTE[0], PALETTE[2]]  # green → blue → red
 _KEY_FR = [0.0, 0.5, 1.0]
 _KEY_RGB = np.array([mcolors.to_rgb(c) for c in KEY_COLORS])  # (3, 3)
 
@@ -140,12 +142,12 @@ def draw_gait_timing(ax, pp: float, offsets: np.ndarray, labels: list[str]) -> N
     for i, off in enumerate(offsets):
         y = n - 1 - i  # leg 0 drawn on top
         ax.broken_barh([(0.0, 1.0)], (y - 0.4, 0.8),
-                       facecolors="#dbe7f3", edgecolors="0.6", lw=0.8)
+                       facecolors="#D9EAF3", edgecolors="0.6", lw=0.8)
         start = off % 1.0
         end = start + pp
         segs = [(start, pp)] if end <= 1.0 else [(start, 1.0 - start), (0.0, end - 1.0)]
         ax.broken_barh(segs, (y - 0.4, 0.8),
-                       facecolors="#1f77b4", edgecolors="0.3", lw=0.8)
+                       facecolors=PALETTE[0], edgecolors="0.3", lw=0.8)
     ax.set_yticks(range(n))
     ax.set_yticklabels(labels[::-1])
     ax.set_ylim(-0.6, n - 0.4)

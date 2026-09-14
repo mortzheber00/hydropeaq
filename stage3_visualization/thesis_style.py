@@ -8,7 +8,8 @@ looks the same in every figure of the thesis.
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
-import scienceplots  # noqa: F401  registers the 'science' matplotlib style
+import scienceplots
+from cycler import cycler  # noqa: F401  registers the 'science' matplotlib style
 
 # Professional thesis style with real LaTeX text rendering (Computer Modern).
 plt.style.use(["science"])
@@ -18,9 +19,16 @@ plt.rcParams["text.usetex"] = True
 # normal-vision pair 21.1 (floor 15); worst pair under simulated deuteranopia
 # 12.9, protanopia 10.8, tritanopia 13.2 (target 8).
 PALETTE = ("#0173B2", "#66A61E", "#B2182B", "#CC78BC", "#332288")
+# The 'science' style cycles its own colours; implicit "C0", "C1", … draw from
+# the thesis palette instead.
+plt.rcParams["axes.prop_cycle"] = cycler(color=PALETTE)
 # Distinct marker shapes carry the same identity without colour — needed in
 # greyscale print and for the weakest CVD pairs.
 MARKERS = ("o", "s", "^", "D", "v")
+
+# One colour per leg, in ``RobotSpec.leg_names`` order (FL, FR, HL/BL, HR/BR),
+# so a leg reads the same in every figure.
+LEG_COLORS = PALETTE[:4]
 
 # Slot order for the gaits the pipeline knows about; anything else takes the
 # next free slot in first-seen order.
