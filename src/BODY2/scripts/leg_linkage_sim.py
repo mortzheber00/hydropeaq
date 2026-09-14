@@ -548,12 +548,14 @@ def _box_of(limits, spec_limits):
 # text rendering, which a viewer run has no business paying for.  Keep these in
 # step with it; they are the same five colours every figure in the thesis uses.
 CHAIN = ("#0173B2", "#B2182B")   # PALETTE[0], PALETTE[2]: the two hip chains
-ISLAND = "#66A61E"               # PALETTE[1]: the set reachable from zero pose
+# Not reachable from zero pose: a grey hatch, since it is mechanism, not identity.
+UNREACH, UNREACH_HATCH = "0.15", "////"
 # PALETTE[0], which is what hind_workspace.py draws its "trajectory" in; a
-# trajectory is the same object here, so it is the same colour.  That it is also
-# the colour of the map's own feasible half is what the casing in paint_map is
-# for -- see there.
+# trajectory is the same object here, so it is the same colour.
 TRACE = "#0173B2"
+# PALETTE[2]: the h bound stage1 enforces, the line the trajectory is read
+# against.  h = 0 stays black -- a hard limit, and the hatch already marks it.
+BOUND = "#B2182B"
 # Everything that is mechanism rather than identity stays greyscale, so that
 # inside the stick figure colour encodes exactly one thing: which chain a link
 # belongs to.  The joints, the ground and the foot are roles, not identities.
@@ -613,8 +615,8 @@ def _reachable(leg, Q1, Q2, grid, inbox):
 def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
     """Paint one leg's optimiser coordinate map onto ``ax``; returns the image.
 
-    The colour field is the binding loop's half-chord: red where the leg cannot
-    be assembled at all, blue where it can, and the two black contours are the
+    The grey field is the binding loop's half-chord: dark where the leg cannot
+    be assembled at all, light where it can, and the two black contours are the
     assembly limit and the tighter bound stage1 actually constrains.  The
     reachable island is the same set the viewer's other window draws as the
     foot-tip cloud, so the two are readable side by side.
@@ -624,6 +626,8 @@ def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
     else is identical in both, which is the point of there being one painter:
     the thesis figure cannot drift from the set that was checked on screen.
     """
+    from matplotlib import colormaps
+    from matplotlib.colors import ListedColormap
     from matplotlib.patches import Rectangle
 
     deg1, deg2 = np.degrees(Q1), np.degrees(Q2)
@@ -631,16 +635,28 @@ def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
     lim = 180 + half
     vmax = np.nanmax(margin)
 
+    # Greyscale, so the field is mechanism and leaves colour to the island, the
+    # chains and the trajectory -- on a red/blue map the palette-blue trajectory
+    # vanished into the feasible half.  The black end is cut off: infeasible
+    # bottoms out at mid-grey, where the black h = 0 and h = 2 mm contours
+    # still read.
+    greys = ListedColormap(colormaps["Greys_r"](np.linspace(0.35, 1.0, 256)))
     im = ax.imshow(margin, origin="lower", extent=(-lim, lim, -lim, lim),
-                   cmap="RdBu", vmin=-vmax, vmax=vmax, interpolation="nearest")
-    # On all four legs of this build the assemblable set turns out to be a
-    # single island, so the green boundary lies exactly on the h = 0 contour.
-    # The island goes down first and thicker: the black line then stays on
-    # top with a green fringe instead of being painted over.
-    ax.contour(deg1, deg2, reach.astype(float), [0.5],
-               colors=ISLAND, linewidths=2.2 * scale)
+                   cmap=greys, vmin=-vmax, vmax=vmax, interpolation="nearest")
+    # Hatch what is not reachable from zero pose rather than outlining what is:
+    # on all four legs of this build the island's edge is the h = 0 contour, so
+    # an outline only doubled that line, and a hatch still marks an h > 0
+    # island the leg cannot get to.  Near-black but thin: inside the box the
+    # unreachable part is the dark h < 0 field, where a light hatch vanishes.  Matplotlib 3.7 takes the hatch colour when the
+    # artist is made but the hatch width from rcParams when the figure is
+    # saved, hence the global setting.
+    import matplotlib
+    matplotlib.rcParams["hatch.linewidth"] = 0.4 * scale
+    with matplotlib.rc_context({"hatch.color": UNREACH}):
+        ax.contourf(deg1, deg2, reach.astype(float), [-0.5, 0.5],
+                    colors="none", hatches=[UNREACH_HATCH])
     ax.contour(deg1, deg2, margin, [0.0], colors="k", linewidths=1.0 * scale)
-    ax.contour(deg1, deg2, margin, [hmin_mm], colors="k",
+    ax.contour(deg1, deg2, margin, [hmin_mm], colors=BOUND,
                linewidths=1.0 * scale, linestyles="dashed")
     if box is not None:
         # shade out what the constraint forbids, rather than cropping to it:
@@ -654,19 +670,13 @@ def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
                                box[1][1] - box[1][0], fill=False, ec="k",
                                lw=1.4 * scale, zorder=6))
     if traj is not None:
-        # Cased in white.  The trajectory has to read over the whole field --
-        # near-white where it hugs the h = 2 mm bound, deep blue mid-band, and
-        # deep red on the guess that wanders out of the assemblable set, which
-        # is the one case this panel most needs to show -- and no single ink
-        # does that on a diverging map.  Uncased, the one colour that manages it
-        # is the island's green, which cannot be had.  The casing is what buys
-        # the freedom to pick the line off the palette on meaning instead: the
-        # thesis already draws a trajectory in PALETTE[0], and it stays that
-        # here even though the feasible half of this map is the same blue.
+        # PALETTE[0], as the thesis draws every trajectory; on the grey field it
+        # reads everywhere.  The thin white casing only separates it from the
+        # black contours where the path hugs the h = 2 mm bound.
         from matplotlib.patheffects import withStroke
 
         ax.plot(*traj, "-", color=TRACE, lw=1.4 * scale, zorder=7,
-                path_effects=[withStroke(linewidth=2.8 * scale, foreground="w")])
+                path_effects=[withStroke(linewidth=2.2 * scale, foreground="w")])
 
     ax.set_aspect("equal")
     ax.set_xlim(-lim, lim)
@@ -727,7 +737,29 @@ def _hatch(ax, a, b, away_from, colour, scale, n=7):
 LOOPS = (("P2", "P6", "P3"), ("P5", "P8", "P7"))
 
 
-def _draw_loops(ax, P, scale, chain=CHAIN):
+def _pin_label_spots(P):
+    """Where each pin's label goes: off the bars that meet at that pin.
+
+    Each label is pushed away from the mean of the pins it is jointed to,
+    rather than radially off the mechanism's centre.  P3, P5 and P6 all sit near
+    that centre, where a radial offset is both too short to clear anything and
+    very nearly along link 1.3, so all three labels would land on the bar.
+    """
+    nbr = {k: set() for k in P}
+    for pins in LINK_PINS.values():
+        for a in pins:
+            nbr[a] |= {b for b in pins if b != a}
+    nbr["P1"].add("P4")
+    nbr["P4"].add("P1")                         # the ground link joins these two
+    out = {}
+    for name in (k for k in P if k != TIP):
+        off = P[name] - np.mean([P[k] for k in nbr[name]], axis=0)
+        n = np.linalg.norm(off)
+        out[name] = P[name] + (off / n if n > 1e-9 else np.array([1.0, 0.0])) * 0.95
+    return out
+
+
+def _draw_loops(ax, P, scale, chain=CHAIN, avoid=()):
     """Draw each loop's two construction circles and its half-chord ``h``.
 
     These are the circles the closure actually intersects: one about each
@@ -742,11 +774,26 @@ def _draw_loops(ax, P, scale, chain=CHAIN):
     foot on the centre line out to the pin, so the picture shows what shrinking
     it means -- the two intersections merging as the circles fall tangent, which
     is the only way the mechanism can change assembly branch.
+
+    ``avoid`` holds points the labels must keep clear of, in cm: the pins, their
+    labels and samples along the bars.  Each label is called out on a leader
+    rather than set beside its segment.  At any pose worth drawing the segment
+    is a few millimetres long -- that is what "near the bound" means -- so there
+    is no room beside it, and the pins it runs between already carry their own
+    labels.  The two loops' labels are numbered, and each one's leader goes to
+    its own segment, so they can be told apart when they end up close together.
     """
     from matplotlib.patches import Circle
     from matplotlib.patheffects import withStroke
 
-    for (a, b, x), colour in zip(LOOPS, chain):
+    avoid = [np.asarray(p) for p in avoid]
+    placed = []
+    # Candidate spots are kept inside the box the circles span, which is the box
+    # export() frames to, so a label never gets pushed off the panel.
+    ext = np.array([c + s * np.linalg.norm(P[x] - c)
+                    for a, b, x in LOOPS for c in (P[a], P[b]) for s in (-1, 1)])
+    lo, hi = ext.min(0), ext.max(0)
+    for i, ((a, b, x), colour) in enumerate(zip(LOOPS, chain), start=1):
         c1, c2, pin = P[a], P[b], P[x]
         for c in (c1, c2):
             ax.add_patch(Circle(c, np.linalg.norm(pin - c), fill=False,
@@ -755,15 +802,47 @@ def _draw_loops(ax, P, scale, chain=CHAIN):
         d = c2 - c1
         u = d / np.linalg.norm(d)
         foot = c1 + u * np.dot(pin - c1, u)
-        ax.plot(*np.array([c1, c2]).T, "-", color=colour, lw=0.5 * scale,
-                alpha=0.5, zorder=1)
-        ax.plot(*np.array([foot, pin]).T, "-", color=FRAME, lw=1.3 * scale,
-                zorder=6, solid_capstyle="butt")
-        # Off the segment along the centre line: h is perpendicular to u, so
-        # stepping along u clears the stroke without drifting onto a bar.
-        ax.annotate(r"$h$", (foot + pin) / 2 + u * 0.4, fontsize=6, zorder=8,
-                    ha="center", va="center", color="0.15",
-                    path_effects=[withStroke(linewidth=1.3, foreground="w")])
+        # Kept to two thin strokes: the centre line dashed in the loop's colour,
+        # and h as a dark line from it to the pin.  On this leg each half-chord
+        # runs almost parallel to a ternary bar (h1 beside P3-P6, h2 beside
+        # P7-P8), so any heavier mark merges with the bar into a smudge.  That
+        # includes a white casing, end ticks and a right-angle box, all tried.
+        # Marking the second intersection too was tried as well: loop 1's lands
+        # beside P5 and reads as a ninth pin, and its legend entry costs the
+        # fixed-height panel a row.
+        ax.plot(*np.array([c1, c2]).T, color=colour, lw=0.5, alpha=0.9,
+                ls=(0, (3, 1.5)), zorder=2)
+        ax.plot(*np.array([foot, pin]).T, "-", color="0.05", lw=0.9, zorder=6.5,
+                solid_capstyle="butt")
+
+        # The best spot is the one whose nearest obstacle is farthest away,
+        # searched on rings around the segment's midpoint.  A closer ring wins
+        # ties, since a short leader reads as belonging to its segment.
+        mid = (foot + pin) / 2
+        obstacles = np.array(avoid + placed)
+        best, best_score = None, -np.inf
+        # Rings start past a label's own width at this scale (~1 cm for 6 pt at
+        # half the text width), since anything nearer sits on the pin labels.
+        for r in (2.2, 2.8, 3.4, 4.0):
+            for ang in np.radians(np.arange(0, 360, 15)):
+                q = mid + r * np.array([np.cos(ang), np.sin(ang)])
+                if np.any(q < lo) or np.any(q > hi):
+                    continue
+                score = np.min(np.linalg.norm(obstacles - q, axis=1)) - 0.08 * r
+                if score > best_score:
+                    best, best_score = q, score
+        if best is None:                    # boxed in: fall back beside the segment
+            best = mid + u * 2.2
+        placed.append(best)
+        # The leader is a plain segment stopped short of the label, not an
+        # annotate arrow: those did not reach the PDF here at all.
+        v = best - mid
+        end = best - v / np.linalg.norm(v) * 0.6
+        ax.plot(*np.array([mid, end]).T, "-", color=FRAME, lw=0.6, zorder=7,
+                solid_capstyle="butt")
+        ax.annotate(rf"$h_{i}$", best, fontsize=7.5, zorder=8,
+                    ha="center", va="center", color="0.1",
+                    path_effects=[withStroke(linewidth=1.6, foreground="w")])
 
 
 def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
@@ -793,8 +872,14 @@ def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
         ax.plot(cloud[:, 0] * 100, cloud[:, 1] * 100, ".", ms=0.7, color="0.88",
                 rasterized=True, zorder=0)
 
+    spots = _pin_label_spots(P)
     if circles:
-        _draw_loops(ax, P, scale, chain)
+        bars = [P[p] + t * (P[q] - P[p])
+                for pins in LINK_PINS.values() for p, q in zip(pins, pins[1:])
+                for t in np.linspace(0, 1, 9)]
+        _draw_loops(ax, P, scale, chain,
+                    avoid=list(P.values()) + (list(spots.values()) if labels else [])
+                    + bars)
 
     _hatch(ax, P["P1"], P["P4"], P[TIP], "0.45", scale)
     ax.plot(*np.array([P["P1"], P["P4"]]).T, "-", color=FRAME, lw=2.2 * scale,
@@ -816,22 +901,8 @@ def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
     if labels:
         from matplotlib.patheffects import withStroke
 
-        # A label is pushed off the bars that meet at its own pin -- away from
-        # the mean of the pins it is jointed to -- rather than radially off the
-        # mechanism's centre.  P3, P5 and P6 all sit near that centre, where a
-        # radial offset is both too short to clear anything and very nearly
-        # along link 1.3, so all three labels land on the bar.
-        nbr = {k: set() for k in P}
-        for pins in LINK_PINS.values():
-            for a in pins:
-                nbr[a] |= {b for b in pins if b != a}
-        nbr["P1"].add("P4")
-        nbr["P4"].add("P1")                     # the ground link joins these two
-        for name in (k for k in P if k != TIP):
-            off = P[name] - np.mean([P[k] for k in nbr[name]], axis=0)
-            n = np.linalg.norm(off)
-            off = off / n if n > 1e-9 else np.array([1.0, 0.0])
-            ax.annotate(name, P[name] + off * 0.95, fontsize=6, zorder=8,
+        for name, spot in spots.items():
+            ax.annotate(name, spot, fontsize=6, zorder=8,
                         ha="center", va="center", color="0.15",
                         path_effects=[withStroke(linewidth=1.3, foreground="w")])
 
@@ -849,7 +920,7 @@ def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
         # take their loop's chain colour, which the legend already explains.
         handles += [
             Line2D([], [], color="0.45", ls=":", lw=0.9, label="loop circles"),
-            Line2D([], [], color=FRAME, lw=1.3, label=r"half-chord $h$"),
+            Line2D([], [], color="0.05", lw=0.9, label=r"half-chord $h_i$"),
         ]
     return handles
 
@@ -860,6 +931,7 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
     from matplotlib.widgets import RadioButtons, Slider
 
     legs = {n: Leg(n) for n in LEGS}
@@ -951,9 +1023,10 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
         mapax.set_ylabel("q2  =  Joint x2.1 [deg]")
         mapax.set_title(f"BODY2 leg {name} - optimiser coordinate map", weight="bold")
         mapax.legend(handles=[
-            Line2D([], [], color=ISLAND, lw=2.2, label="reachable from zero pose"),
+            Patch(facecolor="none", edgecolor=UNREACH, hatch=UNREACH_HATCH, lw=0.5,
+                  label="not reachable from zero pose"),
             Line2D([], [], color="k", lw=1.0, label="assembly limit  h = 0"),
-            Line2D([], [], color="k", lw=1.0, ls="--",
+            Line2D([], [], color=BOUND, lw=1.0, ls="--",
                    label=f"stage1 bound  h = {hmin_mm:g} mm"),
             Line2D([], [], color="k", marker="o", ls="", mfc="w", ms=7,
                    label="current pose"),
@@ -1121,6 +1194,7 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     style = _thesis_style()
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
 
     if leg not in LEGS:
         raise SystemExit(f"unknown leg {leg!r}; this robot has {LEGS}")
@@ -1157,12 +1231,23 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     if not sol["ok"]:
         raise SystemExit(f"--pose {pose[0]:g} {pose[1]:g}: leg {leg} cannot be "
                          f"assembled there, so there is no mechanism to draw")
-    legfig, legax = plt.subplots(figsize=style.HALF)
+    # thesis_style.HALF's width, which is what has to match the LaTeX slot, but
+    # taller.  Both panels have an equal aspect with a legend above, so at
+    # HALF's own height they are height-bound and the spare width is blank
+    # margin; at this height the map fills its width.  The leg panel gets the
+    # same canvas so the two still sit in one row at one height.
+    canvas = (style.HALF[0], 2.55)
+    legfig, legax = plt.subplots(figsize=canvas)
     # Heavier than the map's 0.55: the mechanism is a small object next to the
     # workspace it sweeps, so at the map's weights the bars that are the whole
     # subject of the panel read as thinner than its grid.
+    # With --circles the pin labels go.  At half the text width P3 and P6 end up
+    # ~12 pt apart on the page, and that gap would have to hold both labels plus
+    # h1's segment and its callout.  No placement fits, and each attempt buried
+    # the half-chord, which is the point of the variant.  The plain leg figure
+    # carries the pin names.
     handles = paint_leg(legax, sol, cloud if workspace else None, scale=0.85,
-                        circles=circles)
+                        labels=not circles, circles=circles)
     if workspace:
         handles.append(Line2D([], [], color="0.88", marker="s", ls="", ms=4,
                               label="workspace"))
@@ -1199,7 +1284,7 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     print(f"Saved → {leg_path}")
 
     # ---- the optimiser's coordinate map
-    fig, ax = plt.subplots(figsize=style.HALF)
+    fig, ax = plt.subplots(figsize=canvas)
     im = paint_map(ax, Q1, Q2, margin_of(leg, Q1, Q2), reach, inbox, box,
                    hmin_mm, traj, scale=0.55)
     cbar = fig.colorbar(im, ax=ax, extend="min", pad=0.03, fraction=0.046)
@@ -1217,9 +1302,10 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     # Short labels on purpose: at half the text width a spelled-out legend is
     # half the figure.  What each one means belongs in the caption.
     handles = [
-        Line2D([], [], color=ISLAND, lw=1.2, label="reachable"),
+        Patch(facecolor="none", edgecolor=UNREACH, hatch=UNREACH_HATCH, lw=0.5,
+              label="not reachable"),
         Line2D([], [], color="k", lw=0.6, label=r"$h = 0$"),
-        Line2D([], [], color="k", lw=0.6, ls="--", label=rf"$h = {hmin_mm:g}$ mm"),
+        Line2D([], [], color=BOUND, lw=0.6, ls="--", label=rf"$h = {hmin_mm:g}$ mm"),
     ]
     if box is not None:
         handles.append(Line2D([], [], color="k", lw=0.8, label="limits"))
