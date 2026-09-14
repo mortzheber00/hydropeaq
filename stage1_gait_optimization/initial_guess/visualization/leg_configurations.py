@@ -37,7 +37,7 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))  # stage1_gait_optimization/
-sys.path.insert(0, str(Path(__file__).parents[3] / "stage3_visualization"))
+sys.path.insert(0, str(Path(__file__).parents[3] / "stage3_visualization" / "common"))
 from thesis_style import PALETTE
 from hydro_model import load_robot
 from initial_guess.paper import (

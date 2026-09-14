@@ -296,7 +296,7 @@ def limits_for(robot):
     continuous joints carry no limits at all.
 
     Shared with the figures that draw the box rather than enforce it
-    (``stage3_visualization/plot_limit_activity.py``).  A figure that repeated
+    (``stage3_visualization/gait/plot_limit_activity.py``).  A figure that repeated
     the fallback below would keep drawing the URDF's limits the first time a
     spec set ``theta_*``, and report a solution as slack against a box the
     solver never used.  Velocity and effort bounds are symmetric, so only the

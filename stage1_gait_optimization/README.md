@@ -4,19 +4,22 @@ Optimal control problem (OCP) for finding an efficient swimming gait for the AMP
 
 ## Running the OCP
 
+Run from the repository root, where the stage 3 scripts look for the
+`task3_solution.npz` it writes:
+
 ```bash
-cd /home/ws/stage1_gait_optimization
-python trajopt/run_collocation.py
+cd /home/ws
+python stage1_gait_optimization/trajopt/run_collocation.py
 ```
 
 ## Experiment Tracking (MLflow)
 
 Results, parameters, and solution files are logged to MLflow.
-The server must be started from the `experiment_results/` folder so that
-the database and artifact store are created there.
+The server must be started from the repository's `experiment_results/` folder so
+that the database and artifact store are created there.
 
 ```bash
-cd /home/ws/stage1_gait_optimization/experiment_results
+cd /home/ws/experiment_results
 mlflow server --host 0.0.0.0 --port 5000 \
               --backend-store-uri sqlite:///mlflow.db \
               --default-artifact-root ./mlruns &

@@ -1419,14 +1419,7 @@
        paddle: Link_2.3 reaches the base through 2.1 -> 2.2 -> 2.3, a plain
        serial chain of prescribed joints, so no gap at P6/P8 can displace it.
        What a *large* gap does mean is that the prescribed angles have left the
-       linkage manifold, and then the paddle is misplaced too.  The
-       distinction is a number, not a judgement:
-
-           stage2_sim_validation/check_prescription.py (see its own usage)
-
-       Fed the coordinate map's own output it reads 2.1e-13 mm, so anything a
-       real run shows is Gazebo's; one degree of error on a passive joint reads
-       about 1 mm.
+       linkage manifold, and then the paddle is misplaced too.
 
        Closing the loops properly was tried and is worse, so do not repeat it:
        eight SDF <joint> loop closures driven through a
@@ -1471,7 +1464,7 @@
        never sets fmax at all.
 
        The publisher below exists only to feed /BODY2/joint_states to
-       stage2_sim_validation/validate_sim.py.
+       stage2_sim_validation/gazebo_replay/validate_sim.py.
 
        jointName is parsed by splitting on "," after erasing spaces, so it has
        to stay on one line: a newline would end up inside a joint name. -->

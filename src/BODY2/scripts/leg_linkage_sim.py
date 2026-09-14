@@ -541,7 +541,7 @@ def _box_of(limits, spec_limits):
 
 # ---------------------------------------------------------------- the map
 
-# The thesis palette, i.e. stage3_visualization/thesis_style.py's ``PALETTE``,
+# The thesis palette, i.e. stage3_visualization/common/thesis_style.py's ``PALETTE``,
 # by the index each is taken from.  It is spelled out rather than imported for
 # the reason ``urdf_joint`` is spelled out twice: importing that module is not
 # free, and here it is worse than not free -- it switches matplotlib to LaTeX
@@ -1118,11 +1118,11 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
 
 # ---------------------------------------------------------------- thesis export
 
-# stage3_visualization/thesis_style.py carries the style every figure in the
+# stage3_visualization/common/thesis_style.py carries the style every figure in the
 # thesis is drawn in.  It is reached across the same way STAGE1 is above --
 # optionally, one way, and only to draw; a viewer run never imports it, and
 # nothing there imports this.
-STAGE3 = PKG.parents[1] / "stage3_visualization"
+STAGE3 = PKG.parents[1] / "stage3_visualization" / "common"
 
 
 def _thesis_style():
@@ -1180,7 +1180,7 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     (there is no slider to move), each legend moves above its axes where it
     cannot sit on the data, and the labels are TeX.  They are written to a
     suffixed pair rather than to ``path`` itself so that a row of two shares one
-    stem, the way ``stage3_visualization/hind_workspace.py`` writes its pair.
+    stem, the way ``stage3_visualization/thrust/hind_workspace.py`` writes its pair.
 
     The map goes through ``paint_map``, which also draws the viewer's, so the
     set that reaches the page is the set that was checked on screen.  The leg

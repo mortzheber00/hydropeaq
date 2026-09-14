@@ -40,7 +40,7 @@ plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
-sys.path.insert(0, str(Path(__file__).parents[3] / "stage3_visualization"))
+sys.path.insert(0, str(Path(__file__).parents[3] / "stage3_visualization" / "common"))
 from thesis_style import PALETTE
 from hydro_model import SymbolicDynamics, get_spec, load_robot
 from initial_guess import firmware

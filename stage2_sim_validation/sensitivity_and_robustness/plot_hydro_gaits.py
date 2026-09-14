@@ -38,7 +38,7 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "stage1_gait_optimization"))
-sys.path.insert(0, str(REPO_ROOT / "stage3_visualization"))
+sys.path.insert(0, str(REPO_ROOT / "stage3_visualization" / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hydro_model import load_robot                                # noqa: E402
