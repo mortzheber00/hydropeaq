@@ -7,9 +7,9 @@ period on its per-gait T grid, solve the collocation OCP
 band, so there is no separate refine stage.  The feasible points are collected
 into a speed-vs-efficiency (COT) Pareto front.
 
-This supersedes the sinusoid-only ``run_search.py``.  It is structured so the
-sweep driver can later be swapped for a pymoo NSGA-II driver (adding leg
-dimensions as co-design variables) while reusing ``solve_gait_ocp`` unchanged.
+It is structured so the sweep driver can later be swapped for a pymoo NSGA-II
+driver (adding leg dimensions as co-design variables) while reusing
+``solve_gait_ocp`` unchanged.
 
 Solves are grouped into *chains*: one chain per (gait, T centre), sweeping the
 speed targets in ascending order, each link warm-started from the previous

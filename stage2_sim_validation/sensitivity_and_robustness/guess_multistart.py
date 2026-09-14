@@ -48,7 +48,6 @@ from hydro_model.trajectory import coords_of, load_solution          # noqa: E40
 from initial_guess import (                                          # noqa: E402
     build_initial_guess,
     build_robot_ik_initial_guess,
-    build_theta_sinusoid_guess,
 )
 from n_sweep_continuation import IPOPT_OPTS                          # noqa: E402
 from ocp_common import (                                             # noqa: E402
@@ -59,13 +58,9 @@ from ocp_common import (                                             # noqa: E40
     tangent_to_legacy,
 )
 
-GAITS = ("LSPG25", "LSPG33", "TLPG50", "Prototype", "ThetaSinusoid")
+GAITS = ("LSPG25", "LSPG33", "TLPG50", "Prototype")
 PAPER = ("LSPG25", "LSPG33", "TLPG50")
-# ThetaSinusoid needs a robot with a real coordinate map: its builder calls
-# cmap.feasibility(), and IdentityMap returns an empty *symbolic* matrix that
-# np.min cannot consume (theta_sinusoid.py:91).  So it works for body2 and
-# raises for amph.  Selectable with --gaits, out of the default set.
-DEFAULT_GAITS = ("LSPG25", "LSPG33", "TLPG50", "Prototype")
+DEFAULT_GAITS = GAITS
 OUT_DIR = Path(__file__).parent / "multistart_results"
 MLFLOW_TRACKING_URI = "http://localhost:5000"
 MLFLOW_EXPERIMENT = "gait_ocp"
@@ -78,8 +73,6 @@ def cold_guess(dyn, gait: str, n: int, t_init: float, tau_max: float):
         return build_initial_guess(dyn, gait, n, t_init, tau_max)
     if gait == "Prototype":
         return build_robot_ik_initial_guess(dyn, n, t_init, tau_max)
-    if gait == "ThetaSinusoid":
-        return build_theta_sinusoid_guess(dyn, n, t_init, tau_max)
     raise ValueError(f"unknown gait {gait!r}; choose from {list(GAITS)}")
 
 
@@ -173,8 +166,7 @@ def main():
     parser.add_argument("--robot", default="amph", help="registered robot name")
     parser.add_argument("--gaits", nargs="+", default=list(DEFAULT_GAITS),
                         help=f"initial guesses to start from (default: "
-                             f"{' '.join(DEFAULT_GAITS)}; ThetaSinusoid also "
-                             f"exists but needs a robot with a coordinate map)")
+                             f"{' '.join(DEFAULT_GAITS)})")
     parser.add_argument("--n", type=int, default=None,
                         help="collocation intervals (default: the robot's "
                              "OCPSettings.n)")

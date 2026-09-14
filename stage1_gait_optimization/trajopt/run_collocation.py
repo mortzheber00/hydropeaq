@@ -22,7 +22,6 @@ from hydro_model.trajectory import coords_of, save_solution
 from initial_guess import (
     build_initial_guess,
     build_robot_ik_initial_guess,
-    build_theta_sinusoid_guess,
 )
 from ocp_common import (
     _log_solver_stats,
@@ -74,8 +73,6 @@ def build_ocp(robot_name: str = "amph"):
         X_guess, U_guess = build_initial_guess(dyn, GAIT, N, T_INIT, TAU_MAX)
     elif GAIT == "Prototype":
         X_guess, U_guess = build_robot_ik_initial_guess(dyn, N, T_INIT, TAU_MAX)
-    elif GAIT == "ThetaSinusoid":
-        X_guess, U_guess = build_theta_sinusoid_guess(dyn, N, T_INIT, TAU_MAX)
     else:
         raise ValueError(f"Unknown GAIT: {GAIT}")
 

@@ -59,12 +59,8 @@ LINKAGE = json.loads(LINKAGE_PATH.read_text())
 #
 # The URDF zero pose is the CAD assembly pose and sits inside the band with a
 # 12.5 mm half-chord, so it is the home.  Note it is *not* centred: the band
-# only extends 12 deg in the -theta1 direction, which is what BAND_DIR is for.
+# only extends 12 deg in the -theta1 direction.
 THETA_HOME = np.zeros(len(LEG_NAMES) * 2)
-
-# Unit vector along the band centreline, in (theta1, theta2).  A gait that
-# sweeps along this stays assemblable far longer than one that does not.
-BAND_DIR = np.array([1.37, 1.0]) / np.linalg.norm([1.37, 1.0])
 
 # Hip travel, (lower, upper) degrees on joints 1.1 and 2.1.  The sides mount
 # mirrored -- roll +pi/2 against -pi/2 on a common axis -- so their boxes negate.
@@ -236,10 +232,6 @@ SPEC = RobotSpec(
         "center_x_front": -0.03,    # stroke centred on the trim foot, both ends
         "center_x_rear": -0.03,
     },
-    # The firmware IK gait needs a foot path; BODY2's is written straight in
-    # theta instead, because theta *is* the actuated coordinate once the
-    # coordinate map has the loops (see initial_guess/theta_sinusoid.py).
-    #
     # The three weights that differ from amph's defaults were tuned against
     # this robot: it is 143 g against amph's, so the same 0.2 m/cycle target
     # asks for a stroke the linkage's assemblable band cannot reach, and the

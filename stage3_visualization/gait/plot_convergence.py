@@ -12,8 +12,8 @@ iteration counter:
   3. Dual infeasibility     ‖∇L(x^k)‖_inf  (stationarity residual)
 
 Runs are grouped by their ``GAIT`` parameter — the initial-guess family the
-solve was warm-started from (LSPG25 / LSPG33 / TLPG50 / Prototype /
-ThetaSinusoid) — so the figure answers "how does the initial guess change the
+solve was warm-started from (LSPG25 / LSPG33 / TLPG50 / Prototype) — so the
+figure answers "how does the initial guess change the
 convergence behaviour of the OCP?".
 
 Two caveats worth knowing when reading the figure:

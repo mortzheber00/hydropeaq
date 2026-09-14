@@ -32,7 +32,7 @@ LEG_COLORS = PALETTE[:4]
 
 # Slot order for the gaits the pipeline knows about; anything else takes the
 # next free slot in first-seen order.
-GAIT_ORDER = ["LSPG25", "LSPG33", "TLPG50", "Prototype", "ThetaSinusoid"]
+GAIT_ORDER = ["LSPG25", "LSPG33", "TLPG50", "Prototype"]
 
 
 def style_for(gait: str) -> tuple[str, str]:

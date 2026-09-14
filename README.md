@@ -88,9 +88,70 @@ Two entry points share the same transcription
 
 ---
 
+## Installing the HSL linear solver
+
+IPOPT solves every OCP here with the HSL solver **MA97**. The solve scripts load it from
+`/usr/local/lib/libcoinhsl.so` through IPOPT's `hsllib` option. The build wrapper is
+[coin-or-tools/ThirdParty-HSL](https://github.com/coin-or-tools/ThirdParty-HSL); the HSL
+source itself needs a licence.
+
+1. **Get the source.** Request **Coin-HSL** (free for academic use) at
+   <https://licences.stfc.ac.uk/product/coin-hsl> and download the `coinhsl-x.y.z.tar.gz`
+   it links to. Use Coin-HSL, not the *Coin-HSL Archive*: the archive has no MA97.
+2. **Clone the wrapper and unpack the source into it.** Clone into the repository root,
+   where `ThirdParty-HSL/` is gitignored:
+
+   ```bash
+   git clone https://github.com/coin-or-tools/ThirdParty-HSL.git
+   cd ThirdParty-HSL
+   tar xzf /path/to/coinhsl-x.y.z.tar.gz
+   ln -s coinhsl-x.y.z coinhsl
+   ```
+
+### With sudo
+
+```bash
+sudo apt install gfortran libblas-dev liblapack-dev libmetis-dev
+./configure
+make
+sudo make install          # installs /usr/local/lib/libcoinhsl.so
+```
+
+### Without sudo
+
+Install into a directory you can write to:
+
+```bash
+./configure --prefix=/mnt/ISAAC_data/users/moritz/hsl_install
+make
+make install               # installs <prefix>/lib/libcoinhsl.so
+export LD_LIBRARY_PATH=/mnt/ISAAC_data/users/moritz/hsl_install/lib:$LD_LIBRARY_PATH
+export PKG_CONFIG_PATH=/mnt/ISAAC_data/users/moritz/hsl_install/lib/pkgconfig:$PKG_CONFIG_PATH
+```
+
+Add the two `export` lines to `~/.bashrc` so they persist.
+
+Then point the solve scripts at the new location. They load the library from
+`/usr/local/lib/libcoinhsl.so`, so change the `"hsllib"` entry in their IPOPT options:
+
+```python
+"hsllib": "/mnt/ISAAC_data/users/moritz/hsl_install/lib/libcoinhsl.so",
+```
+
+It appears in three files:
+
+| File | Where |
+|------|-------|
+| `stage1_gait_optimization/trajopt/run_collocation.py` | IPOPT options in `build_ocp` |
+| `stage1_gait_optimization/codesign/solver.py` | IPOPT options of the co-design solve |
+| `stage2_sim_validation/sensitivity_and_robustness/n_sweep_continuation.py` | `IPOPT_OPTS`, which `guess_multistart.py` and `hydro_sensitivity.py` import |
+
+---
+
 ## Getting started
 
-All commands run from the repository root.
+All commands run from the repository root. The solvers need the HSL library from the
+[previous section](#installing-the-hsl-linear-solver).
 
 **1. Start the MLflow server.** `run_collocation.py` logs every solve to it and fails
 without it. Start it from `experiment_results/`, so the database and artifact store are
