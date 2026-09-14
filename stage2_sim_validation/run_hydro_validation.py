@@ -11,6 +11,7 @@ This script:
 Usage:
   python run_hydro_validation.py
   python run_hydro_validation.py --save hydro.pdf
+  python run_hydro_validation.py --robot body2 --save body2_hydro.pdf
 
 ``--save`` writes the skeleton and the four geometry representations as
 ``hydro_skeleton`` / ``hydro_{mesh,drag,buoyancy,overlay}`` (format from the
@@ -25,8 +26,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scienceplots  # noqa: F401  registers the 'science' matplotlib style
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
-from stage1_gait_optimization.hydro_model import SymbolicDynamics, load_robot
+# resolve() first: run as "python run_hydro_validation.py" from this directory,
+# __file__ is relative and parents[1] does not exist, which is what the usage
+# line above asks for.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from stage1_gait_optimization.hydro_model import SymbolicDynamics, load_robot, registry
 from stage1_gait_optimization.hydro_model.visualization import (
     visualize_robot_representations,
     visualize_skeleton,
@@ -42,7 +46,7 @@ plt.rcParams["text.usetex"] = True
 # (savefig(bbox_inches=None) would not do this — that means "use this rcParam".)
 plt.rcParams["savefig.bbox"] = None
 
-ROBOT = "amph"   # registered robot name; see hydro_model/robots/
+ROBOT = "amph"   # default registered robot name; see hydro_model/robots/
 
 # One canvas for every figure here.  The 3D content only reaches ~5.9 x 5.8 in
 # of it, so the rest is margin: nothing is clipped by dropping the crop above.
@@ -59,11 +63,12 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--save", type=Path, default=None)
+    parser.add_argument("--robot", default=ROBOT, choices=sorted(registry()))
     args = parser.parse_args()
 
     # ── 1. Parse URDF & build robot model ──────────────────────────────
     # load_robot runs FK at the neutral pose and builds the cylinders.
-    robot = load_robot(ROBOT)
+    robot = load_robot(args.robot)
     q = robot.neutral_config()
     print(robot)
     print()

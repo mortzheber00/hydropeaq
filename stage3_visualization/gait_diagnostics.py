@@ -12,7 +12,7 @@ one gait cycle, sharing a time axis:
 
   velocity  Foot velocity         v_foot_x(t)  (signed) and |v_foot|(t), both
                                   relative to the hull and in the base frame
-  thrust    Instantaneous thrust  F_drag_x(t)  on the three leg links combined
+  thrust    Instantaneous thrust  F_drag_x(t)  on the leg's links combined
   impulse   Cumulative impulse    ∫ F_drag_x dt  (final value = net per cycle)
   area      Presented area        A(t), and the drag-relevant A|v|^2(t)
 
@@ -57,11 +57,20 @@ read beside ``plot_thrust_attribution``'s phase-based traces.  Its power strokes
 go in a four-row ribbon under the axes rather than as shading — see
 ``plot_impulse_overlay`` for why the shading cannot survive the merge.
 
+Both robots are handled.  ``--leg`` takes the loaded robot's own leg names —
+amph's ``Front_Left``-style names, BODY2's ``FL``/``FR``/``BL``/``BR`` — and
+defaults to its first leg.  Nothing here assumes a serial leg: the links a
+leg's drag and area are summed over come from ``drag_model.leg_links``, so
+BODY2's six-link closed chain is summed over all six, and the states are
+expanded from the solution's reduced coordinates onto the tree once, in
+``main``, because FK and the frame Jacobians are tree-level.
+
 Usage:
   python gait_diagnostics.py
   python gait_diagnostics.py --solution ../task3_solution.npz --leg Hind_Left
   python gait_diagnostics.py --leg all --save diag.pdf
   python gait_diagnostics.py --leg all --overlay --save diag.pdf
+  python gait_diagnostics.py --solution body2.npz --leg BL --save diag.pdf
 """
 from __future__ import annotations
 
@@ -87,10 +96,9 @@ from collocation import (  # noqa: E402
     solution_states,
 )
 from drag_model import (  # noqa: E402
-    LEG_SEGMENTS,
-    link_drag_terms,
     leg_drag_x,
-    require_supported,
+    leg_links,
+    link_drag_terms,
 )
 from thesis_style import (  # noqa: E402
     HALF,
@@ -103,7 +111,10 @@ from thesis_style import (  # noqa: E402
 
 from stage1_gait_optimization.hydro_model import load_robot  # noqa: E402
 from stage1_gait_optimization.hydro_model.robot import QuadrupedRobot  # noqa: E402
-from stage1_gait_optimization.hydro_model.trajectory import load_solution  # noqa: E402
+from stage1_gait_optimization.hydro_model.trajectory import (  # noqa: E402
+    expand_to_tree,
+    load_solution,
+)
 
 full_width()
 
@@ -137,22 +148,29 @@ def _presented_area(robot: QuadrupedRobot, link_name: str, q, v):
     return area, area * speed ** 2
 
 
-def compute_traces(robot: QuadrupedRobot, leg: str, Xc_leg: np.ndarray, nq: int):
-    """The five traces, one value per collocation sample of ``Xc_leg``."""
+def compute_traces(robot: QuadrupedRobot, leg: str, Xc_tree: np.ndarray):
+    """The five traces, one value per collocation sample of ``Xc_tree``.
+
+    States are the tree's, not the solution's: a closed-chain robot solves in
+    reduced coordinates, and every call below — FK, the frame Jacobians, the
+    drag model — is a tree-level one.  ``main`` does that expansion once.
+    """
     foot_fid = robot.foot_frame_ids[leg]
-    N1 = Xc_leg.shape[1]
+    foot_offset = robot.foot_offsets[leg]
+    links = leg_links(robot, leg)
+    nq, nv = robot.nq, robot.nv
+    N1 = Xc_tree.shape[1]
     F_drag_x = np.zeros(N1)
     v_foot_x = np.zeros(N1)
     v_foot_mag = np.zeros(N1)
     area = np.zeros(N1)
     area_v2 = np.zeros(N1)
     for t in range(N1):
-        q = Xc_leg[:nq, t]
-        v = Xc_leg[nq : nq + robot.nv, t]
+        q = Xc_tree[:nq, t]
+        v = Xc_tree[nq : nq + nv, t]
         robot.forward_kinematics(q)
         F_drag_x[t] = leg_drag_x(robot, leg, q, v)
-        per_link = [_presented_area(robot, f"{leg}_{name}_link", q, v)
-                    for name in LEG_SEGMENTS]
+        per_link = [_presented_area(robot, name, q, v) for name in links]
         area[t] = sum(a for a, _ in per_link)
         area_v2[t] = sum(a for _, a in per_link)
         J = pin.computeFrameJacobian(
@@ -167,9 +185,16 @@ def compute_traces(robot: QuadrupedRobot, leg: str, Xc_leg: np.ndarray, nq: int)
         # water backwards" rather than "is this leg sweeping backwards".  The
         # kinematic definition is the one plot_solution_legs.py already uses,
         # and this is what its docstring has always claimed the two share.
+        #
+        # The foot point is the frame origin on amph but the blade tip on
+        # BODY2, 66 mm down the last link, so the Jacobian is carried out to
+        # ``foot_offsets`` the same way ``_presented_area`` carries it to a
+        # cylinder midpoint.  The offset is zero wherever it does not apply.
         v_rel = np.asarray(v, dtype=float).copy()
         v_rel[:6] = 0.0
-        v_foot = np.array(robot.data.oMi[1].rotation).T @ (J[:3, :] @ v_rel)
+        r_tip = np.array(robot.data.oMf[foot_fid].rotation) @ foot_offset
+        v_foot = np.array(robot.data.oMi[1].rotation).T @ (
+            J[:3, :] @ v_rel + np.cross(J[3:, :] @ v_rel, r_tip))
         v_foot_x[t] = v_foot[0]
         v_foot_mag[t] = float(np.linalg.norm(v_foot))
     return v_foot_x, v_foot_mag, F_drag_x, area, area_v2
@@ -380,10 +405,10 @@ def main():
     )
     parser.add_argument("--solution", type=Path,
                         default=_ROOT / "task3_solution.npz")
-    parser.add_argument(
-        "--leg", default="Front_Left",
-        choices=["Front_Left", "Front_Right", "Hind_Left", "Hind_Right", "all"],
-    )
+    # No choices=: the leg names are the robot's, and which robot this is only
+    # becomes known when the solution loads.  Default is its first leg, which
+    # on amph is the Front_Left this always defaulted to.
+    parser.add_argument("--leg", default=None)
     parser.add_argument("--save", type=Path, default=None)
     parser.add_argument(
         "--overlay", action="store_true",
@@ -395,21 +420,29 @@ def main():
 
     print(f"Loading OCP solution from {args.solution}…")
     d = load_solution(str(args.solution))
-    require_supported(d["robot"], "gait_diagnostics")
     nq, N, T = d["nq"], d["N"], d["T"]
 
     print("Loading robot…")
     robot = load_robot(d["robot"], q=None)
+    all_legs = list(robot.spec.leg_names)
+    leg_arg = args.leg if args.leg is not None else all_legs[0]
+    if leg_arg != "all" and leg_arg not in all_legs:
+        raise SystemExit(
+            f"{d['robot']} has legs {all_legs}, not {leg_arg!r}.")
+
     Xc_leg, phase, _ = solution_states(robot, d, args.solution.name)
+    # Reduced coordinates for a closed-chain robot; the identity for a serial
+    # one, whose array is returned untouched.
+    Xc_tree = expand_to_tree(robot, Xc_leg, nq)
     t_arr = phase * T
     w, _ = quadrature_weights(N, T)
 
-    legs = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"] if args.leg == "all" else [args.leg]
+    legs = all_legs if leg_arg == "all" else [leg_arg]
     totals = {"I_power": 0.0, "I_recovery": 0.0, "net": 0.0}
     overlay = {}
     for leg in legs:
         v_foot_x, v_foot_mag, F_drag_x, area, area_v2 = compute_traces(
-            robot, leg, Xc_leg, nq)
+            robot, leg, Xc_tree)
         st = stroke_stats(w, N, T, v_foot_x, v_foot_mag, F_drag_x, area, area_v2)
         print(f"{leg}:  <|v_foot|> power {st['s_power']:.3f} m/s, "
               f"recovery {st['s_recovery']:.3f} m/s;  impulse power "

@@ -6,7 +6,8 @@ was not allowed to do: the joint-angle box, the joint-rate box, the torque box
 and the actuator-bandwidth filter, each drawn as the solver enforced it, with
 the solution measured against it.
 
-Two figures on the full text-width canvas, from two different inputs:
+Two figures from two different inputs, the first on the full text-width canvas
+and the second on the half-width one:
 
   ``*_traces``    The four constrained quantities over one cycle, every actuated
       joint on one axis, each normalised so that ``+-1`` is its own bound.
@@ -16,17 +17,22 @@ Two figures on the full text-width canvas, from two different inputs:
       is asymmetric (amph's side joints run -135 to +21 deg).  One trajectory,
       from ``--solution``.
 
-  ``*_activity``  Share of enforced samples sitting at each bound, against
-      commanded speed along the Pareto front.  This is the panel that answers
-      the question: a limit whose share grows with speed is what stops the robot
-      going faster, and one that stays at zero is not part of the story at all.
-      Speed is its x-axis, so it needs the whole sweep from ``--results``.
+  ``*_activity``  Share of the *cycle* in which some joint sits on each bound,
+      against commanded speed along the Pareto front.  This is the panel that
+      answers the question: a limit whose share grows with speed is what stops
+      the robot going faster, and one that stays at zero is not part of the story
+      at all.  Speed is its x-axis, so it needs the whole sweep from
+      ``--results``.
 
-The two share ``measure``, which is why they live in one script: the shares are
-then guaranteed to be the same computation, normalised the same way, over the
-same enforced-sample set as the traces.  They do not share data, so a sweep that
-is missing, incomplete or written before the ``Xc`` export costs the activity
-figure alone — the traces are still drawn, and the reason is printed.
+      It is a share of time, at ``DWELL_FRAC`` of each quantity's span and over
+      the equally spaced grid nodes — the metric the thesis defines and the same
+      one ``nominal_metrics`` reports for the single nominal gait, so the panel
+      is that subsection's finding carried across the sweep.  It is deliberately
+      *not* the ``ACTIVE_TOL`` share the traces figure draws; see the two
+      tolerance notes below.
+
+A sweep that is missing, incomplete or written before the ``Xc`` export costs the
+activity figure alone — the traces are still drawn, and the reason is printed.
 
 **Where the bounds are enforced, and why that is exactly the Xc columns.**
 ``ocp_common.build_collocation_nlp`` bounds the state at every grid node, and
@@ -80,10 +86,12 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "stage1_gait_optimization"))
 from thesis_style import (  # noqa: E402,F401  activates the shared style
+    HALF,
     LEGEND_ROW_IN,
     PALETTE,
     TEXT_WIDTH_IN,
     full_width,
+    half_width,
     legend_row,
 )
 
@@ -103,6 +111,27 @@ from stage1_gait_optimization.ocp_common import limits_for  # noqa: E402
 # that is ~7e-4 normalised.  The report prints the peak utilisation next to
 # every share so a reader can see the margin rather than take this on trust.
 ACTIVE_TOL = 1e-3
+
+# The *other* tolerance, and the one the thesis's metric section defines: a joint
+# DWELLS on a bound within 1 % of that quantity's own admissible SPAN — 1 % of
+# ``q_ub - q_lb`` for an angle, 1 % of ``2*v_ub`` for a rate — which is one rule
+# for both.  In the half-range normalisation of `normalised` both work out to
+# ``2 * DWELL_FRAC``, which is where the factor two in `dwell_masks` comes from.
+#
+# This is not a looser ACTIVE_TOL, it answers a different question.  ACTIVE_TOL
+# asks "is this bound part of the solution?" and is set by what IPOPT converges a
+# constraint to.  DWELL_FRAC asks "how long does the joint SIT on its stop?"  A
+# thigh decelerating into its stop and holding there is physically at the stop
+# for the whole plateau, but the solver's samples leave it a few parts in a
+# thousand short at the ends of it, so ACTIVE_TOL reads a dwell as a handful of
+# isolated nodes.  `nominal_metrics` imports both from here so that the figures
+# and the numbers in the text cannot drift apart.
+DWELL_FRAC = 1e-2
+
+# The three quantities the activity panel draws.  The bandwidth window is left
+# out: it is a per-interval difference rather than a state, so "how long does it
+# sit on its bound" is not a question about it, and its share is zero throughout.
+DWELL_LIMITS = ("angle", "rate", "torque")
 
 # Colour by joint kind, not by leg: the question is whether *anything* reaches a
 # bound, and twelve separate colours answer a question nobody asked.
@@ -149,10 +178,47 @@ def normalised(robot, Xc_leg, U, nq, N, T, d=D_COLLOC):
     }, alpha
 
 
-def activity(norm: dict) -> dict:
-    """Share of (joint, sample) pairs sitting on the bound, per limit."""
-    return {k: float((np.abs(v) >= 1.0 - ACTIVE_TOL).mean())
-            for k, v in norm.items()}
+def dwell_masks(robot, X, U, nq) -> dict:
+    """Per-joint boolean masks: is this joint on this bound at this grid node?
+
+    Over the N equally spaced grid nodes rather than over ``Xc``, because a share
+    like "this thigh sits at its lower stop for 20.8 % of the cycle" is a
+    statement about *time*, and only the grid nodes are equally spaced in it.
+    The endpoint is dropped: node N repeats node 0 under periodicity and counting
+    both would weight one instant twice.
+
+    The angle box is split into ``angle_lo`` and ``angle_hi`` — a joint that
+    reaches both stops in one cycle is the finding of \\cref{sec:results-nominal}
+    and collapsing the two would hide it.
+    """
+    q_lb, q_ub, v_ub, tau_ub = limits_for(robot)
+    mid, half = (q_ub + q_lb) / 2.0, (q_ub - q_lb) / 2.0
+    band = 2.0 * DWELL_FRAC
+
+    qn = (X[7:nq, :-1] - mid[:, None]) / half[:, None]
+    rn = X[nq + 6:, :-1] / v_ub[:, None]
+    return {
+        "angle_lo": qn <= -1.0 + band,
+        "angle_hi": qn >= 1.0 - band,
+        "rate": np.abs(rn) >= 1.0 - band,
+        "torque": np.abs(U / tau_ub[:, None]) >= 1.0 - band,
+    }
+
+
+def activity(masks: dict) -> dict:
+    """Share of the cycle in which *some* joint sits on each bound.
+
+    The thesis metric: a fraction of the cycle, not a fraction of (joint, sample)
+    pairs.  Dividing by the joint count instead would put a bound that one joint
+    holds for a quarter of the cycle at 2 % — and four of the twelve joints are
+    the side joints, pinned to zero by a pose constraint, so they can never be on
+    a bound and would be pure denominator.
+    """
+    return {
+        "angle": float((masks["angle_lo"] | masks["angle_hi"]).any(axis=0).mean()),
+        "rate": float(masks["rate"].any(axis=0).mean()),
+        "torque": float(masks["torque"].any(axis=0).mean()),
+    }
 
 
 def plot_traces(norm, phase, N, kinds):
@@ -197,12 +263,18 @@ def plot_traces(norm, phase, N, kinds):
 
 
 def plot_activity(points, band):
-    """Figure 2: share of samples at each bound, against commanded speed."""
-    fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 2.8))
+    """Figure 2: share of samples at each bound, against commanded speed.
+
+    Drawn on the half-width canvas, so the caller has to enter ``half_width()``
+    around it — the traces figure above is a full-width one and keeps its own
+    type.
+    """
+    fig, ax = plt.subplots(figsize=HALF)
 
     v = np.array([p["speed"] for p in points])
     pinned = np.array([p["pinned"] for p in points])
-    for i, (key, (label, _)) in enumerate(LIMITS.items()):
+    for i, key in enumerate(DWELL_LIMITS):
+        label = LIMITS[key][0]
         share = np.array([p["activity"][key] for p in points]) * 100.0
         colour = PALETTE[i % len(PALETTE)]
         ax.plot(v, share, color=colour, lw=1.2, alpha=0.85, zorder=2, label=label)
@@ -214,18 +286,20 @@ def plot_activity(points, band):
                 marker="o", markersize=4.5, markerfacecolor="none",
                 markeredgewidth=0.9, zorder=3)
 
-    ax.set_xlabel(r"commanded forward speed $v$ [m\,s$^{-1}$]")
-    ax.set_ylabel(r"samples on the bound [\%]")
+    ax.set_xlabel(r"forward speed [m\,s$^{-1}$]")
+    ax.set_ylabel(r"share of the cycle on the bound [\%]")
     ax.set_ylim(bottom=0)
     ax.grid(alpha=0.3)
     ax.margins(x=0.05)
 
     marks = [Line2D([], [], color="0.35", linestyle="none", marker="o",
                     markersize=4.5, markerfacecolor="none", markeredgewidth=0.9,
-                    label=rf"$T$ pinned at edge ($\pm{band:.2f}$ s)")]
+                    label=rf"$T$ pinned ($\pm{band:.2f}$ s)")]
     handles, _ = ax.get_legend_handles_labels()
+    # Four entries do not fit three to a row at this width, so they go two to a
+    # row and the canvas buys the second row.
     ax.legend(handles=handles + marks, loc="lower center",
-              bbox_to_anchor=(0.5, 1.0), ncol=3, fontsize=7,
+              bbox_to_anchor=(0.5, 1.0), ncol=2,
               columnspacing=1.2, handlelength=1.6, frameon=False,
               borderaxespad=0.2)
     legend_row(fig, ax, rows=2)
@@ -298,11 +372,12 @@ def sweep_activity(robot, meta, results):
           f"({len(pairs)} solves, free-T window +/- {band:.3f} s):")
     points = []
     for row, m in pairs:
-        n_row, _, _ = measure(sweep_robot, m)
+        masks = dwell_masks(sweep_robot, m["X"], m["U"], m["nq"])
         points.append({"speed": row["speed"],
                        "pinned": sweep_io.is_pinned(row, band),
-                       "activity": activity(n_row)})
-        shares = "  ".join(f"{k} {points[-1]['activity'][k]:5.1%}" for k in LIMITS)
+                       "activity": activity(masks)})
+        shares = "  ".join(f"{k} {points[-1]['activity'][k]:5.1%}"
+                           for k in DWELL_LIMITS)
         print(f"  v = {row['speed']:.3f} m/s   {shares}")
     return points, band
 
@@ -332,7 +407,11 @@ def main():
     figs = {"traces": plot_traces(norm, phase, int(meta["N"]), kinds)}
     front = sweep_activity(robot, meta, args.results)
     if front is not None:
-        figs["activity"] = plot_activity(*front)
+        # half_width() is an rcParams update, so it is scoped: the traces figure
+        # above is a full-width one and must keep its own type.
+        with plt.rc_context():
+            half_width()
+            figs["activity"] = plot_activity(*front)
     if args.save:
         for tag, fig in figs.items():
             path = args.save.with_name(f"{args.save.stem}_{tag}{args.save.suffix}")

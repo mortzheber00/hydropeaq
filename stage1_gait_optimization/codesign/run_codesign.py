@@ -231,13 +231,14 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
             [r["speed"] for r in gpts], [r["cot"] for r in gpts],
             c=[r["T"] for r in gpts], cmap="viridis", vmin=vmin, vmax=vmax,
             marker=gait_marker[gait], s=55, edgecolors="k", linewidths=0.4,
+            zorder=3,
         )
 
     # Pareto front as a dashed line; the markers keep their T colour.
     front = sorted((rows[i] for i in pareto_idx), key=lambda r: r["speed"])
     if front:
         ax.plot([r["speed"] for r in front], [r["cot"] for r in front],
-                "k--", lw=1.2, zorder=0)
+                "k--", lw=1.2, zorder=2)
 
     if sc is not None:
         fig.colorbar(sc, ax=ax).set_label("cycle period T [s]")
@@ -251,8 +252,10 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
     handles.append(Line2D([], [], color="k", linestyle="--", label="Pareto front"))
     ax.legend(handles=handles, loc="best")
 
-    ax.set_xlabel("forward speed [m/s]")
+    ax.set_xlabel(r"forward speed [m\,s$^{-1}$]")
     ax.set_ylabel("cost of transport [-]")
+    # Under the front (zorder 2) and the markers (3), as in the stage3 figures.
+    ax.grid(alpha=0.3)
     fig.tight_layout()
     OUT_DIR.mkdir(exist_ok=True)
     # Thesis figures: 300 dpi raster + vector PDF.  pad_inches above the default:

@@ -63,17 +63,37 @@ LINK_COLORS = {
 
 
 # Cycled per segment of a leg's cylinder chain, so a robot with any number of
-# links per leg is drawn consistently.
+# links per leg is drawn consistently.  Base blue is not in the cycle: a
+# six-link leg would reach it and share a colour with the hull.
 _SEGMENT_COLORS = [LINK_COLORS["side"], LINK_COLORS["thigh"], LINK_COLORS["calf"],
-                   LINK_COLORS["base"], "#E17FB0", "#7FD4C1"]
+                   LINK_COLORS["foot"], "#E17FB0", "#7FD4C1"]
 
 
-def _link_color(name: str) -> str:
-    name_lower = name.lower()
-    for key, color in LINK_COLORS.items():
-        if key in name_lower:
-            return color
-    return "#888888"
+def link_color_key(robot: QuadrupedRobot) -> tuple[dict[str, str], dict[str, str]]:
+    """``({link name: colour}, {legend label: colour})`` for one robot.
+
+    amph's links are named for what they are — side, thigh, calf, foot — and
+    ``LINK_COLORS`` keys off those names, which is what its figures use.  A
+    robot whose links are named otherwise landed every leg link on a grey
+    fallback and was still handed amph's legend: BODY2's ``Link_FL1.2`` matches
+    none of the five.  Those legs are coloured by position in the leg's
+    cylinder chain instead, and labelled with whatever follows the leg name in
+    the link name — for BODY2 the pin numbers, 1.1 through 2.3.
+    """
+    base = robot.spec.base_link
+    colors = {base: LINK_COLORS["base"]}
+    legend = {"Base": LINK_COLORS["base"]}
+    for leg in robot.spec.leg_names:
+        links = [cs.link for cs in robot.spec.cylinders if leg in cs.link]
+        for idx, name in enumerate(links):
+            key = next((k for k in LINK_COLORS if k in name.lower()), None)
+            if key is not None:
+                colors[name], label = LINK_COLORS[key], key.capitalize()
+            else:
+                colors[name] = _SEGMENT_COLORS[idx % len(_SEGMENT_COLORS)]
+                label = name.split(leg, 1)[-1].strip("_")
+            legend[label] = colors[name]
+    return colors, legend
 
 
 def _set_equal_aspect(ax, points: np.ndarray, margin: float = 1.2):
@@ -120,6 +140,7 @@ def visualize_skeleton(
     save_path : if given, save figure to this path.
     """
     LEG_NAMES = robot.spec.leg_names
+    colors, legend = link_color_key(robot)
 
     if q is None:
         q = robot.neutral_config()
@@ -156,6 +177,9 @@ def visualize_skeleton(
         # segments already carry any sagittal projection the spec asks for.
         segments = robot.leg_skeleton(leg)
         foot_fid = robot.foot_frame_ids[leg]
+        # The link the foot point sits on, so the marker and the stub out to it
+        # carry that link's colour rather than amph's foot purple.
+        foot_color = colors.get(robot.spec.foot_points[leg][0], LINK_COLORS["foot"])
 
         # Joint markers and frame axes at each segment start
         for p_start, _ in segments:
@@ -169,7 +193,7 @@ def visualize_skeleton(
         ax.scatter(
             *foot_pos,
             s=60,
-            c="#9B59B6",
+            c=foot_color,
             marker="v",
             edgecolors="k",
             linewidths=0.5,
@@ -184,7 +208,7 @@ def visualize_skeleton(
         if segments:
             ax.plot(*zip(base_pos, segments[0][0]), color=_SEGMENT_COLORS[0],
                     linewidth=2.5, alpha=0.8)
-            ax.plot(*zip(segments[-1][1], foot_pos), color=LINK_COLORS["foot"],
+            ax.plot(*zip(segments[-1][1], foot_pos), color=foot_color,
                     linewidth=2.0, linestyle="--", alpha=0.7)
 
     all_pts = np.array(all_pts)
@@ -206,8 +230,7 @@ def visualize_skeleton(
     ax.view_init(elev=elev, azim=azim)
 
     legend_elements = [
-        Patch(facecolor=c, edgecolor="k", label=n.capitalize())
-        for n, c in LINK_COLORS.items()
+        Patch(facecolor=c, edgecolor="k", label=n) for n, c in legend.items()
     ]
     ax.legend(handles=legend_elements, loc="upper left", fontsize=8)
 
@@ -275,6 +298,7 @@ def visualize_robot_representations(
     if q is None:
         q = robot.neutral_config()
 
+    colors, legend = link_color_key(robot)
     robot.forward_kinematics(q)
     robot.build_cylinders()
 
@@ -295,7 +319,7 @@ def visualize_robot_representations(
         tm.set_joint(robot.model.names[jid], angle)
     for v in tm.visuals:
         link_name = v.frame.split("visual:")[1].rsplit("/", 1)[0]
-        v.color = list(mcolors.to_rgba(_link_color(link_name)))
+        v.color = list(mcolors.to_rgba(colors.get(link_name, "#888888")))
 
     subtitles = {
         "mesh": "STL mesh",
@@ -326,7 +350,7 @@ def visualize_robot_representations(
                 cyl = link.cylinder
                 if cyl is None:
                     continue
-                color = _link_color(name)
+                color = colors.get(name, "#888888")
                 r_vol = np.sqrt(max(cyl.volume_displaced / (np.pi * cyl.length), 1e-8))
                 if kind == "drag":
                     all_pts.extend(
@@ -357,8 +381,7 @@ def visualize_robot_representations(
     all_pts_arr = np.array(all_pts)
 
     legend_elements = [
-        Patch(facecolor=c, edgecolor="k", label=n.capitalize())
-        for n, c in LINK_COLORS.items()
+        Patch(facecolor=c, edgecolor="k", label=n) for n, c in legend.items()
     ]
     overlay_legend = legend_elements + [
         Patch(facecolor="white", edgecolor="#1a1a6e", label="Drag cyl. edge"),

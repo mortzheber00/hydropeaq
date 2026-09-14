@@ -214,7 +214,7 @@ SPEC = RobotSpec(
     # robot with 0.2 g leg links, so 3.5 N*m is roughly 15x too large and any
     # gait optimised against it is qualitative only.  Replace with the servo
     # datasheet figures before trusting a solution.
-    theta_vel_limit=np.full(len(LEG_NAMES) * 2, 12.0),
+    theta_vel_limit=np.full(len(LEG_NAMES) * 2, 15*12.0),
     theta_effort_limit=np.full(len(LEG_NAMES) * 2, 3.5),
     theta_home=THETA_HOME,
     pose_constraints=_pose_constraints,
@@ -247,7 +247,7 @@ SPEC = RobotSpec(
     # torques that go with it.
     ocp=OCPSettings(
         gait="Prototype",
-        d_target=0.1,
+        d_target=0.15,
         w_power=200.0,
         w_vel_smooth=0.2,
     ),

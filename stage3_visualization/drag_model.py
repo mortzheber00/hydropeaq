@@ -65,8 +65,26 @@ Z_SURFACE = 0.0
 # by assemblability, sum over the leg's six links -- is a separate piece of work.
 SUPPORTED_ROBOTS = ("amph",)
 
-# The three links a leg's drag is summed over, in kinematic order.
+# The three links an amph leg's drag is summed over, in kinematic order.
 LEG_SEGMENTS = ("Thigh", "Calf", "Foot")
+
+
+def leg_links(robot: QuadrupedRobot, leg: str) -> tuple[str, ...]:
+    """The links one leg's drag is summed over, in kinematic order.
+
+    amph keeps the three it has always used.  Its fourth leg cylinder, the
+    Side link, is a stub on a joint the OCP pins to zero, so it never sweeps
+    and has never been counted as leg drag; folding it in now would move every
+    published amph number.
+
+    Any other robot takes every segment cylinder whose link carries the leg's
+    name — ``QuadrupedRobot.leg_skeleton``'s own rule, so BODY2's six-link
+    closed chain needs no list of its own here.
+    """
+    if robot.spec.name == "amph":
+        return tuple(f"{leg}_{s}_link" for s in LEG_SEGMENTS)
+    return tuple(cs.link for cs in robot.spec.cylinders
+                 if cs.kind == "segment" and leg in cs.link)
 
 
 def require_supported(robot_name: str, figure: str) -> None:
@@ -179,8 +197,8 @@ def link_drag_x(robot: QuadrupedRobot, link_name: str, q: np.ndarray,
 
 def leg_drag_x(robot: QuadrupedRobot, leg: str, q: np.ndarray,
                v: np.ndarray) -> float:
-    """World-x drag summed over one leg's thigh, calf and foot [N]."""
-    return sum(link_drag_x(robot, f"{leg}_{s}_link", q, v) for s in LEG_SEGMENTS)
+    """World-x drag summed over one leg's links [N] — see ``leg_links``."""
+    return sum(link_drag_x(robot, name, q, v) for name in leg_links(robot, leg))
 
 
 def _leg_joint_indices(robot: QuadrupedRobot, leg: str) -> list[int]:

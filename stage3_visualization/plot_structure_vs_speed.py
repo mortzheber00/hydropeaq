@@ -7,7 +7,7 @@ them against the speed that solution was solved for, which is the question H3
 actually asks: does the phase timing and the stride frequency shift with the
 commanded speed, or stay fixed?
 
-Four panels on one text-width canvas:
+Four standalone half-width figures, each written to its own file:
 
   duty factor      Fraction of the cycle the foot sweeps backwards, averaged
       over the four legs, with the per-leg spread as a bar.  The 0.5 line is
@@ -43,6 +43,8 @@ Usage:
   python plot_structure_vs_speed.py
   python plot_structure_vs_speed.py --results /path/to/codesign_results
   python plot_structure_vs_speed.py --duty-ref 0.35 0.45 --save structure.pdf
+      -> structure_duty.pdf, structure_frequency.pdf, structure_phase.pdf,
+         structure_depth.pdf
 """
 from __future__ import annotations
 
@@ -59,9 +61,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "stage1_gait_optimization"))
 from thesis_style import (  # noqa: E402,F401  activates the shared style
+    HALF,
     PALETTE,
-    TEXT_WIDTH_IN,
-    full_width,
+    half_width,
+    legend_row,
 )
 
 import sweep_io  # noqa: E402
@@ -78,7 +81,7 @@ PAIRS = {
     "front--hind (left)": ("Hind_Left", "Front_Left"),
 }
 
-full_width()
+half_width()
 
 
 def circular_centre(spans) -> float:
@@ -155,10 +158,23 @@ def measure(robot, meta):
 
 
 def plot_structure(points, band, duty_ref):
-    """The four structure panels against commanded speed."""
-    fig, axes = plt.subplots(2, 2, figsize=(TEXT_WIDTH_IN, 4.2))
+    """The four structure metrics against commanded speed, keyed by name.
+
+    One standalone half-width figure each, so they can be placed on the page in
+    pairs; the marker legend the shared canvas carried once now goes on every
+    panel, because each one stands on its own.
+    """
     v = np.array([p["speed"] for p in points])
     pinned = np.array([p["pinned"] for p in points])
+    figs = {}
+
+    def panel(name):
+        fig, ax = plt.subplots(figsize=HALF)
+        figs[name] = fig
+        ax.grid(alpha=0.3)
+        ax.margins(x=0.06)
+        ax.set_xlabel(r"forward speed [m\,s$^{-1}$]")
+        return ax
 
     def series(ax, y, colour, label=None):
         ax.plot(v, y, color=colour, lw=1.2, alpha=0.85, zorder=2, label=label)
@@ -168,8 +184,22 @@ def plot_structure(points, band, duty_ref):
                 markersize=4.5, markerfacecolor="none", markeredgewidth=0.9,
                 zorder=3)
 
+    def pinned_mark():
+        return Line2D([], [], color="0.35", linestyle="none", marker="o",
+                      markersize=4.5, markerfacecolor="none",
+                      markeredgewidth=0.9,
+                      label=rf"$T$ pinned ($\pm{band:.2f}$ s)")
+
+    def legend(ax, handles, **kw):
+        # 'science' draws legends frameless.  Inside the axes on a panel this
+        # size there is no corner free of data, so the box has to mask what it
+        # sits on; a legend placed above the axes overrides this and keeps none.
+        opts = dict(frameon=True, framealpha=0.92, edgecolor="0.8")
+        opts.update(kw)
+        return ax.legend(handles=handles, **opts)
+
     # ── duty factor ─────────────────────────────────────────────────────────
-    ax = axes[0, 0]
+    ax = panel("duty")
     duty = np.array([p["duty"] for p in points])
     lo = np.array([p["duty_lo"] for p in points])
     hi = np.array([p["duty_hi"] for p in points])
@@ -180,23 +210,34 @@ def plot_structure(points, band, duty_ref):
                 elinewidth=0.8, capsize=2, alpha=0.6, zorder=2)
     series(ax, duty, PALETTE[0])
     ax.annotate("half the cycle", xy=(0.02, 0.5), xycoords=("axes fraction", "data"),
-                fontsize=6.5, color="0.45", va="top")
+                fontsize=7, color="0.45", va="top")
     # The hypothesis is stated against the 0.5 line, so it has to be on the
     # panel with room above it even when every solution sits well below.
     ax.set_ylim(top=max(ax.get_ylim()[1], 0.53))
     ax.set_ylabel("duty factor [-]")
+    handles = [pinned_mark()]
+    if duty_ref:
+        handles.append(Line2D([], [], color="0.85", lw=6,
+                              label="reported for the dog paddle"))
+    # These two entries are as wide as the panel, so "best" has no free corner
+    # to find: open a strip above the 0.5 line and put them there, clear of the
+    # front and of the line's own label.
+    y0, y1 = ax.get_ylim()
+    ax.set_ylim(top=y1 + 0.45 * (y1 - y0))
+    legend(ax, handles, loc="upper center")
 
     # ── stride frequency ────────────────────────────────────────────────────
-    ax = axes[0, 1]
+    ax = panel("frequency")
     series(ax, np.array([p["freq"] for p in points]), PALETTE[1])
     # Without this, a sweep whose periods happen to agree to float precision
     # (an N-continuation, say) gets an axis zoomed onto 1e-12 of solver noise
     # and an offset label, which reads as structure that is not there.
     ax.ticklabel_format(axis="y", useOffset=False, style="plain")
     ax.set_ylabel(r"stride frequency $1/T$ [Hz]")
+    legend(ax, [pinned_mark()], loc="best")
 
     # ── inter-limb phase ────────────────────────────────────────────────────
-    ax = axes[1, 0]
+    ax = panel("phase")
     for i, name in enumerate(PAIRS):
         y = np.array([p["phases"].get(name, np.nan) for p in points])
         if np.isfinite(y).any():
@@ -204,31 +245,25 @@ def plot_structure(points, band, duty_ref):
     ax.set_ylim(0, 1)
     ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
     ax.set_ylabel("phase lag [cycles]")
-    ax.legend(loc="best", fontsize=6.5, frameon=True, framealpha=0.85,
-              handlelength=1.4)
+    # Three entries cover the front wherever they are put inside a panel this
+    # size, and the y-axis is a whole cycle by definition, so there is no
+    # headroom to open either: this one's legend goes above the axes.
+    legend(ax, ax.get_legend_handles_labels()[0] + [pinned_mark()],
+           loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2,
+           frameon=False, handlelength=1.4, columnspacing=1.2,
+           borderaxespad=0.2)
+    legend_row(ax.figure, ax, rows=2)
 
     # ── depth separation ────────────────────────────────────────────────────
-    ax = axes[1, 1]
+    ax = panel("depth")
     ax.axhline(0.0, color="0.45", lw=0.8, ls="--", zorder=1)
     series(ax, np.array([p["depth"] for p in points]), PALETTE[4])
     ax.set_ylabel("power stroke deeper by [mm]")
+    legend(ax, [pinned_mark()], loc="best")
 
-    for ax in axes.flat:
-        ax.grid(alpha=0.3)
-        ax.margins(x=0.06)
-    for ax in axes[1, :]:
-        ax.set_xlabel(r"commanded speed $v$ [m\,s$^{-1}$]")
-
-    marks = [Line2D([], [], color="0.35", linestyle="none", marker="o",
-                    markersize=4.5, markerfacecolor="none", markeredgewidth=0.9,
-                    label=rf"$T$ pinned at edge ($\pm{band:.2f}$ s)")]
-    if duty_ref:
-        marks.append(Line2D([], [], color="0.85", lw=6,
-                            label="reported for the dog paddle"))
-    fig.legend(handles=marks, loc="lower center", ncol=2, fontsize=7,
-               frameon=False, columnspacing=1.4, handlelength=1.8)
-    fig.tight_layout(pad=0.4, rect=(0, 0.06, 1, 1))
-    return fig
+    for fig in figs.values():
+        fig.tight_layout(pad=0.3)
+    return figs
 
 
 def check_against_grid(robot, meta):
@@ -271,7 +306,9 @@ def main():
                     help="assert power_spans matches plot_solution_legs on the "
                          "grid nodes, then continue")
     ap.add_argument("--save", type=Path, default=None,
-                    help="write the figure here (format from the extension)")
+                    help="write the figures here, one per metric, with the "
+                         "metric appended to the stem (format from the "
+                         "extension)")
     args = ap.parse_args()
 
     band = sweep_io.detect_band(sweep_io.load_rows(args.results))
@@ -308,10 +345,15 @@ def main():
     if args.check:
         print("  (power_spans matches plot_solution_legs on the grid nodes)")
 
-    fig = plot_structure(points, band, args.duty_ref)
+    figs = plot_structure(points, band, args.duty_ref)
     if args.save:
-        fig.savefig(args.save, dpi=300, bbox_inches="tight", pad_inches=0.15)
-        print(f"Saved → {args.save}")
+        for name, fig in figs.items():
+            path = args.save.with_name(f"{args.save.stem}_{name}{args.save.suffix}")
+            # Page = the canvas set above — the same half-text-width for all
+            # four, and only the phase panel taller, by its legend row; see the
+            # half_width() call at the top of the module.
+            fig.savefig(path, dpi=300)
+            print(f"Saved → {path}")
     else:
         plt.show()
 

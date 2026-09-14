@@ -8,12 +8,17 @@ Here the configurations come from a solved trajectory, so the figure shows what
 the optimiser actually made the leg do, and several solutions can be placed
 side by side.
 
-Each panel draws the leg's sagittal-plane centreline ``[hip, thigh, calf,
-foot]`` at evenly spaced instants of the cycle, plus the closed foot path over
-the whole cycle.  Everything is expressed in the **base frame** (base
-translation *and* rotation removed), because base heave and pitch over a swim
-cycle are comparable to the stroke itself — a world-frame plot would mostly
-show the body moving.
+Each panel draws the leg's sagittal-plane skeleton at evenly spaced instants of
+the cycle, plus the closed foot path over the whole cycle.  Everything is
+expressed in the **base frame** (base translation *and* rotation removed),
+because base heave and pitch over a swim cycle are comparable to the stroke
+itself — a world-frame plot would mostly show the body moving.
+
+The skeleton is the robot's cylinder chain, so a serial leg (amph) comes out as
+the connected run ``[hip, thigh, calf, foot]`` while a closed-chain leg (body2)
+comes out as its two sub-chains — the loop pins that join them are not in the
+tree model, so they are not drawn.  Every point that stays put in the base
+frame over the cycle is marked as a hip.
 
 Encoding:
   - colour   = cycle fraction, on a cyclic colormap (fraction 0 and 1 are the
@@ -72,38 +77,62 @@ POWER_COLOR, RECOVERY_COLOR = "#1f77b4", "#dbe7f3"
 
 
 def leg_traces(robot, X: np.ndarray, nq: int, leg: str):
-    """Base-frame ``(x, z)`` centreline per grid point, and the foot path.
+    """Base-frame ``(x, z)`` leg skeleton per grid point, and the foot path.
 
-    Returns ``(chains, foot_xz, vx)`` where ``chains`` is ``(K, 4, 2)`` over
-    ``[hip, thigh, calf, foot]``, ``foot_xz`` is ``(K, 2)``, and ``vx`` is the
-    ``(K,)`` foot velocity along x, negative on the power stroke.  The velocity
-    rather than the ``vx < 0`` flag, so ``power_segments`` can interpolate where
-    the stroke actually turns instead of rounding it to a grid point.
+    Returns ``(segs, foot_xz, vx, hips)`` where ``segs`` is ``(K, S, 2, 2)``
+    over the leg's ``S`` skeleton segments and their two endpoints, ``foot_xz``
+    is ``(K, 2)``, ``vx`` is the ``(K,)`` foot velocity along x — negative on
+    the power stroke — and ``hips`` is ``(H, 2)``.  The velocity rather than
+    the ``vx < 0`` flag, so ``power_segments`` can interpolate where the stroke
+    actually turns instead of rounding it to a grid point.
+
+    ``leg_skeleton`` rather than ``leg_centerline_positions``: the latter reads
+    a leg's Side/Thigh/Calf joints by name and so exists only for a serial leg,
+    while the cylinder chain is defined for every robot.  For a serial leg the
+    two agree — the chain *is* the centreline, minus the zero-length foot cap.
     """
     X_tree = expand_to_tree(robot, X, nq)
     nq_tree = robot.nq
     K = X.shape[1]
 
-    chains = np.zeros((K, 4, 2))
+    segs = None
     for k in range(K):
         robot.forward_kinematics(X_tree[:nq_tree, k])
         # oMi[1] is the free-flyer placement and is a view into robot.data, so
         # it must be read inside the loop.
         R_b = np.array(robot.data.oMi[1].rotation)
-        pos = robot.leg_centerline_positions(leg)
-        hip = pos["side"]
-        # Rotate into the base frame after removing the hip offset: subtracting
-        # world positions alone would leave the base's own pitch in the drawing.
-        pts = np.array([R_b.T @ (pos[key] - hip)
-                        for key in ("side", "thigh", "calf", "foot")])
-        chains[k] = pts[:, [0, 2]]
+        pts = np.array(robot.leg_skeleton(leg))          # (S, 2, 3), world frame
+        if segs is None:
+            segs = np.zeros((K,) + pts.shape[:2] + (2,))
+            # Which endpoint is the foot, rather than assuming the chain ends
+            # on it.  Taken off the skeleton so it carries the same sagittal
+            # projection as the drawn segments.
+            foot_ij = np.unravel_index(
+                np.linalg.norm(pts - robot.foot_positions()[leg], axis=-1).argmin(),
+                pts.shape[:2])
+        # Rotate into the base frame after removing the leg's mounting point
+        # (the first link's start): subtracting world positions alone would
+        # leave the base's own pitch in the drawing.
+        segs[k] = ((pts - pts[0, 0]) @ R_b)[:, :, [0, 2]]
 
-    foot_xz = chains[:, 3, :]
+    foot_xz = segs[:, foot_ij[0], foot_ij[1], :]
     # Power stroke = foot travelling backwards relative to the body.  Central
     # difference on the closed cycle; X's last column repeats the first.
     x = foot_xz[:, 0]
     vx = np.gradient(np.concatenate([x[:-1], x[:-1], x[:-1]]))[K - 1: 2 * (K - 1) + 1]
-    return chains, foot_xz, vx
+
+    # A link start that neither moves in the base frame nor meets another drawn
+    # link is mounted on the base: amph's one hip, body2's two hip servos.
+    # Marking them keeps a sub-chain that starts away from the origin from
+    # appearing to float.  Both halves of the test are needed — amph's thigh
+    # joint is fixed too (the OCP pins the side joints to zero) but continues
+    # the side link, while body2's parallelogram pin continues nothing drawn
+    # but moves.
+    starts, ends = segs[:, :, 0, :], segs[0, :, 1, :]
+    fixed = np.ptp(starts, axis=0).max(axis=1) < 1e-9
+    free = (np.linalg.norm(starts[0][:, None] - ends[None], axis=-1) > 1e-9).all(axis=1)
+    hips = np.unique(starts[0][fixed & free], axis=0)
+    return segs, foot_xz, vx, hips
 
 
 def load_all(paths, labels):
@@ -140,9 +169,9 @@ def all_traces(robot, sols, legs):
         for leg in legs:
             try:
                 traces[s["label"], leg] = leg_traces(robot, s["X"], s["nq"], leg)
-            except Exception as e:  # closed-chain robots have no Side/Thigh/Calf
+            except Exception as e:
                 raise SystemExit(
-                    f"{s['robot']}: cannot build a sagittal centreline for "
+                    f"{s['robot']}: cannot build a sagittal skeleton for "
                     f"{leg!r} ({e})"
                 )
     return traces
@@ -222,7 +251,7 @@ def plot_gait_timing(sols, legs, traces):
 
 
 def plot_solution_legs(sols, legs, n_frames: int, traces):
-    stacked = np.vstack([c.reshape(-1, 2) for c, _, _ in traces.values()])
+    stacked = np.vstack([segs.reshape(-1, 2) for segs, *_ in traces.values()])
     (x0, z0), (x1, z1) = stacked.min(0), stacked.max(0)
     mx, mz = 0.08 * (x1 - x0), 0.08 * (z1 - z0)
 
@@ -256,9 +285,9 @@ def plot_solution_legs(sols, legs, n_frames: int, traces):
     for row, col, leg, s in cells:
         ax = axes[row, col]
         ax.set_visible(True)
-        chains, foot_xz, vx = traces[s["label"], leg]
+        segs, foot_xz, vx, hips = traces[s["label"], leg]
         power = vx < 0
-        K = chains.shape[0]
+        K = segs.shape[0]
 
         # Closed foot path for the whole cycle, under the stick figures.
         ax.plot(foot_xz[:, 0], foot_xz[:, 1], "-", color="0.45", lw=1.2, zorder=1)
@@ -269,14 +298,16 @@ def plot_solution_legs(sols, legs, n_frames: int, traces):
         for k in idx:
             colour = cmap(norm(k / (K - 1)))
             lw, alpha = (2.4, 1.0) if power[k] else (1.1, 0.55)
-            pts = chains[k]
-            ax.plot(pts[:, 0], pts[:, 1], "-", color=colour, lw=lw, alpha=alpha,
-                    marker="o", ms=2.5, zorder=3 if power[k] else 2)
-            ax.plot(pts[-1, 0], pts[-1, 1], "o", color=colour,
-                    ms=6 if power[k] else 4, alpha=alpha,
-                    zorder=3 if power[k] else 2)
+            zo = 3 if power[k] else 2
+            # Segment by segment rather than as one polyline: a closed-chain
+            # leg's links do not form a single connected run.
+            for a, b in segs[k]:
+                ax.plot([a[0], b[0]], [a[1], b[1]], "-", color=colour, lw=lw,
+                        alpha=alpha, marker="o", ms=2.5, zorder=zo)
+            ax.plot(foot_xz[k, 0], foot_xz[k, 1], "o", color=colour,
+                    ms=6 if power[k] else 4, alpha=alpha, zorder=zo)
 
-        ax.plot(0, 0, "ks", ms=6, zorder=4)   # hip
+        ax.plot(hips[:, 0], hips[:, 1], "ks", ms=6, zorder=4)
         ax.set_xlim(x0 - mx, x1 + mx)
         ax.set_ylim(z0 - mz, z1 + mz)
         ax.set_aspect("equal")
@@ -357,8 +388,6 @@ def main():
         print(f"  {s['label']:<28s} T = {s['T']:.4f} s, N = {s['N']}, "
               f"{s['path']}")
 
-    if not hasattr(robot, "leg_centerline_positions"):
-        raise SystemExit(f"{sols[0]['robot']}: no sagittal centreline available")
     traces = all_traces(robot, sols, legs)
 
     fig = plot_solution_legs(sols, legs, args.frames, traces)

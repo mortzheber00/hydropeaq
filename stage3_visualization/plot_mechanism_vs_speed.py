@@ -146,7 +146,7 @@ def plot_mechanism(points, band):
               handlelength=1.4)
 
     for ax in axes:
-        ax.set_xlabel(r"speed $v$ [m\,s$^{-1}$]")
+        ax.set_xlabel(r"forward speed [m\,s$^{-1}$]")
         ax.grid(alpha=0.3)
         ax.margins(x=0.08)
 

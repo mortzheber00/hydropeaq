@@ -31,8 +31,14 @@ Run with no arguments for the slider viewer; ``Leg("BR").solve(q1, q2)`` gives t
 passive joint values for driving a simulator.  The viewer opens a second window
 holding the same leg in the optimiser's own coordinates -- see
 ``_optimiser_margin`` below.  ``--limits`` puts a box constraint on the two hip
-angles, the viewer's twin of bounding ``theta`` in the OCP, and ``--trajectory``
-draws a saved solution or initial guess across both windows.
+angles, the viewer's twin of bounding ``theta`` in the OCP -- ``--spec-limits``
+takes that box from stage1's own spec rather than the command line -- and
+``--trajectory`` draws a saved solution or initial guess across both windows.
+
+``--export out.pdf`` skips the viewer and writes that coordinate map as a
+thesis figure instead, in the shared style of ``stage3_visualization``.  It is
+the same painted set the viewer's second window shows -- one function draws
+both -- so what is checked interactively is what reaches the page.
 """
 
 import struct
@@ -485,13 +491,375 @@ def _box(limits):
     return box
 
 
+def _spec_hip_box(leg):
+    """The OCP's own box on this leg's two hips, in degrees, from the spec.
+
+    A solution ``.npz`` records which robot it was solved for but not the
+    bounds it was solved under, so there is nothing in the file to read: this
+    goes to that robot's spec instead and takes ``HIP_BOX``, the array
+    ``ocp_common.limits_for`` hands the OCP as ``theta_lower``/``theta_upper``.
+    It is therefore the box as the spec stands now, which is the solution's
+    only if the spec has not moved since it was written -- the file carries
+    nothing to check that against, the same gap ``hind_workspace.py`` reports
+    when it overlays a saved guess.
+
+    Indexed through that module's own ``LEG_NAMES`` rather than this one's
+    ``LEGS``, for the reason ``THETA_LEGS`` is spelled out below: the order is
+    somebody else's array's, not ours.  The two sides mount mirrored, so their
+    boxes negate and there is no single square for the robot -- the box is per
+    leg, and a figure drawing one leg's box on another would be drawing the
+    wrong constraint.
+    """
+    import sys
+
+    if str(STAGE1) not in sys.path:
+        sys.path.insert(0, str(STAGE1))
+    try:
+        from hydro_model.robots.body2 import HIP_BOX, LEG_NAMES
+    except ImportError as exc:
+        raise SystemExit(f"--spec-limits reads the box out of stage1's body2 "
+                         f"spec, which is not importable: {exc}")
+    i = 2 * LEG_NAMES.index(leg)
+    lo1, hi1 = np.degrees(HIP_BOX[i])
+    lo2, hi2 = np.degrees(HIP_BOX[i + 1])
+    # Through _box, so a spec box that cannot be drawn -- one excluding the zero
+    # pose the assembly branch is read off -- fails the way a typed one does.
+    return _box((lo1, hi1, lo2, hi2))
+
+
+def _box_of(limits, spec_limits):
+    """Resolve the two box flags into ``leg -> box or None``.
+
+    ``--spec-limits`` varies with the leg; an explicit ``--limits`` is one box
+    for whichever leg is drawn, and no flag at all is no box.
+    """
+    if spec_limits:
+        return _spec_hip_box
+    fixed = None if limits is None else _box(limits)
+    return lambda _: fixed
+
+
+# ---------------------------------------------------------------- the map
+
+# The thesis palette, i.e. stage3_visualization/thesis_style.py's ``PALETTE``,
+# by the index each is taken from.  It is spelled out rather than imported for
+# the reason ``urdf_joint`` is spelled out twice: importing that module is not
+# free, and here it is worse than not free -- it switches matplotlib to LaTeX
+# text rendering, which a viewer run has no business paying for.  Keep these in
+# step with it; they are the same five colours every figure in the thesis uses.
+CHAIN = ("#0173B2", "#B2182B")   # PALETTE[0], PALETTE[2]: the two hip chains
+ISLAND = "#66A61E"               # PALETTE[1]: the set reachable from zero pose
+# PALETTE[0], which is what hind_workspace.py draws its "trajectory" in; a
+# trajectory is the same object here, so it is the same colour.  That it is also
+# the colour of the map's own feasible half is what the casing in paint_map is
+# for -- see there.
+TRACE = "#0173B2"
+# Everything that is mechanism rather than identity stays greyscale, so that
+# inside the stick figure colour encodes exactly one thing: which chain a link
+# belongs to.  The joints, the ground and the foot are roles, not identities.
+FRAME = "0.2"
+
+
+def _inbox(Q1, Q2, box):
+    """Grid cells a ``--limits`` box admits; all of them when there is no box.
+
+    The comparison carries a tolerance far below the grid step, which is not
+    about where the edge belongs but about a cell that is *on* it: the grid
+    point nearest 66 deg comes out of ``linspace`` at 66.000000000000014, so a
+    bare ``<=`` drops it, and a box and its mirror image then keep different
+    columns.  --spec-limits makes that easy to walk into, both of its bounds
+    being exact multiples of the radian-to-degree conversion.
+    """
+    if box is None:
+        return np.ones(Q1.shape, bool)
+    eps = 1e-9
+    (a1, b1), (a2, b2) = box
+    d1, d2 = np.degrees(Q1), np.degrees(Q2)
+    return ((d1 >= a1 - eps) & (d1 <= b1 + eps)
+            & (d2 >= a2 - eps) & (d2 <= b2 + eps))
+
+
+def _reachable(leg, Q1, Q2, grid, inbox):
+    """Configurations reachable from the zero pose without taking the leg apart.
+
+    Assemblable (q1, q2) cells split into several islands; only the one holding
+    the zero pose can be driven to, so the rest are flooded away.  The hips are
+    continuous joints, hence the wrap-around neighbourhood -- a box constraint
+    needs no special case there, since wrapping from +180 to -180 has to cross
+    cells the box already masks out unless the box spans the full turn.
+
+    Returns the reachable mask over the (q1, q2) grid and the foot tips it
+    maps to: the set the viewer draws as the tip cloud in one window and as the
+    island boundary in the other.
+    """
+    sol = leg.solve(Q1, Q2)
+    ok = sol["ok"] & np.isfinite(sol["tip"][..., 0]) & inbox
+    n = len(grid)
+    seed = (int(np.argmin(np.abs(grid))),) * 2
+    reach = np.zeros_like(ok)
+    if ok[seed]:
+        reach[seed] = True
+        stack = [seed]
+        while stack:
+            r, c = stack.pop()
+            for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                nr, nc = nr % n, nc % n
+                if ok[nr, nc] and not reach[nr, nc]:
+                    reach[nr, nc] = True
+                    stack.append((nr, nc))
+    return reach, sol["tip"][reach]
+
+
+def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
+    """Paint one leg's optimiser coordinate map onto ``ax``; returns the image.
+
+    The colour field is the binding loop's half-chord: red where the leg cannot
+    be assembled at all, blue where it can, and the two black contours are the
+    assembly limit and the tighter bound stage1 actually constrains.  The
+    reachable island is the same set the viewer's other window draws as the
+    foot-tip cloud, so the two are readable side by side.
+
+    ``scale`` thins the linework for a figure printed at half the text width,
+    where the viewer's weights would be several times too heavy.  Everything
+    else is identical in both, which is the point of there being one painter:
+    the thesis figure cannot drift from the set that was checked on screen.
+    """
+    from matplotlib.patches import Rectangle
+
+    deg1, deg2 = np.degrees(Q1), np.degrees(Q2)
+    half = (deg1[0, 1] - deg1[0, 0]) / 2
+    lim = 180 + half
+    vmax = np.nanmax(margin)
+
+    im = ax.imshow(margin, origin="lower", extent=(-lim, lim, -lim, lim),
+                   cmap="RdBu", vmin=-vmax, vmax=vmax, interpolation="nearest")
+    # On all four legs of this build the assemblable set turns out to be a
+    # single island, so the green boundary lies exactly on the h = 0 contour.
+    # The island goes down first and thicker: the black line then stays on
+    # top with a green fringe instead of being painted over.
+    ax.contour(deg1, deg2, reach.astype(float), [0.5],
+               colors=ISLAND, linewidths=2.2 * scale)
+    ax.contour(deg1, deg2, margin, [0.0], colors="k", linewidths=1.0 * scale)
+    ax.contour(deg1, deg2, margin, [hmin_mm], colors="k",
+               linewidths=1.0 * scale, linestyles="dashed")
+    if box is not None:
+        # shade out what the constraint forbids, rather than cropping to it:
+        # the excluded structure is exactly what one wants to see when
+        # deciding whether the box is drawn in the right place.
+        veil = np.ones(Q1.shape + (4,))          # white, i.e. wash out
+        veil[..., 3] = np.where(inbox, 0.0, 0.62)
+        ax.imshow(veil, origin="lower", extent=(-lim, lim, -lim, lim),
+                  interpolation="nearest", zorder=4)
+        ax.add_patch(Rectangle((box[0][0], box[1][0]), box[0][1] - box[0][0],
+                               box[1][1] - box[1][0], fill=False, ec="k",
+                               lw=1.4 * scale, zorder=6))
+    if traj is not None:
+        # Cased in white.  The trajectory has to read over the whole field --
+        # near-white where it hugs the h = 2 mm bound, deep blue mid-band, and
+        # deep red on the guess that wanders out of the assemblable set, which
+        # is the one case this panel most needs to show -- and no single ink
+        # does that on a diverging map.  Uncased, the one colour that manages it
+        # is the island's green, which cannot be had.  The casing is what buys
+        # the freedom to pick the line off the palette on meaning instead: the
+        # thesis already draws a trajectory in PALETTE[0], and it stays that
+        # here even though the feasible half of this map is the same blue.
+        from matplotlib.patheffects import withStroke
+
+        ax.plot(*traj, "-", color=TRACE, lw=1.4 * scale, zorder=7,
+                path_effects=[withStroke(linewidth=2.8 * scale, foreground="w")])
+
+    ax.set_aspect("equal")
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_xticks(range(-180, 181, 90))
+    ax.set_yticks(range(-180, 181, 90))
+    return im
+
+
+def _map_trace(theta, leg):
+    """The leg's hip path in degrees, cut where it wraps, ready for ``paint_map``."""
+    i = THETA_LEGS.index(leg)
+    return _wrap_break(np.degrees(theta[2 * i]), np.degrees(theta[2 * i + 1]))
+
+
+# ------------------------------------------------------------ the stick figure
+
+# The pins each rigid body carries, in order along the bar -- the topology of
+# the module docstring, read as a kinematic diagram rather than as two exported
+# chains.  Three of the six links are ternary: 1.3 carries P3, P6 and P8, 2.1
+# carries P4, P5 and P6, and 2.3 carries P7, P8 and the foot.  On this build the
+# first two come out collinear to within a few microns, so every link draws as a
+# polyline; a filled triangle would be a sliver on two of the three.  ``TIP``
+# stands in for the foot, which is a point on 2.3 and not a pin.
+TIP = "tip"
+LINK_PINS = {"1.1": ("P1", "P2"), "1.2": ("P2", "P3"), "1.3": ("P3", "P6", "P8"),
+             "2.1": ("P4", "P5", "P6"), "2.2": ("P5", "P7"), "2.3": ("P7", "P8", TIP)}
+GROUND = ("P1", "P4")        # both hips are mounted on base_link
+ACTUATED = ("P1", "P4")      # ... and both are driven; the other six are free
+
+
+def _hatch(ax, a, b, away_from, colour, scale, n=7):
+    """Draw the fixed-frame hatching along the ground link ``a``-``b``.
+
+    The strokes go on the side of the link away from ``away_from``, which is
+    the foot: the mechanism hangs off the base, so that is the side with
+    nothing on it whichever way round the leg is mounted.
+    """
+    d = b - a
+    L = np.linalg.norm(d)
+    u = d / L
+    nrm = np.array([-u[1], u[0]])
+    if np.dot(nrm, away_from - (a + b) / 2) > 0:
+        nrm = -nrm
+    # 45 degrees to the link, the usual mark, and swept back along it so the
+    # strokes lean the same way rather than fanning.  Both the spacing and the
+    # stroke length scale with the link, which on this leg is only 2.8 cm long:
+    # a fixed stroke length closes the hatching up into a solid blob there.
+    step, run = L / n, 0.22 * L
+    for k in range(n + 1):
+        p = a + u * (step * k)
+        ax.plot(*np.array([p, p + (nrm - u) * run / 2]).T, "-",
+                color=colour, lw=0.6 * scale, zorder=2, solid_capstyle="butt")
+
+
+# The two loops ``_circle_circle`` closes, as (centre, centre, intersection).
+# Loop 1 is chain 1's, loop 2 is chain 2's, which is the order CHAIN is in.
+LOOPS = (("P2", "P6", "P3"), ("P5", "P8", "P7"))
+
+
+def _draw_loops(ax, P, scale, chain=CHAIN):
+    """Draw each loop's two construction circles and its half-chord ``h``.
+
+    These are the circles the closure actually intersects: one about each
+    centre pin, drawn through the intersection pin.  Their radii are therefore
+    the rigid link lengths the loop preserves, and can be measured off the pose
+    itself rather than passed in -- which is the same fact that makes the
+    closure solvable in the first place.
+
+    ``h`` is the perpendicular offset of the intersection pin from the line
+    joining the two centres: half the circles' common chord, and the quantity
+    the OCP holds away from zero.  It is drawn as that perpendicular, from its
+    foot on the centre line out to the pin, so the picture shows what shrinking
+    it means -- the two intersections merging as the circles fall tangent, which
+    is the only way the mechanism can change assembly branch.
+    """
+    from matplotlib.patches import Circle
+    from matplotlib.patheffects import withStroke
+
+    for (a, b, x), colour in zip(LOOPS, chain):
+        c1, c2, pin = P[a], P[b], P[x]
+        for c in (c1, c2):
+            ax.add_patch(Circle(c, np.linalg.norm(pin - c), fill=False,
+                                ec=colour, ls=":", lw=0.8 * scale, alpha=0.55,
+                                zorder=1))
+        d = c2 - c1
+        u = d / np.linalg.norm(d)
+        foot = c1 + u * np.dot(pin - c1, u)
+        ax.plot(*np.array([c1, c2]).T, "-", color=colour, lw=0.5 * scale,
+                alpha=0.5, zorder=1)
+        ax.plot(*np.array([foot, pin]).T, "-", color=FRAME, lw=1.3 * scale,
+                zorder=6, solid_capstyle="butt")
+        # Off the segment along the centre line: h is perpendicular to u, so
+        # stepping along u clears the stroke without drifting onto a bar.
+        ax.annotate(r"$h$", (foot + pin) / 2 + u * 0.4, fontsize=6, zorder=8,
+                    ha="center", va="center", color="0.15",
+                    path_effects=[withStroke(linewidth=1.3, foreground="w")])
+
+
+def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
+              circles=False):
+    """Paint one leg as a kinematic stick figure; lengths in cm.
+
+    This is the mechanism the viewer's first window draws as STL outlines,
+    reduced to what a thesis figure is actually making a claim about: the bars,
+    the eight pins, which two of them are driven, and where the foot is.  The
+    meshes carry no kinematic information the pins do not, and at half the text
+    width their triangles close up into a grey smear.
+
+    Colour carries one thing only, which chain a link belongs to; the joints,
+    the ground and the foot are roles rather than identities and stay in
+    ``FRAME`` grey, told apart by marker instead.  ``cloud`` is the reachable
+    foot-tip set to stipple behind it, optional and in metres as ``Leg.solve``
+    returns it.
+    """
+    from matplotlib.lines import Line2D
+
+    P = {k: np.asarray(v) * 100.0 for k, v in sol["pins"].items()}
+    P[TIP] = np.asarray(sol["tip"]) * 100.0
+
+    if cloud is not None and len(cloud):
+        # A swept grid is a point cloud, not a polygon; rasterised so the PDF
+        # does not carry one vector dot per sample.
+        ax.plot(cloud[:, 0] * 100, cloud[:, 1] * 100, ".", ms=0.7, color="0.88",
+                rasterized=True, zorder=0)
+
+    if circles:
+        _draw_loops(ax, P, scale, chain)
+
+    _hatch(ax, P["P1"], P["P4"], P[TIP], "0.45", scale)
+    ax.plot(*np.array([P["P1"], P["P4"]]).T, "-", color=FRAME, lw=2.2 * scale,
+            zorder=3, solid_capstyle="round")
+    for name, pins in LINK_PINS.items():
+        ax.plot(*np.array([P[k] for k in pins]).T, "-",
+                color=chain[0] if name[0] == "1" else chain[1],
+                lw=2.2 * scale, zorder=4, solid_capstyle="round",
+                solid_joinstyle="round")
+
+    passive = [k for k in P if k not in ACTUATED and k != TIP]
+    ax.plot(*np.array([P[k] for k in passive]).T, "o", ms=3.4 * scale, mfc="w",
+            mec=FRAME, mew=0.7 * scale, ls="", zorder=5)
+    ax.plot(*np.array([P[k] for k in ACTUATED]).T, "o", ms=4.4 * scale,
+            color=FRAME, ls="", zorder=6)
+    ax.plot(*P[TIP], "D", ms=4.6 * scale, color=FRAME, mec="w",
+            mew=0.6 * scale, zorder=7)
+
+    if labels:
+        from matplotlib.patheffects import withStroke
+
+        # A label is pushed off the bars that meet at its own pin -- away from
+        # the mean of the pins it is jointed to -- rather than radially off the
+        # mechanism's centre.  P3, P5 and P6 all sit near that centre, where a
+        # radial offset is both too short to clear anything and very nearly
+        # along link 1.3, so all three labels land on the bar.
+        nbr = {k: set() for k in P}
+        for pins in LINK_PINS.values():
+            for a in pins:
+                nbr[a] |= {b for b in pins if b != a}
+        nbr["P1"].add("P4")
+        nbr["P4"].add("P1")                     # the ground link joins these two
+        for name in (k for k in P if k != TIP):
+            off = P[name] - np.mean([P[k] for k in nbr[name]], axis=0)
+            n = np.linalg.norm(off)
+            off = off / n if n > 1e-9 else np.array([1.0, 0.0])
+            ax.annotate(name, P[name] + off * 0.95, fontsize=6, zorder=8,
+                        ha="center", va="center", color="0.15",
+                        path_effects=[withStroke(linewidth=1.3, foreground="w")])
+
+    ax.set_aspect("equal")
+    ax.set_xlabel(r"$x$ [cm]")
+    ax.set_ylabel(r"$z$ [cm]")
+    handles = [
+        Line2D([], [], color=chain[0], lw=1.4, label="chain 1"),
+        Line2D([], [], color=chain[1], lw=1.4, label="chain 2"),
+        Line2D([], [], color=FRAME, marker="o", ls="", ms=3.6, label="actuated"),
+        Line2D([], [], color=FRAME, marker="D", ls="", ms=4.0, label="foot"),
+    ]
+    if circles:
+        # Grey, because these two entries name a role: the circles themselves
+        # take their loop's chain colour, which the legend already explains.
+        handles += [
+            Line2D([], [], color="0.45", ls=":", lw=0.9, label="loop circles"),
+            Line2D([], [], color=FRAME, lw=1.3, label=r"half-chord $h$"),
+        ]
+    return handles
+
+
 # ---------------------------------------------------------------- viewer
 
-def main(limits=None, trajectory=None):
+def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.lines import Line2D
-    from matplotlib.patches import Rectangle
     from matplotlib.widgets import RadioButtons, Slider
 
     legs = {n: Leg(n) for n in LEGS}
@@ -501,18 +869,13 @@ def main(limits=None, trajectory=None):
     Q1, Q2 = np.meshgrid(grid, grid)
 
     # Optional box constraint on the hips, the viewer's twin of bounding theta
-    # in the OCP.  The mask is quantised to the grid, so the reachable set and
-    # the tip cloud snap to the nearest 2 deg cell while the drawn box is exact.
-    box = None if limits is None else _box(limits)
-    if box is None:
-        inbox = np.ones(Q1.shape, bool)
-    else:
-        (a1, b1), (a2, b2) = box
-        d1, d2 = np.degrees(Q1), np.degrees(Q2)
-        inbox = (d1 >= a1) & (d1 <= b1) & (d2 >= a2) & (d2 <= b2)
+    # in the OCP -- under --spec-limits it is that bound itself.  The mask is
+    # quantised to the grid, so the reachable set and the tip cloud snap to the
+    # nearest 2 deg cell while the drawn box is exact.  It follows the radio
+    # buttons, because the sides mount mirrored and their boxes negate.
+    box_of = _box_of(limits, spec_limits)
 
     theta, period = (None, None) if trajectory is None else _trajectory(trajectory)
-    TRACE = "#e6007e"                          # reads against RdBu, the island and the meshes
 
     fig = plt.figure(figsize=(11, 8))
     fig.subplots_adjust(left=0.28, right=0.97, bottom=0.16, top=0.94)
@@ -538,11 +901,12 @@ def main(limits=None, trajectory=None):
                    ha="center", color="crimson", weight="bold", visible=False)
     read = fig.text(0.02, 0.62, "", family="monospace", fontsize=8, va="top")
 
+    box = box_of(leg)
     (s1lo, s1hi), (s2lo, s2hi) = box if box is not None else ((-180, 180), (-180, 180))
     s1 = Slider(fig.add_axes([0.32, 0.07, 0.6, 0.03]), "Joint x1.1 [deg]", s1lo, s1hi, valinit=0)
     s2 = Slider(fig.add_axes([0.32, 0.02, 0.6, 0.03]), "Joint x2.1 [deg]", s2lo, s2hi, valinit=0)
-    radio = RadioButtons(fig.add_axes([0.02, 0.80, 0.12, 0.16]), LEGS, active=LEGS.index("BR"))
-    state = {"leg": "BR"}
+    radio = RadioButtons(fig.add_axes([0.02, 0.80, 0.12, 0.16]), LEGS, active=LEGS.index(leg))
+    state = {"leg": leg, "box": box, "inbox": _inbox(Q1, Q2, box)}
 
     # second window: the same leg in the coordinates stage1 optimises through
     opt = _optimiser_margin()
@@ -564,77 +928,14 @@ def main(limits=None, trajectory=None):
                       f"({verdict} the stage1 bound of {hmin_mm:g} mm)")
 
     def workspace(leg):
-        """Configurations reachable from the zero pose without taking the leg apart.
-
-        Assemblable (q1, q2) cells split into several islands; only the one holding
-        the zero pose can be driven to, so the rest are flooded away.  The hips are
-        continuous joints, hence the wrap-around neighbourhood -- a box constraint
-        needs no special case there, since wrapping from +180 to -180 has to cross
-        cells the box already masks out unless the box spans the full turn.
-
-        Returns the reachable mask over the (q1, q2) grid and the foot tips it
-        maps to: the same set drawn once in each of the viewer's two windows.
-        """
-        sol = leg.solve(Q1, Q2)
-        ok = sol["ok"] & np.isfinite(sol["tip"][..., 0]) & inbox
-        n = len(grid)
-        seed = (int(np.argmin(np.abs(grid))),) * 2
-        reach = np.zeros_like(ok)
-        if ok[seed]:
-            reach[seed] = True
-            stack = [seed]
-            while stack:
-                r, c = stack.pop()
-                for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                    nr, nc = nr % n, nc % n
-                    if ok[nr, nc] and not reach[nr, nc]:
-                        reach[nr, nc] = True
-                        stack.append((nr, nc))
-        return reach, sol["tip"][reach]
+        return _reachable(leg, Q1, Q2, grid, state["inbox"])
 
     def draw_map(name, reach):
-        """Redraw the optimiser-coordinate window for a newly picked leg.
-
-        The colour field is the binding loop's half-chord: red where the leg
-        cannot be assembled at all, blue where it can, and the two contours are
-        the assembly limit and the tighter bound stage1 actually constrains.
-        The reachable island is the same set the other window draws as the
-        foot-tip cloud, so the two are readable side by side.
-        """
-        margin = margin_of(name, Q1, Q2)
-        deg1, deg2 = np.degrees(Q1), np.degrees(Q2)
-        half = np.degrees(grid[1] - grid[0]) / 2
-        lim = 180 + half
-        vmax = np.nanmax(margin)
-
+        """Redraw the optimiser-coordinate window for a newly picked leg."""
         mapax.clear()
-        im = mapax.imshow(margin, origin="lower", extent=(-lim, lim, -lim, lim),
-                          cmap="RdBu", vmin=-vmax, vmax=vmax, interpolation="nearest")
-        # On all four legs of this build the assemblable set turns out to be a
-        # single island, so the green boundary lies exactly on the h = 0 contour.
-        # The island goes down first and thicker: the black line then stays on
-        # top with a green fringe instead of being painted over.
-        mapax.contour(deg1, deg2, reach.astype(float), [0.5],
-                      colors="#2ca02c", linewidths=2.2)
-        mapax.contour(deg1, deg2, margin, [0.0], colors="k", linewidths=1.0)
-        mapax.contour(deg1, deg2, margin, [hmin_mm], colors="k", linewidths=1.0,
-                      linestyles="dashed")
-        if box is not None:
-            # shade out what the constraint forbids, rather than cropping to it:
-            # the excluded structure is exactly what one wants to see when
-            # deciding whether the box is drawn in the right place.
-            veil = np.ones(Q1.shape + (4,))          # white, i.e. wash out
-            veil[..., 3] = np.where(inbox, 0.0, 0.62)
-            mapax.imshow(veil, origin="lower", extent=(-lim, lim, -lim, lim),
-                         interpolation="nearest", zorder=4)
-            mapax.add_patch(Rectangle((box[0][0], box[1][0]), box[0][1] - box[0][0],
-                                      box[1][1] - box[1][0], fill=False, ec="k",
-                                      lw=1.4, zorder=6))
-        if theta is not None:
-            i = THETA_LEGS.index(name)
-            tq1, tq2 = _wrap_break(np.degrees(theta[2 * i]), np.degrees(theta[2 * i + 1]))
-            mapax.plot(tq1, tq2, "-", color=TRACE, lw=1.4, zorder=7)
-            mapax.plot(tq1[:1], tq2[:1], "o", color=TRACE, ms=5, zorder=7)
+        im = paint_map(mapax, Q1, Q2, margin_of(name, Q1, Q2), reach,
+                       state["inbox"], state["box"], hmin_mm,
+                       None if theta is None else _map_trace(theta, name))
         mstate["marker"] = mapax.plot([], [], "o", ms=8, mfc="w", mec="k", zorder=5)[0]
         mstate["read"] = mapax.text(0.02, 0.02, "", transform=mapax.transAxes,
                                     family="monospace", fontsize=8, zorder=7,
@@ -646,23 +947,18 @@ def main(limits=None, trajectory=None):
         else:
             mstate["cbar"].update_normal(im)
 
-        mapax.set_aspect("equal")
-        mapax.set_xlim(-lim, lim)
-        mapax.set_ylim(-lim, lim)
-        mapax.set_xticks(range(-180, 181, 90))
-        mapax.set_yticks(range(-180, 181, 90))
         mapax.set_xlabel("q1  =  Joint x1.1 [deg]")
         mapax.set_ylabel("q2  =  Joint x2.1 [deg]")
         mapax.set_title(f"BODY2 leg {name} - optimiser coordinate map", weight="bold")
         mapax.legend(handles=[
-            Line2D([], [], color="#2ca02c", lw=2.2, label="reachable from zero pose"),
+            Line2D([], [], color=ISLAND, lw=2.2, label="reachable from zero pose"),
             Line2D([], [], color="k", lw=1.0, label="assembly limit  h = 0"),
             Line2D([], [], color="k", lw=1.0, ls="--",
                    label=f"stage1 bound  h = {hmin_mm:g} mm"),
             Line2D([], [], color="k", marker="o", ls="", mfc="w", ms=7,
                    label="current pose"),
         ] + ([Line2D([], [], color="k", lw=1.4, label="box constraint")]
-             if box is not None else [])
+             if state["box"] is not None else [])
           + ([Line2D([], [], color=TRACE, lw=1.4, label="trajectory")]
              if theta is not None else []),
             loc="upper right", fontsize=8, framealpha=0.9)
@@ -701,11 +997,25 @@ def main(limits=None, trajectory=None):
         read.set_text("\n".join(lines))
         fig.canvas.draw_idle()
 
+    def clamp(box):
+        """Re-range the sliders onto ``box``, pulling a now-outside pose inside."""
+        (lo1, hi1), (lo2, hi2) = box if box is not None else ((-180, 180), (-180, 180))
+        for s, lo, hi in ((s1, lo1, hi1), (s2, lo2, hi2)):
+            s.valmin, s.valmax = lo, hi
+            s.ax.set_xlim(lo, hi)
+            if not lo <= s.val <= hi:
+                s.set_val(min(max(s.val, lo), hi))       # fires draw()
+
     def pick(label):
         state["leg"] = label
+        state["box"] = box_of(label)
+        state["inbox"] = _inbox(Q1, Q2, state["box"])
         reach, w = workspace(legs[label])
         if mapax is not None:
             draw_map(label, reach)
+        # After draw_map, never before: clamping can fire draw(), which reads the
+        # marker that draw_map is what creates.
+        clamp(state["box"])
         cloud.set_data(w[:, 0], w[:, 1])
         xs, zs = w[:, 0], w[:, 1]
         if trace is not None:
@@ -729,25 +1039,258 @@ def main(limits=None, trajectory=None):
     s2.on_changed(draw)
     radio.on_clicked(pick)
     ax.legend(loc="upper right", fontsize=8)
-    pick("BR")
+    pick(leg)
     plt.show()
+
+
+# ---------------------------------------------------------------- thesis export
+
+# stage3_visualization/thesis_style.py carries the style every figure in the
+# thesis is drawn in.  It is reached across the same way STAGE1 is above --
+# optionally, one way, and only to draw; a viewer run never imports it, and
+# nothing there imports this.
+STAGE3 = PKG.parents[1] / "stage3_visualization"
+
+
+def _thesis_style():
+    """The shared thesis style, activated for a half-text-width figure.
+
+    Importing it switches matplotlib to the 'science' style with real LaTeX
+    text, so every label written from here on is TeX.
+    """
+    import sys
+
+    if str(STAGE3) not in sys.path:
+        sys.path.insert(0, str(STAGE3))
+    try:
+        import thesis_style
+    except ImportError as exc:
+        raise SystemExit(f"--export needs {STAGE3}/thesis_style.py and its "
+                         f"dependencies (scienceplots, a LaTeX install): {exc}")
+    thesis_style.half_width()
+    return thesis_style
+
+
+def _suffixed(path, name):
+    """``out.pdf`` -> ``out_leg.pdf``, so a row of panels shares one stem."""
+    path = Path(path)
+    return path.with_name(f"{path.stem}_{name}{path.suffix}")
+
+
+def _finish(fig, ax, handles):
+    """Put ``handles`` in a legend above the axes and lay the figure out.
+
+    The canvas stays the one thesis_style hands out, legend and all: both of
+    these panels are bound by the width left over beside their labels rather
+    than by height, so the legend's band comes out of height nothing was using.
+    Neither thesis_style.legend_row nor a rect reserving the band belongs here
+    then -- matplotlib's own tight_layout already makes room for a legend
+    hanging off the axes, and both would reserve it twice.
+
+    tight_layout runs once and only once: a colorbar attached with ``ax=ax``
+    takes its space out of that axes, so a second pass takes it a second time
+    and the panel walks inwards.
+    """
+    ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.01),
+              ncol=2, framealpha=0.0, handlelength=1.6, columnspacing=1.2,
+              borderaxespad=0.0)
+    fig.tight_layout()
+
+
+def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
+           spec_limits=False, pose=(0.0, 0.0), workspace=False,
+           circles=False):
+    """Write the two thesis panels for one leg, as ``<path>_leg`` and ``_map``.
+
+    Both are the viewer's two windows with the dressing changed: titles go (a
+    thesis figure is named by its caption), the pose marker and readout go
+    (there is no slider to move), each legend moves above its axes where it
+    cannot sit on the data, and the labels are TeX.  They are written to a
+    suffixed pair rather than to ``path`` itself so that a row of two shares one
+    stem, the way ``stage3_visualization/hind_workspace.py`` writes its pair.
+
+    The map goes through ``paint_map``, which also draws the viewer's, so the
+    set that reaches the page is the set that was checked on screen.  The leg
+    panel does not: the viewer draws STL outlines and this draws the kinematic
+    diagram, which is the claim a thesis figure is actually making, and at half
+    the text width the meshes close up into a grey smear anyway.
+
+    The sweep is finer than the viewer's 2 deg because a printed contour shows
+    the staircase that a screen at a third of the size hides.
+    """
+    style = _thesis_style()
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    if leg not in LEGS:
+        raise SystemExit(f"unknown leg {leg!r}; this robot has {LEGS}")
+    opt = _optimiser_margin()
+    if opt is None:
+        raise SystemExit("--export draws the optimiser's own coordinate map, so "
+                         "it needs stage1 and casadi importable")
+    margin_of, hmin_mm = opt
+
+    box = _box_of(limits, spec_limits)(leg)
+    grid = np.linspace(-np.pi, np.pi, resolution)
+    Q1, Q2 = np.meshgrid(grid, grid)
+    inbox = _inbox(Q1, Q2, box)
+    obj = Leg(leg)
+    reach, cloud = _reachable(obj, Q1, Q2, grid, inbox)
+
+    # The trajectory is drawn on the map only.  In hip coordinates it is a path
+    # through the constraint the map is a picture of, which is a claim; over the
+    # stick figure it would only be a second curve in a panel whose subject is
+    # the mechanism at one pose.
+    traj = None
+    if trajectory is not None:
+        theta, period = _trajectory(trajectory)
+        traj = _map_trace(theta, leg)
+        i = THETA_LEGS.index(leg)
+        h = margin_of(leg, theta[2 * i], theta[2 * i + 1]).min()
+        verdict = "inside" if h >= hmin_mm else "VIOLATES"
+        print(f"{trajectory}: {theta.shape[1]} samples over T = {period:.4f} s")
+        print(f"  {leg}: min loop half-chord {h:+8.2f} mm  "
+              f"({verdict} the stage1 bound of {hmin_mm:g} mm)")
+
+    # ---- the leg, as a kinematic stick figure
+    sol = obj.solve(*np.radians(pose))
+    if not sol["ok"]:
+        raise SystemExit(f"--pose {pose[0]:g} {pose[1]:g}: leg {leg} cannot be "
+                         f"assembled there, so there is no mechanism to draw")
+    legfig, legax = plt.subplots(figsize=style.HALF)
+    # Heavier than the map's 0.55: the mechanism is a small object next to the
+    # workspace it sweeps, so at the map's weights the bars that are the whole
+    # subject of the panel read as thinner than its grid.
+    handles = paint_leg(legax, sol, cloud if workspace else None, scale=0.85,
+                        circles=circles)
+    if workspace:
+        handles.append(Line2D([], [], color="0.88", marker="s", ls="", ms=4,
+                              label="workspace"))
+
+    # Framed on what the panel is about -- the bars -- and on the workspace only
+    # when it was asked for.  That cloud is a 13 cm disc once nothing bounds the
+    # hips, so framing to it by default would leave the mechanism at a seventh
+    # of the panel width, which is not a stick figure any more.  The map panel
+    # is where the reachable set is the claim being made; here it is background,
+    # and opt-in.
+    pts = np.array([np.asarray(p) for p in sol["pins"].values()]
+                   + [np.asarray(sol["tip"])]) * 100.0
+    if workspace and len(cloud):
+        pts = np.vstack([pts, cloud * 100.0])
+    if circles:
+        # A construction circle reaches a full link length past its centre
+        # pin, so framing on the pins alone would crop both of them.
+        Pc = {k: np.asarray(v) * 100.0 for k, v in sol["pins"].items()}
+        span = []
+        for a, b, x in LOOPS:
+            for c in (Pc[a], Pc[b]):
+                r = np.linalg.norm(Pc[x] - c)
+                span += [c + r, c - r]
+        pts = np.vstack([pts, np.array(span)])
+    lo, hi = pts.min(0), pts.max(0)
+    pad = 0.12 * max(hi - lo)
+    legax.set_xlim(lo[0] - pad, hi[0] + pad)
+    legax.set_ylim(lo[1] - pad, hi[1] + pad)
+    legax.grid(alpha=0.25, lw=0.4)
+    legax.set_axisbelow(True)
+    _finish(legfig, legax, handles)
+    leg_path = _suffixed(path, "leg")
+    legfig.savefig(leg_path, dpi=300)
+    print(f"Saved → {leg_path}")
+
+    # ---- the optimiser's coordinate map
+    fig, ax = plt.subplots(figsize=style.HALF)
+    im = paint_map(ax, Q1, Q2, margin_of(leg, Q1, Q2), reach, inbox, box,
+                   hmin_mm, traj, scale=0.55)
+    cbar = fig.colorbar(im, ax=ax, extend="min", pad=0.03, fraction=0.046)
+    cbar.set_label(r"$h$ [mm]")
+    cbar.ax.tick_params(length=2)
+    ax.set_xlabel(r"$q_1$ [deg]")
+    ax.set_ylabel(r"$q_2$ [deg]")
+    # The square comes out about 1.2 in wide, which is not enough for five
+    # labelled ticks: -180 and -90 touch.  The quadrant boundaries stay as
+    # minor ticks, so the axis still reads at 90 deg without the collision.
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_ticks(range(-180, 181, 180))
+        axis.set_ticks(range(-90, 91, 180), minor=True)
+
+    # Short labels on purpose: at half the text width a spelled-out legend is
+    # half the figure.  What each one means belongs in the caption.
+    handles = [
+        Line2D([], [], color=ISLAND, lw=1.2, label="reachable"),
+        Line2D([], [], color="k", lw=0.6, label=r"$h = 0$"),
+        Line2D([], [], color="k", lw=0.6, ls="--", label=rf"$h = {hmin_mm:g}$ mm"),
+    ]
+    if box is not None:
+        handles.append(Line2D([], [], color="k", lw=0.8, label="limits"))
+    if traj is not None:
+        handles.append(Line2D([], [], color=TRACE, lw=0.8, label="trajectory"))
+
+    _finish(fig, ax, handles)
+    map_path = _suffixed(path, "map")
+    fig.savefig(map_path, dpi=300)
+    print(f"Saved → {map_path}")
 
 
 if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="Interactive viewer for the BODY2 legs.")
-    ap.add_argument("--limits", nargs=4, type=float,
-                    metavar=("Q1MIN", "Q1MAX", "Q2MIN", "Q2MAX"),
-                    help="box constraint on the two hip angles, in degrees.  The "
-                         "sliders are clamped to it, the reachable set is flooded "
-                         "inside it only -- so the foot-tip workspace shows what the "
-                         "constrained leg can actually reach -- and the map shades "
-                         "out the rest.  Must contain the zero pose.")
+    lim = ap.add_mutually_exclusive_group()
+    lim.add_argument("--limits", nargs=4, type=float,
+                     metavar=("Q1MIN", "Q1MAX", "Q2MIN", "Q2MAX"),
+                     help="box constraint on the two hip angles, in degrees.  The "
+                          "sliders are clamped to it, the reachable set is flooded "
+                          "inside it only -- so the foot-tip workspace shows what the "
+                          "constrained leg can actually reach -- and the map shades "
+                          "out the rest.  Must contain the zero pose.")
+    lim.add_argument("--spec-limits", action="store_true",
+                     help="take that box from stage1's body2 spec instead of "
+                          "typing it: HIP_BOX, which is what bounds theta in the "
+                          "OCP, so a --trajectory is drawn against the limits it "
+                          "was solved under.  Note a solution .npz records no "
+                          "limits of its own, so this is the spec as it stands "
+                          "now.  The box is per leg -- the sides mount mirrored "
+                          "and theirs negate -- and follows the leg on screen.")
     ap.add_argument("--trajectory", metavar="NPZ",
-                    help="draw a stage1 solution or initial guess: the hip path on "
-                         "the coordinate map and the foot path on the leg.  Any "
-                         ".npz written by hydro_model.trajectory.save_solution for "
+                    help="draw a stage1 solution or initial guess: in the viewer "
+                         "the hip path on the coordinate map and the foot path on "
+                         "the leg, on --export the hip path only.  Any .npz "
+                         "written by hydro_model.trajectory.save_solution for "
                          "body2 in reduced coordinates.")
+    ap.add_argument("--leg", default="BR", choices=LEGS,
+                    help="leg to show; the viewer opens on it, --export writes it")
+    ap.add_argument("--export", metavar="PDF",
+                    help="skip the viewer and write thesis figures instead, in "
+                         "the shared style of stage3_visualization and each "
+                         "sized for a half-text-width slot so the two sit side "
+                         "by side.  Writes a suffixed pair, <stem>_leg and "
+                         "<stem>_map -- the leg as a kinematic stick figure at "
+                         "one pose, and the optimiser's coordinate map, which "
+                         "is the panel a --trajectory is drawn on.")
+    ap.add_argument("--pose", nargs=2, type=float, default=(0.0, 0.0),
+                    metavar=("Q1", "Q2"),
+                    help="hip angles in degrees for the pose the --export stick "
+                         "figure is drawn at, the twin of the viewer's sliders "
+                         "(default 0 0, the assembly pose)")
+    ap.add_argument("--workspace", action="store_true",
+                    help="draw the reachable foot-tip cloud behind the --export "
+                         "stick figure, and widen it to fit.  Off by default: "
+                         "unbounded that cloud is a 13 cm disc around a 12 cm "
+                         "leg, and framing to it shrinks the mechanism to a "
+                         "seventh of the panel.")
+    ap.add_argument("--circles", action="store_true",
+                    help="on the --export stick figure, draw the two "
+                         "construction circles of each loop and its "
+                         "half-chord h, the margin the OCP bounds away "
+                         "from zero.  Widens the panel to fit them.")
+    ap.add_argument("--resolution", type=int, default=361,
+                    help="sweep samples per hip axis for --export (default 361, "
+                         "i.e. 1 deg; the viewer always runs at 2 deg)")
     args = ap.parse_args()
-    main(args.limits, args.trajectory)
+    if args.export:
+        export(args.export, args.leg, args.limits, args.trajectory,
+               args.resolution, args.spec_limits, args.pose, args.workspace,
+               args.circles)
+    else:
+        main(args.limits, args.trajectory, args.leg, args.spec_limits)

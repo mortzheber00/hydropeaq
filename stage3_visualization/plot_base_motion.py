@@ -280,10 +280,10 @@ def motion_stats(X, T, N, nq):
     return {
         "mean speed [m/s]": (pos[0, -1] - pos[0, 0]) / T,
         "base vx world min/max [m/s]": (vel_world[0].min(), vel_world[0].max()),
-        "base x deviation pk-pk [mm]": dev[0].ptp() * 1e3,
-        "base y deviation pk-pk [mm]": dev[1].ptp() * 1e3,
-        "base z deviation pk-pk [mm]": dev[2].ptp() * 1e3,
-        "roll/pitch/yaw pk-pk [deg]": tuple(np.round(rpy.ptp(axis=1), 1)),
+        "base x deviation pk-pk [mm]": np.ptp(dev[0]) * 1e3,
+        "base y deviation pk-pk [mm]": np.ptp(dev[1]) * 1e3,
+        "base z deviation pk-pk [mm]": np.ptp(dev[2]) * 1e3,
+        "roll/pitch/yaw pk-pk [deg]": tuple(np.round(np.ptp(rpy, axis=1), 1)),
     }
 
 
