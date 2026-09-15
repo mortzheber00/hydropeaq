@@ -122,6 +122,11 @@ RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download
 COPY requirements.txt /tmp/requirements.txt
 RUN /opt/conda/envs/robot/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
+# ffmpeg for matplotlib video export (stage3_visualization/sph/leg_flow_slices.py).
+# Kept as a late layer so adding it does not invalidate the CUDA/conda layers above.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Expose ROS Noetic and system Python packages to the conda Python 3.8 env only.
 # A .pth file in site-packages is scoped to that interpreter — unlike PYTHONPATH
 # it never bleeds into the conda base Python 3.13, so the conda CLI keeps working.
