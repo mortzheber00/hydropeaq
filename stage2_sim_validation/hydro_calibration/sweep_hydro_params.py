@@ -23,7 +23,7 @@ than tuned to a single recording.
 
 Usage:
     python3 sweep_hydro_params.py [--ocp PATH...] [--bag PATH...] [--start T...]
-                                  [--method optimize|grid] [--grid-n N]
+                                  [--grid-n N]
 
 Options:
     --ocp PATH...   OCP solution .npz, one per bag   (default: /home/ws/task3_solution.npz)
@@ -32,8 +32,7 @@ Options:
                     (default: 0.0 -- the replay's start-pose phase runs first,
                     so this is almost never the value you want)
     --fix N=V...    Hold a coefficient out of the search, e.g. --fix Ca_t=1.0
-    --method        optimize (scipy diff-evol) or grid sweep
-    --grid-n INT    Grid points per param            (default: 5, grid mode only)
+    --grid-n INT    Grid points per param            (default: 5)
 """
 
 import argparse
@@ -43,7 +42,6 @@ from pathlib import Path
 
 import numpy as np
 from scipy.interpolate import interp1d
-from scipy.optimize import differential_evolution
 
 ROBOT = "amph"   # registered robot name; see hydro_model/robots/
 sys.path.insert(0, str(Path(__file__).parents[2]))
@@ -405,7 +403,7 @@ def make_objective(datasets, eval_fd, expand=None):
     The mean rather than the sum keeps the scale independent of how many runs
     are pooled, so DIVERGED_LOSS stays comparable across fits.
 
-    ``expand`` maps the optimiser's search vector to the full six coefficients,
+    ``expand`` maps the grid's search vector to the full six coefficients,
     so ``--fix`` can hold some of them out of the search entirely rather than
     pinning them with a degenerate bound.
     """
@@ -421,8 +419,8 @@ def make_objective(datasets, eval_fd, expand=None):
 
         loss = float(np.mean(losses))
         if not np.isfinite(loss):
-            # Diverged rollout: reject with a finite penalty so argmin and the
-            # DE selection stay well defined (a NaN would win argmin outright).
+            # Diverged rollout: reject with a finite penalty so argmin stays
+            # well defined (a NaN would win argmin outright).
             loss = DIVERGED_LOSS
 
         eval_count[0] += 1
@@ -458,9 +456,8 @@ def main():
     parser.add_argument("--fix", nargs="*", default=[], metavar="NAME=VALUE",
                         help="Hold a coefficient at a value instead of fitting it, "
                              "e.g. --fix Ca_t=1.0 Ca_a=0.05")
-    parser.add_argument("--method", choices=["optimize", "grid"], default="optimize")
     parser.add_argument("--grid-n", type=int, default=5,
-                        help="Grid points per parameter (grid mode only)")
+                        help="Grid points per parameter")
     args = parser.parse_args()
 
     if len(args.ocp) != len(args.bag):
@@ -527,36 +524,19 @@ def main():
     objective = make_objective(datasets, eval_fd, expand)
     search_bounds = [BOUNDS[i] for i in free]
 
-    # ── Optimise or grid ───────────────────────────────────────────────────
-    if args.method == "optimize":
-        print("Running differential_evolution …")
-        print(f"  Bounds: {dict(zip([PARAM_NAMES[i] for i in free], search_bounds))}\n")
-        result = differential_evolution(
-            objective,
-            search_bounds,
-            maxiter=300,
-            tol=1e-5,
-            seed=42,
-            workers=1,
-            disp=True,
-            init="sobol",
-        )
-        best = expand(result.x)
-        best_loss = result.fun
-
-    else:  # grid
-        n = args.grid_n
-        ndim = len(search_bounds)
-        print(f"Grid sweep: {n}^{ndim} = {n**ndim} evaluations …\n")
-        grids = [np.linspace(lo, hi, n) for (lo, hi) in search_bounds]
-        mesh = np.meshgrid(*grids, indexing="ij")
-        shape = mesh[0].shape
-        all_params = np.stack([m.ravel() for m in mesh], axis=1)
-        all_losses = np.array([objective(p) for p in all_params])
-        losses = all_losses.reshape(shape)
-        best_idx = np.unravel_index(np.argmin(losses), shape)
-        best = expand(np.array([mesh[i][best_idx] for i in range(ndim)]))
-        best_loss = float(losses[best_idx])
+    # ── Grid ───────────────────────────────────────────────────────────────
+    n = args.grid_n
+    ndim = len(search_bounds)
+    print(f"Grid sweep: {n}^{ndim} = {n**ndim} evaluations …\n")
+    grids = [np.linspace(lo, hi, n) for (lo, hi) in search_bounds]
+    mesh = np.meshgrid(*grids, indexing="ij")
+    shape = mesh[0].shape
+    all_params = np.stack([m.ravel() for m in mesh], axis=1)
+    all_losses = np.array([objective(p) for p in all_params])
+    losses = all_losses.reshape(shape)
+    best_idx = np.unravel_index(np.argmin(losses), shape)
+    best = expand(np.array([mesh[i][best_idx] for i in range(ndim)]))
+    best_loss = float(losses[best_idx])
 
 
     # ── Report ─────────────────────────────────────────────────────────────

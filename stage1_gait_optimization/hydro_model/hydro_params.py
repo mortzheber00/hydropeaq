@@ -7,9 +7,6 @@ coefficients -- the OCP (``trajopt/run_collocation.py``), the codesign solver,
 the prescribed-joint rollout, the diagnostics scripts -- therefore moves
 together when these values change.  Change them here and nowhere else.
 
-Fitted 2026-08-16 against the SPH bag by
-``stage2_sim_validation/hydro_calibration/sweep_hydro_params.py --method optimize``.
-
 Caveat on the fit: ``CD_A`` and ``CA_A`` both landed exactly on the lower edge
 of the sweep's search range, so they are bound artifacts rather than identified
 values -- the data wanted to push them lower still.  Treat the axial
