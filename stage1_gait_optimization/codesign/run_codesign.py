@@ -199,6 +199,10 @@ def _save(rows: list[dict], pareto_idx: list[int]) -> None:
     print(f"\nSaved summary + per-point npz to {OUT_DIR}")
 
 
+# Legend names where the figure label differs from the gait key.
+GAIT_LABELS = {"Prototype": "Inverse-kinematics"}
+
+
 def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
     try:
         import matplotlib
@@ -246,7 +250,7 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
     # Gait legend via marker shape (neutral colour, since colour now means T).
     handles = [
         Line2D([], [], marker=gait_marker[g], color="gray", linestyle="",
-               markeredgecolor="k", label=g)
+               markeredgecolor="k", label=GAIT_LABELS.get(g, g))
         for g in ev.GAITS
     ]
     handles.append(Line2D([], [], color="k", linestyle="--", label="Pareto front"))

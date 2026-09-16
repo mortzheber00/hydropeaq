@@ -44,7 +44,12 @@ same scale as the video.
 
 Outputs (in ``--out-dir``, ``<name>`` = ``leg_flow`` or ``leg_flow_top``):
 ``<name>_<field>.mp4`` (needs ffmpeg), or with ``--save-frames`` one still per
-frame, ``<name>_<field>_frame<k>.<format>``.
+frame, ``<name>_<field>_frame<k>.<format>``, or with ``--cycle START END`` one
+gait cycle as 8 snapshots at t = 0, T/8, ..., 7T/8 (T = END - START, times in
+simulation time like ``validate_sim.py --start``) in a 2x4 figure,
+``<name>_<field>_cycle[_<side>].<format>``. Each snapshot uses the export
+nearest to its phase; exports are 40 ms apart, so the printed table shows how
+far each one is off.
 
 Body indices follow the plugin's export order for ``amph/worlds/swimming_pool.world``:
 0-4 pool, 5 base, then Side/Thigh/Calf/Foot for FL (6-9), FR (10-13),
@@ -56,6 +61,8 @@ Usage:
   python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --field vorticity          # video
   python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --save-frames 55 61 67 \\
       --format pdf --speed-max 0.57 --vorticity-max 25                                      # thesis stills
+  python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --field vorticity --cycle 1.49 2.49 \\
+      --side Right                                                                          # one gait cycle, 2x4
   python stage3_visualization/sph/leg_flow_slices.py --view top --field vorticity --show
   python stage3_visualization/sph/leg_flow_slices.py --view top --depths -0.105 -0.125 -0.145 \\
       --res 0.002 --save-frames 61 --field vorticity                                        # depth stack
@@ -63,8 +70,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import pickle
 import re
+import resource
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -73,6 +84,7 @@ import pyvista as pv
 import vtk
 from matplotlib.animation import FFMpegWriter, FuncAnimation, writers
 from matplotlib.collections import LineCollection
+from matplotlib.ticker import MaxNLocator
 from matplotlib.widgets import Button, Slider
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
@@ -89,6 +101,8 @@ SIDE_BODIES = {
     "Right": [*range(10, 13), *range(18, 21)],  # Front Right, Hind Right
 }
 LEG_BODIES = sorted(b for bodies in SIDE_BODIES.values() for b in bodies)
+# Side (hip) link of each leg, used to place the leg's label.
+LEG_LABELS = {6: "FL", 10: "FR", 14: "HL", 18: "HR"}
 EXPORT_FPS = 25.0
 # Region that is entirely bulk water in the first frame (pool 2 x 1 m, filled to z = 0.25 m,
 # robot still above the surface); used for the particle spacing and the kernel-sum reference.
@@ -156,9 +170,48 @@ def streamlines(grid: pv.ImageData, fluid_pt: np.ndarray, spacing: float):
     ``grid`` holds the in-plane velocity with air/robot zeroed, so lines stop at
     the free surface and the legs. ``spacing`` is the distance between lines [m].
     Returns ``(lines, (xy, dxy))``.
+
+    VTK 9.3's ``vtkEvenlySpacedStreamlines2D`` segfaults on some inputs (it
+    depends on the exact field and spacing, and no filter setting avoids it). So
+    each attempt runs in a forked child: a crash costs only a retry with a
+    slightly different separating-distance ratio, then a slightly different
+    spacing (at most 10 %), instead of the whole run.
     """
+    empty = [], (np.empty((0, 2)), np.empty((0, 2)))
     if not fluid_pt.any():
-        return [], (np.empty((0, 2)), np.empty((0, 2)))
+        return empty
+    attempts = [(1.0, r) for r in (0.5, 0.45, 0.55, 0.4)] + [(s, 0.5) for s in (1.05, 0.95, 1.1, 0.9)]
+    for scale, ratio in attempts:
+        result = _in_child(_trace_streamlines, grid, fluid_pt, spacing * scale, ratio)
+        if result is not None:
+            return result
+    print("  WARNING: VTK streamline filter crashed on every retry; panel drawn without streamlines")
+    return empty
+
+
+def _in_child(fn, *args):
+    """``fn(*args)`` in a forked process; ``None`` if the child crashed."""
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # child: never return into the caller's code
+        status = 1
+        try:
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # a crash here is expected: no core dump
+            with os.fdopen(write_fd, "wb") as f:
+                pickle.dump(fn(*args), f)
+            status = 0
+        finally:
+            os._exit(status)
+    os.close(write_fd)
+    with os.fdopen(read_fd, "rb") as f:
+        payload = f.read()
+    _, status = os.waitpid(pid, 0)
+    if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0:
+        return pickle.loads(payload)
+    return None
+
+
+def _trace_streamlines(grid: pv.ImageData, fluid_pt: np.ndarray, spacing: float, ratio: float):
     # VTK grows every further line next to an existing one from a single seed, so
     # it cannot pass gaps narrower than the line spacing (e.g. under a foot), and a
     # seed next to air or a leg ends at once. So seed repeatedly at the water point
@@ -186,7 +239,8 @@ def streamlines(grid: pv.ImageData, fluid_pt: np.ndarray, spacing: float):
         hit[iz, ix] = True  # never reuse a seed, even if it yields no line
         work["velocity"] = vel0 * (dist.ravel() > stop)[:, None]
         sl = work.streamlines_evenly_spaced_2D(vectors="velocity", start_position=grid.points[iz * nx + ix],
-                                               separating_distance=sep_diag, compute_vorticity=False)
+                                               separating_distance=sep_diag,
+                                               separating_distance_ratio=ratio, compute_vorticity=False)
         conn, j = sl.lines, 0
         while j < len(conn):
             n = conn[j]
@@ -318,6 +372,8 @@ def collect(vtk_dir: Path, frames: list[int], view: str, depths: list[float],
                                         for b in pl["bodies"]]),
                 "base": section_segments(base, c, n, to_plane),
                 "guides": pl["guides"],
+                "labels": [(LEG_LABELS[b], to_plane(surface_centroid([meshes[b]])))
+                           for b in pl["bodies"] if b in LEG_LABELS],
             })
         print(f"frame {k} ({i + 1}/{len(frames)})", flush=True)
     return data, cut
@@ -414,6 +470,81 @@ def animate(data: dict, frames: list[int], view_name: str, extent: tuple, limits
     return fig, update, set_field, view
 
 
+def cycle_frames(start: float, end: float, available: list[int]) -> list[tuple[Fraction, int]]:
+    """``(phase, frame)`` for 8 phases k/8 of the cycle [start, end), each at the nearest export."""
+    period = end - start
+    picks = []
+    print(f"cycle T = {period:.3f} s, one picture every T/8 = {period / 8 * 1e3:.0f} ms "
+          f"(exports are {1e3 / EXPORT_FPS:.0f} ms apart):")
+    for k in range(8):
+        t = start + k * period / 8
+        frame = int(round(t * EXPORT_FPS)) + 1
+        if frame not in available:
+            raise ValueError(f"t = {t:.3f} s (frame {frame}) is outside the export "
+                             f"(frames {available[0]}-{available[-1]})")
+        t_frame = (frame - 1) / EXPORT_FPS
+        print(f"  {k}/8 T: target t = {t:.3f} s -> frame {frame} (t = {t_frame:.3f} s, "
+              f"{(t_frame - t) * 1e3:+.0f} ms = {(t_frame - t) / period * 100:+.1f} % of T)")
+        picks.append((Fraction(k, 8), frame))
+    if len({f for _, f in picks}) < 8:
+        print("  WARNING: T/8 is shorter than the export spacing, so some pictures repeat a frame")
+    return picks
+
+
+def phase_label(phase: Fraction) -> str:
+    if phase == 0:
+        return "$t = 0$"
+    num = "" if phase.numerator == 1 else str(phase.numerator)
+    return f"$t = {num}T/{phase.denominator}$"
+
+
+def cycle_figure(panels: list[dict], phases: list[Fraction], view_name: str, extent: tuple,
+                 limits: dict, field: str):
+    """One gait cycle as a 2 x 4 grid of snapshots sharing axes and one colour bar."""
+    aspect = (extent[3] - extent[2]) / (extent[1] - extent[0])
+    panel_w = (TEXT_WIDTH_IN - 0.7) / 4  # width left by the y labels
+    # "compressed" packs fixed-aspect panels without the gaps constrained layout leaves.
+    fig, axes = plt.subplots(2, 4, figsize=(TEXT_WIDTH_IN, 2 * panel_w * aspect + 1.25),
+                             sharex=True, sharey=True, layout="compressed")
+    spec = FIELDS[field]
+    label_y = extent[3] - 0.04 * (extent[3] - extent[2])
+    for ax, d, phase in zip(axes.flat, panels, phases):
+        im = ax.imshow(d[field], origin="lower", interpolation="bilinear", extent=extent,
+                       cmap=spec["cmap"], vmin=limits[field][0], vmax=limits[field][1])
+        ax.add_collection(LineCollection(d["lines"], colors=spec["stream"], linewidths=0.3, zorder=2))
+        xy, dxy = d["arrows"]
+        dxy = dxy / np.maximum(np.linalg.norm(dxy, axis=1, keepdims=True), 1e-12)
+        ax.quiver(xy[:, 0], xy[:, 1], dxy[:, 0], dxy[:, 1], color=spec["stream"], zorder=2,
+                  pivot="tip", angles="xy", scale=60, width=0.004,
+                  headwidth=4, headlength=5, headaxislength=4.5)
+        ax.add_collection(LineCollection(d["base"], colors="0.5", linewidths=0.5, zorder=3))
+        ax.add_collection(LineCollection(d["legs"], colors="k", linewidths=0.8, zorder=3))
+        for x in d["guides"]:
+            ax.axvline(x, color="0.3", lw=0.5, ls="--", zorder=1)
+        for text, (x, y) in d["labels"]:
+            if view_name == "side":  # above the leg, along the top edge
+                ax.text(x, label_y, text, ha="center", va="top", fontsize=7, zorder=4)
+            else:  # the top view has the hips inside the frame
+                ax.text(x, y, text, ha="center", va="center", fontsize=7, zorder=4,
+                        bbox=dict(facecolor="white", edgecolor="none", pad=0.5, alpha=0.8))
+        ax.text(0.97, 0.04, phase_label(phase), transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=8, zorder=5, bbox=dict(facecolor="white", edgecolor="none", pad=1.0, alpha=0.8))
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+        ax.set_aspect("equal")
+        ax.xaxis.set_major_locator(MaxNLocator(3))
+        ax.yaxis.set_major_locator(MaxNLocator(3))
+        ax.tick_params(labelsize=8)
+    fig.colorbar(im, ax=axes, location="top", shrink=0.6, aspect=40, label=spec["label"])
+    if view_name == "side":
+        fig.supxlabel("forward from centroid of both legs [m]", fontsize="medium")
+        fig.supylabel("up [m]", fontsize="medium")
+    else:
+        fig.supxlabel("right [m]", fontsize="medium")
+        fig.supylabel("forward from base centre [m]", fontsize="medium")
+    return fig
+
+
 def show_player(fig, update, set_field, view, frames: list[int], fps: float):
     """Interactive window: frame slider, previous/next, play/pause and a field toggle."""
     fig.get_layout_engine().set(rect=(0, 0.1, 1, 0.9))  # free a strip at the bottom
@@ -475,16 +606,19 @@ def main():
     ap.add_argument("--kernel-support", type=float, default=None,
                     help="SPH kernel support radius [m] (default: 3x particle spacing; "
                          "SPlisHSPlasH itself uses 4x particle radius)")
-    ap.add_argument("--stream-spacing", type=float, default=0.017,
-                    help="distance between streamlines [m]")
+    ap.add_argument("--stream-spacing", type=float, default=None,
+                    help="distance between streamlines [m] (default: 0.017; 0.03 for --cycle)")
     ap.add_argument("--view", choices=["side", "top"], default="side",
                     help="side: sagittal slice per side; top: horizontal body-frame slice per depth")
     ap.add_argument("--depths", type=float, nargs="+", default=[-0.125], metavar="Z",
                     help="top view: body-frame heights below (-) the base centre, one panel each [m]")
     ap.add_argument("--half-width", type=float, default=0.28,
                     help="side view: horizontal half-size of the window around the leg centroid [m]")
-    ap.add_argument("--half-height", type=float, default=0.16,
-                    help="side view: vertical half-size of the window around the leg centroid [m]")
+    ap.add_argument("--up", type=float, default=0.16,
+                    help="side view: window height above the leg centroid [m]")
+    ap.add_argument("--down", type=float, default=0.22,
+                    help="side view: window depth below the leg centroid [m] "
+                         "(the feet reach about 0.19 below it)")
     ap.add_argument("--top-extent", type=float, nargs=3, default=[-0.45, 0.30, 0.25],
                     metavar=("BACK", "FRONT", "HALF_LAT"),
                     help="top view: forward range and lateral half-size around the base centre [m]")
@@ -496,20 +630,40 @@ def main():
                     help="fixed +/- colour limit for vorticity [1/s] (default: 99th percentile)")
     ap.add_argument("--save-frames", type=int, nargs="+", default=None, metavar="K",
                     help="save stills of these exported frame numbers instead of a video")
+    ap.add_argument("--cycle", type=float, nargs=2, default=None, metavar=("START", "END"),
+                    help="save one gait cycle [START, END) in simulation time [s] as 8 snapshots "
+                         "at t = 0, T/8, ..., 7T/8 in a 2x4 figure (START as for validate_sim.py --start)")
+    ap.add_argument("--side", choices=list(SIDE_BODIES), default="Left",
+                    help="side view with --cycle: which side's leg plane to show")
     ap.add_argument("--format", choices=["pdf", "png", "svg"], default="pdf", help="format of the stills")
     ap.add_argument("--dpi", type=int, default=None,
                     help="resolution (default: 300 for stills, 250 for the video)")
     ap.add_argument("--show", action="store_true",
                     help="open an interactive player (slider, prev/next, play/pause, field) instead of saving")
     args = ap.parse_args()
+    if args.cycle is not None:
+        if args.show or args.save_frames is not None:
+            ap.error("--cycle cannot be combined with --show or --save-frames")
+        if args.view == "top" and len(args.depths) != 1:
+            ap.error("--cycle with --view top needs a single --depths value")
+        if args.cycle[1] <= args.cycle[0]:
+            ap.error("--cycle END must be after START")
+    if args.stream_spacing is None:
+        args.stream_spacing = 0.03 if args.cycle is not None else 0.017
     if not args.show:
         plt.switch_backend("Agg")  # no Qt window needed (avoids Qt's XDG_RUNTIME_DIR warning)
-        if args.save_frames is None and not writers.is_available("ffmpeg"):
+        if args.save_frames is None and args.cycle is None and not writers.is_available("ffmpeg"):
             ap.error("saving the video needs ffmpeg on PATH (installed by the dev container; "
                      "otherwise `sudo apt install ffmpeg`)")
 
     all_frames = frame_numbers(args.vtk_dir)
-    if args.save_frames is not None:
+    if args.cycle is not None:
+        try:
+            picks = cycle_frames(*args.cycle, all_frames)
+        except ValueError as err:
+            ap.error(str(err))
+        frames = [frame for _, frame in picks]
+    elif args.save_frames is not None:
         missing = sorted(set(args.save_frames) - set(all_frames))
         if missing:
             ap.error(f"frames {missing} are not exported (available: {all_frames[0]}-{all_frames[-1]})")
@@ -517,12 +671,15 @@ def main():
     else:
         frames = all_frames[::args.every]
     if args.view == "side":
-        extent = (-args.half_width, args.half_width, -args.half_height, args.half_height)
+        extent = (-args.half_width, args.half_width, -args.down, args.up)
     else:
         back, front, half_lat = args.top_extent
         extent = (-half_lat, half_lat, back, front)
     data, support = collect(args.vtk_dir, frames, args.view, args.depths, extent, args.res,
                             args.kernel_support, args.stream_spacing)
+    if args.cycle is not None:  # only the shown panel sets the colour limits
+        data = {key: panels for key, panels in data.items()
+                if key == (args.side if args.view == "side" else next(iter(data)))}
 
     def pooled(key):
         vals = np.concatenate([d[key].ravel() for panel in data.values() for d in panel])
@@ -535,11 +692,20 @@ def main():
     print(f"SPH kernel support {support * 1e3:.1f} mm; "
           f"colour limits: --speed-max {speed_max:.3g} --vorticity-max {vort_max:.3g}")
 
-    fig, update, set_field, view = animate(data, frames, args.view, extent, limits, args.field,
-                                           scale=1.6 if args.show else 1.0)
     name = "leg_flow" if args.view == "side" else "leg_flow_top"
     if not args.show:
         args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.cycle is not None:
+        panels = next(iter(data.values()))
+        fig = cycle_figure(panels, [phase for phase, _ in picks], args.view, extent, limits, args.field)
+        tag = f"_{args.side.lower()}" if args.view == "side" else ""
+        out = args.out_dir / f"{name}_{args.field}_cycle{tag}.{args.format}"
+        fig.savefig(out, dpi=args.dpi or 300)
+        print(f"wrote {out}")
+        return
+
+    fig, update, set_field, view = animate(data, frames, args.view, extent, limits, args.field,
+                                           scale=1.6 if args.show else 1.0)
     if args.show:
         show_player(fig, update, set_field, view, frames, args.fps)
     elif args.save_frames is not None:
