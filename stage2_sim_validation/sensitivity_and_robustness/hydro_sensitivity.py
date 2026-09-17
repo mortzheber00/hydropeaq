@@ -1,35 +1,14 @@
 #!/usr/bin/env python3
-"""
-Hydrodynamic-coefficient sensitivity of the gait OCP, by re-optimisation.
+"""Sensitivity of the optimal gait to the hydrodynamic coefficients.
 
-Throwaway analysis script — not part of the pipeline.  Perturbs each calibrated
-coefficient by +-25% one at a time, re-solves the OCP, and records how far the
-optimum moves.  The speed floor pins v at ``v_target`` in every run, so all
-solutions sit at the same operating point and COT is the clean single output.
+Scales each coefficient by +-25 % (one at a time), re-solves the OCP and
+reports the change in COT and joint motion. All solves are warm-started from
+the same nominal solution so they stay on one solution branch; cold starts
+would mostly measure jumps between local optima. Main effects only, no
+interactions. Plot the result with plot_hydro_sensitivity.py.
 
-Every perturbed solve is warm-started from the same nominal solution, and that
-is the whole design.  Cold-starting would measure which local optimum the solver
-happened to fall into: the two continuation ladders on this problem reached
-optima 33% apart in COT, far more than a +-25% coefficient move is expected to
-produce, so cold starts would drown the signal in basin-hopping.  Warm-starting
-follows one solution branch, which means these numbers are the sensitivity of
-*that* optimum — state that limitation when reporting them, because a different
-branch may well have different sensitivities.
-
-``Cd_lin_t`` and ``Cd_lin_a`` take their own values from ``hydro_params`` rather
-than falling back to ``Cd_t``/``Cd_a``, so perturbing a quadratic drag
-coefficient really does leave the linear damping alone.  (The class docstring in
-``dynamics.py`` still says otherwise; the signature is what runs.)
-
-One-at-a-time perturbation gives main effects only.  ``Cd_t`` and ``Cd_a`` both
-scale drag, so interactions between them are plausible and are not measured
-here — say so alongside the tornado.  A 2^4 factorial would capture them for
-16 solves instead of 8.
-
-Run:
-    python hydro_sensitivity.py --seed sweep_results/<tag>_N64_solution.npz
-
-Then draw the tornado from the logged runs.
+Usage:
+  python stage2_sim_validation/sensitivity_and_robustness/hydro_sensitivity.py --seed sweep_results/<tag>_N64_solution.npz
 """
 from __future__ import annotations
 
@@ -58,8 +37,8 @@ from ocp_common import (                                             # noqa: E40
     tangent_to_legacy,
 )
 
-# The four calibrated coefficients, in the order the tornado will list them
-# before sorting.  Keys are SymbolicDynamics kwargs.
+# Perturbed coefficients (SymbolicDynamics kwargs). Cd_lin_* keep their own
+# defaults, so scaling Cd_t/Cd_a does not change the linear damping.
 COEFFS = ("Cd_t", "Cd_a", "Ca_t", "Ca_a")
 NOMINAL = {
     "Cd_t": hydro_params.CD_T,
@@ -76,7 +55,7 @@ GRAVITY = 9.81
 
 
 def coefficients(coef: str | None, factor: float) -> dict:
-    """The full coefficient set with one entry scaled (all nominal if None)."""
+    """Nominal coefficients with ``coef`` scaled by ``1 + factor``."""
     vals = dict(NOMINAL)
     if coef is not None:
         vals[coef] = NOMINAL[coef] * (1.0 + factor)
@@ -84,7 +63,7 @@ def coefficients(coef: str | None, factor: float) -> dict:
 
 
 def cot_of(X, U, Xc, T, robot, B, d) -> float:
-    """Cost of transport, energy integrated on the collocation quadrature."""
+    """Cost of transport with energy integrated on the collocation points."""
     n = U.shape[1]
     dt = T / n
     vc = Xc[slice(12 + robot.n_actuated, 2 * robot.nv_reduced), :]
@@ -99,7 +78,7 @@ def cot_of(X, U, Xc, T, robot, B, d) -> float:
 
 def solve_case(robot, cfg, n, X_guess, U_guess, gait, robot_name,
                coef, factor, tag, B):
-    """Build the perturbed dynamics, solve warm-started, log one MLflow run."""
+    """Solve one (possibly perturbed) case warm-started and log it to MLflow."""
     vals = coefficients(coef, factor)
     label = "nominal" if coef is None else f"{coef}{factor:+.0%}".replace("%", "pct")
     nq = robot.nq_reduced
@@ -109,8 +88,7 @@ def solve_case(robot, cfg, n, X_guess, U_guess, gait, robot_name,
     print(f"\n{'=' * 70}\n  {label}: " +
           "  ".join(f"{k}={v:.4f}" for k, v in vals.items()) + f"\n{'=' * 70}")
 
-    # Rebuilt per case: the coefficients are baked into the symbolic
-    # expressions, so there is no cheaper way to change them.
+    # Coefficients are baked into the expressions, so rebuild per case.
     dyn = SymbolicDynamics(robot, **vals)
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -126,7 +104,6 @@ def solve_case(robot, cfg, n, X_guess, U_guess, gait, robot_name,
             "ENFORCE_SYMMETRY": False, "SYMMETRY_PHASE": None,
             "W_POWER": cfg.w_power, "W_DIST": cfg.w_dist,
             "W_VEL_SMOOTH": cfg.w_vel_smooth, "W_DRIFT": cfg.w_drift,
-            # What makes this run part of the sensitivity sweep.
             "sweep": "hydro_sensitivity",
             "sweep_tag": tag,
             "perturbed": "none" if coef is None else coef,
@@ -215,9 +192,7 @@ def main():
         results.append(solve_case(robot, cfg, n, X_guess, U_guess, gait,
                                   args.robot, coef, factor, tag, B))
 
-    # Trajectory distance is measured against the nominal *re-solve*, not the
-    # seed: the seed may have come from a different N or a different solver
-    # configuration, and only the re-solve shares this run's protocol.
+    # Compare against the nominal re-solve, not the seed (which may differ in setup).
     base = results[0]
     q0 = np.degrees(base["X"][7:7 + robot.n_actuated, :])
     print(f"\n{'=' * 70}")

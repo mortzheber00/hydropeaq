@@ -1,77 +1,20 @@
 #!/usr/bin/env python3
-"""The numbers \\cref{sec:results-structure} quotes: how the stroke earns thrust.
+"""Stroke-structure numbers for the thesis (results-structure section).
 
-``gait_diagnostics.py`` already reports the per-leg impulse split and
-``plot_stroke_benefit.py`` the frozen-leg counterfactual; both are figures with a
-report attached.  What is missing, and what this script adds, is the three
-measurements the thesis argues from that neither of them computes:
+1. Power-stroke duty fraction per leg and number of separate sweeps.
+2. Submerged fraction of thigh and calf in power vs recovery, with the spread
+   within each phase (more robust than foot depth).
+3. Frozen-leg baseline: drag with the leg held at its mean pose and at the best
+   pose from a (thigh, calf) grid search. The base motion stays as solved, so
+   this attributes thrust but does not compare gaits.
+4. Front-vs-hind shape mismatch: best and worst alignment residual.
 
-  1. **The power-stroke fraction**, Radau-weighted, per leg.  It is the share of
-     the cycle in which the foot moves backwards relative to the hull, and the
-     thesis compares it against the 25/33/50 % duty fractions of the seed gaits.
-     Reported as a share AND as a count of separate windows, because the stroke
-     is not one contiguous sweep -- see \\cref{sec:results-nominal}.
-
-  2. **The submersion asymmetry** ``alpha_pow`` against ``alpha_rec``: the mean
-     submerged fraction of a leg link over the power and the recovery phase.
-     This is the mechanism H3 predicts -- lift the leg on the return so it drags
-     less -- and it has to be measured rather than assumed, because the
-     optimizer is free to buy the same asymmetry through speed instead.
-
-     **Why the submerged fraction and not the depth of the foot.**  Foot depth
-     was the obvious first choice and it is a bad metric here.  The hind foot
-     travels between 14 mm and 177 mm below the surface WITHIN its power phase,
-     so the phase mean carries a standard deviation of 49 mm while the quantity
-     it is being used to compare -- the power-minus-recovery difference -- is
-     4 mm.  A number thirteen times smaller than its own scatter cannot support
-     a claim.  The submerged fraction has none of that problem: it is bounded in
-     [0, 1], it saturates, and it is what the drag law is actually a function
-     of.  It is also what explains the hind legs, whose calf sits at alpha ~ 1
-     however deep the foot happens to be, so a large vertical excursion buys
-     them nothing.  Reported per link, with the within-phase spread, so a mean
-     that is not representative shows up as one.
-
-  3. **The best frozen-leg baseline.**  ``plot_stroke_benefit.py`` asks whether
-     a leg's motion is worth its drag by freezing it at its CYCLE-MEAN pose.
-     That baseline is arbitrary and it flatters the stroke: the cycle mean of a
-     trajectory optimized for stroking has no reason to be a good pose to hold,
-     and here it is a bad one.  The honest baseline is the BEST pose the leg
-     could be held at, which is what a designer choosing to keep a leg still
-     would pick.  It is found by sweeping the leg's (thigh, calf) box -- the
-     side joint is pinned to zero by the pose constraints -- and taking the pose
-     with the least rearward cycle-mean force.
-
-     This changes the conclusion for the hind legs, so it is not a refinement.
-     Against the mean pose all four legs gain; against the best pose only the
-     front pair does.
-
-     What the counterfactual does NOT say: that retracting the hind legs is a
-     better gait.  The base motion is held as solved, and that base motion was
-     produced with the hind legs stroking, so this is an attribution at the
-     solved trajectory and not a comparison of two gaits.  Answering the design
-     question properly means re-solving the OCP with the hind legs pinned.
-
-  4. **The front-versus-hind shape mismatch.**  Within a pair the legs are
-     mirror copies by construction (the symmetry constraint), so the only
-     asymmetry left to discover is front against hind.  It is quantified by
-     aligning the front-left and hind-left joint trajectories at every relative
-     phase and reporting the best and the worst residual: if even the best
-     alignment leaves a large residual, the two pairs share no stroke shape and
-     no front--hind phase offset is meaningful.
-
-**Terminology, which has bitten once.**  "Power phase" here is always the
-KINEMATIC one, ``v_foot_x < 0`` in the base frame -- the interval in which the
-foot sweeps backwards.  It is NOT the interval of positive joint power
-(``tau qdot > 0``), which \\cref{sec:results-nominal} reports and which is a
-different set of samples.  The two are never given the same unqualified name.
-
-Everything is sampled at the collocation points and averaged on the Radau
-weights, as everywhere else in stage 3: the points are not equally spaced, so an
-unweighted mean over half a cycle silently reweights it.
+"Power stroke" always means ``v_foot_x < 0`` in the base frame, not positive
+joint power. All averages use Radau weights at the collocation points.
 
 Usage:
-  python stroke_asymmetry.py
-  python stroke_asymmetry.py --solution <npz>
+  python stage3_visualization/metrics/stroke_asymmetry.py
+  python stage3_visualization/metrics/stroke_asymmetry.py --solution <npz> --grid 13
 """
 from __future__ import annotations
 
@@ -106,19 +49,12 @@ _DEFAULT_SOLUTION = (_ROOT / "experiment_results" / "mlruns" / "2" /
 
 LEGS = ("Front_Left", "Front_Right", "Hind_Left", "Hind_Right")
 
-# The duty fractions the seed gaits prescribe, from the source they come from.
-# The thesis compares the converged fraction against these: the optimizer was
-# handed three of them and is free to keep one.
+# Power-phase fractions of the seed gaits, for comparison
 SEED_DUTY = {"LSPG25": 0.25, "LSPG33": 0.33, "TLPG50": 0.50}
 
 
 def link_submersion(robot, Xc, nq, link_name) -> np.ndarray:
-    """Submerged fraction of one link, per collocation sample.
-
-    ``drag_model.submersion_ratio`` via ``link_drag_terms``, i.e. the same
-    quantity the drag law multiplies by -- not a re-derivation of it, so the
-    asymmetry reported here is the one the solver actually saw.
-    """
+    """Submerged fraction of one link per collocation sample (as used by the drag model)."""
     out = np.empty(Xc.shape[1])
     for t in range(Xc.shape[1]):
         q = Xc[:nq, t]
@@ -128,21 +64,10 @@ def link_submersion(robot, Xc, nq, link_name) -> np.ndarray:
 
 
 def best_frozen_pose(robot, Xc, nq, N, leg, grid: int = 21):
-    """The held pose costing the least rearward force, and what it costs.
+    """Held (thigh, calf) pose with the least rearward drag, via a grid over the joint box.
 
-    Swept over the leg's own joint-angle box, so the pose is one the robot can
-    actually adopt.  Only thigh and calf are searched: the side joint is pinned
-    to zero by the pose constraints, and holding it elsewhere would compare
-    against a pose the OCP was never allowed to use.
-
-    Returns ``(force, (thigh, calf), alpha_calf)``.  The submersion of the calf
-    at the winning pose comes back with it because it is the explanation: the
-    optimum is the leg folded up with its calf clear of the water, and a reader
-    should not have to take that on trust.
-
-    Cost is ``grid**2`` cycle evaluations per leg, which is the reason this is a
-    coarse sweep and not a solve.  The optimum sits in a corner of the box, so
-    resolution buys little; 13 and 21 agree to 1e-3 N here.
+    The side joint stays at zero. Returns ``(force, (thigh, calf), alpha_calf)``.
+    Costs ``grid**2`` cycle evaluations per leg.
     """
     idx = _leg_joint_indices(robot, leg)
     q_lb, q_ub, _, _ = limits_for(robot)
@@ -165,13 +90,7 @@ def measure_leg(robot, Xc, nq, N, T, leg, w) -> dict:
     power = v_foot_x < 0.0
 
     def split(a):
-        """``(mean_power, mean_recovery, sd_power, sd_recovery)``.
-
-        The two standard deviations are returned with every split, not as an
-        afterthought: a phase mean is only worth quoting when the phases differ
-        by more than the samples inside them scatter, and that comparison is the
-        one this script exists to make honest.
-        """
+        """Weighted ``(mean_power, mean_recovery, sd_power, sd_recovery)``."""
         mp = float(np.average(a[power], weights=w[power]))
         mr = float(np.average(a[~power], weights=w[~power]))
         sp = float(np.sqrt(np.average((a[power] - mp) ** 2, weights=w[power])))
@@ -193,12 +112,10 @@ def measure_leg(robot, Xc, nq, N, T, leg, w) -> dict:
 
 
 def pair_mismatch(q_a: np.ndarray, q_b: np.ndarray, upsample: int = 64):
-    """Best and worst RMS residual over all relative phases, in degrees.
+    """Best and worst RMS residual [deg] over all relative phases, with their phases.
 
-    Both are ``(n_joints, N)`` in radians.  The WORST residual is reported
-    alongside the best because the claim being tested is "these two legs share
-    no stroke shape": a best residual that is only slightly under the worst is
-    what says the alignment is meaningless, and the best alone cannot say it.
+    Inputs are ``(n_joints, N)`` in radians. A best close to the worst means
+    the shapes do not match at any phase.
     """
     N = q_a.shape[1]
     fb = np.fft.rfft(q_b, axis=1)
@@ -251,8 +168,7 @@ def main() -> int:
     for leg in LEGS:
         for seg in ("Thigh", "Calf"):
             ap, ar, sp, sr = per_leg[leg]["alpha"][seg]
-            # A phase mean earns its place only if the gap between the phases
-            # exceeds the scatter within them.
+            # Meaningful only if the gap exceeds the within-phase spread
             ok = "yes" if abs(ap - ar) > max(sp, sr) else "NO -- gap < spread"
             print(f"  {leg + '/' + seg:<22s}{ap:>8.3f}{ar:>8.3f}"
                   f"{ap / ar:>7.2f}{sp:>8.3f}{sr:>8.3f}   {ok}")
@@ -262,7 +178,7 @@ def main() -> int:
           f"against the seeds " +
           ", ".join(f"{g} {100 * f:.0f} %" for g, f in SEED_DUTY.items()))
 
-    # ── front against hind: the only asymmetry the symmetry constraint leaves ──
+    # Front vs hind (left/right are symmetric by constraint)
     names = list(robot.model.names)[1:][-robot.n_actuated:]
     def leg_rows(key):
         return [i for i, n in enumerate(names)

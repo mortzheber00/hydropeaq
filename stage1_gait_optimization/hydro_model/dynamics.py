@@ -1,20 +1,9 @@
-"""
-CasADi-symbolic rigid-body + hydrodynamic dynamics for the AMPH quadruped.
+"""Symbolic rigid-body plus hydrodynamic dynamics (pinocchio.casadi).
 
-Uses ``pinocchio.casadi`` to build symbolic expressions for the standard
-rigid-body terms (mass matrix, Coriolis, gravity, Jacobians, FK) and adds
-the hydrodynamic forces via ``SymbolicHydrodynamicModel``.
+    [M_rb(q) + M_A(q)] * qdd + [C_rb(q, qd) + C_A(q, qd)] * qd + g_rb(q)
+        = tau + tau_buoyancy(q) + tau_drag(q, qd)
 
-The final equations of motion are:
-
-    [M_rb(q) + M_A(q)] * qdd + [C_rb(q, qd) + C_A(q, qd)] * qd
-        + g_rb(q) = tau + tau_hydro(q, qd)
-
-where tau_hydro collects buoyancy, drag, and pressure-gradient forces
-projected into joint space via link Jacobians.
-
-All public functions return CasADi ``ca.Function`` objects that can be
-evaluated numerically or embedded in an NLP.
+All ``f_*`` attributes are ``ca.Function`` objects.
 """
 
 from __future__ import annotations
@@ -31,11 +20,7 @@ from .robot import QuadrupedRobot
 
 
 def fn_name(*parts: str) -> str:
-    """CasADi function names allow only letters, digits and single underscores.
-
-    Link and leg names come from the URDF, where dots are legal (BODY2 has
-    ``Link_BL1.1``), so they must be sanitised before use as a name.
-    """
+    """Join ``parts`` into a valid CasADi function name (URDF names may contain dots)."""
     raw = "_".join(parts)
     cleaned = "".join(ch if ch.isalnum() else "_" for ch in raw)
     while "__" in cleaned:
@@ -44,27 +29,23 @@ def fn_name(*parts: str) -> str:
 
 
 class SymbolicDynamics:
-    """CasADi-symbolic dynamics for the AMPH quadruped.
+    """Symbolic dynamics of a swimming robot.
 
     Parameters
     ----------
     robot : QuadrupedRobot
-        Pinocchio-backed robot (must have cylinders built already).
+        Robot with cylinders already built.
     rho : float
         Fluid density [kg/m^3].
     Cd_t, Cd_a : float
-        Transverse / axial quadratic form-drag coefficients.
-    Cd_lin_t, Cd_lin_a : float, optional
-        Independent linear (skin-friction) damping coefficients — Fossen's D_S.
-        Passing None falls back to Cd_t / Cd_a.  Tune together with
-        v_linear_threshold.
+        Transverse / axial quadratic drag coefficients.
+    Cd_lin_t, Cd_lin_a : float or None
+        Linear damping coefficients (Fossen's D_S); None uses Cd_t / Cd_a.
+        Fitted together with ``v_linear_threshold``.
     Ca_t, Ca_a : float
         Transverse / axial added-mass coefficients.
 
-    Every coefficient defaults to the fitted value in ``hydro_params`` — the
-    single place to change them.  Callers that build the dynamics without
-    overriding (the OCP, the codesign solver, the diagnostics) follow it
-    automatically.
+    Coefficients default to ``hydro_params``.
     """
 
     def __init__(
@@ -85,11 +66,9 @@ class SymbolicDynamics:
         self.nq = robot.nq
         self.nv = robot.nv
 
-        # Cast the Pinocchio model to CasADi
         self.cmodel = cpin.Model(robot.model)
         self.cdata = self.cmodel.createData()
 
-        # Hydro parameters (stored for print_summary)
         self.rho = rho
         self.Cd_t = Cd_t
         self.Cd_a = Cd_a
@@ -101,22 +80,18 @@ class SymbolicDynamics:
         self.v_linear_threshold = v_linear_threshold
         self.leg_thrust_scale = leg_thrust_scale
 
-        # Symbolic state variables
         self.q = ca.SX.sym("q", self.nq)
         self.v = ca.SX.sym("v", self.nv)  # qd
         self.a = ca.SX.sym("a", self.nv)  # qdd
         self.tau = ca.SX.sym("tau", self.nv)
 
-        # Pre-compute all symbolic expressions and wrap as CasADi Functions
-        self._f_reduced_Mb = None
+        self._f_reduced_Mb = None  # built lazily
         self._build_rigid_body_functions()
         self._build_fk_functions()
         self._build_hydro_functions()
         self._build_eom()
 
-    # ==================================================================
-    # Rigid-body dynamics
-    # ==================================================================
+    # --- Rigid-body dynamics ---
 
     def _build_rigid_body_functions(self):
         """Build M_rb(q), C_rb(q, v), g_rb(q) as CasADi Functions."""
@@ -132,12 +107,10 @@ class SymbolicDynamics:
         g_expr = cpin.computeGeneralizedGravity(self.cmodel, self.cdata, q)
         self.f_g_rb = ca.Function("g_rb", [q], [g_expr], ["q"], ["g"])
 
-    # ==================================================================
-    # Forward kinematics & Jacobians
-    # ==================================================================
+    # --- Forward kinematics and Jacobians ---
 
     def _build_fk_functions(self):
-        """Build FK positions, velocities, and Jacobians for every link.
+        """Build per-link FK and Jacobian functions.
 
         Creates:
           - f_fk[link_name] : (q) -> (pos_3x1, R_3x3)
@@ -147,7 +120,6 @@ class SymbolicDynamics:
         """
         q, v = self.q, self.v
 
-        # Run symbolic FK (needed before frame queries)
         cpin.forwardKinematics(self.cmodel, self.cdata, q, v, ca.SX.zeros(self.nv))
         cpin.updateFramePlacements(self.cmodel, self.cdata)
 
@@ -178,11 +150,7 @@ class SymbolicDynamics:
                 fn_name("Jv", name), [q], [J_trans], ["q"], ["Jv"]
             )
 
-        # Foot positions (convenience)
-        # Must agree with QuadrupedRobot.foot_positions(): the foot is a fixed
-        # offset in some frame's local coordinates.  Robots with a dedicated
-        # *_Foot_link use a zero offset, and the term is skipped entirely so
-        # their expression graph is unchanged.
+        # Foot = fixed local offset from a frame; must match QuadrupedRobot.foot_positions().
         self.f_foot_pos: dict[str, ca.Function] = {}
         for leg, fid in self.robot.foot_frame_ids.items():
             oMf = self.cdata.oMf[fid]
@@ -194,12 +162,10 @@ class SymbolicDynamics:
                 fn_name("foot", leg), [q], [pos], ["q"], ["pos"]
             )
 
-    # ==================================================================
-    # Hydrodynamic forces (delegated to SymbolicHydrodynamicModel)
-    # ==================================================================
+    # --- Hydrodynamic forces ---
 
     def _build_hydro_functions(self):
-        """Build hydrodynamic CasADi Functions via SymbolicHydrodynamicModel."""
+        """Build the hydrodynamic functions via SymbolicHydrodynamicModel."""
         hydro = SymbolicHydrodynamicModel(
             robot=self.robot,
             cmodel=self.cmodel,
@@ -224,51 +190,30 @@ class SymbolicDynamics:
         self.f_M_added = hydro.f_M_added
         self.f_tau_added = hydro.f_tau_added
 
-        # Added-mass Coriolis  C_A·v  from the per-link Kirchhoff force at
-        # zero acceleration: tau_added is linear in a
-        # (tau_added = M_A(q)·a + C_A(q,v)·v), so a = 0 isolates C_A·v.
-        # Replaces the Christoffel-symbol construction on the joint-space
-        # M_A(q), whose symbolic derivatives were prohibitively large in the
-        # NLP; the only neglected physics is the ∂α/∂q (submersion-ratio)
-        # Coriolis contribution.
+        # tau_added = M_A·a + C_A·v, so evaluating it at a = 0 gives C_A·v.
         C_A_v = hydro.f_tau_added(self.q, self.v, ca.SX.zeros(self.nv))
         self.f_C_A_v = ca.Function(
             "C_A_v", [self.q, self.v], [C_A_v], ["q", "v"], ["C_A_v"]
         )
 
-    # ==================================================================
-    # SE(3) configuration time derivative
-    # ==================================================================
+    # --- Configuration derivative ---
 
     def _dq_dt(self, q: ca.SX, v: ca.SX) -> ca.SX:
-        """Configuration time derivative for a free-flyer + revolute joints.
+        """Configuration derivative for a free-flyer base with revolute joints.
 
-        For the free-floating base the velocity ``v[0:6]`` is expressed in the
-        LOCAL (body) frame, so the configuration derivative is NOT simply ``v``:
+        The base twist ``v[0:6]`` is in the body frame:
 
-          dp/dt   = R(q_base) * v_lin        (rotate body-frame velocity to world)
-          dquat/dt = 0.5 * q_base x [w_body; 0]  (quaternion kinematics)
+          dp/dt    = R(q_base) * v_lin
+          dquat/dt = 0.5 * q_base x [w_body; 0]
+          dq_j/dt  = v_j
 
-        For the revolute joints:
-          dq_j/dt = v_j   (trivial, Euclidean)
-
-        Returns ``dq_dt`` of shape (nq=19, 1).
-
-        Configuration layout (Pinocchio free-flyer convention):
-          q[0:3]  = world position  [x, y, z]
-          q[3:7]  = unit quaternion [qx, qy, qz, qw]  (scalar last)
-          q[7:19] = joint angles
-        Velocity layout:
-          v[0:3]  = linear velocity  in body frame
-          v[3:6]  = angular velocity in body frame
-          v[6:18] = joint velocities
+        Layout: q = [pos (3); quat xyzw (4); joints], v = [v_lin; w; joint rates].
         """
-        # Quaternion components (scalar last: [qx, qy, qz, qw])
         qx, qy, qz, qw = q[3], q[4], q[5], q[6]
         vx, vy, vz = v[0], v[1], v[2]
         wx, wy, wz = v[3], v[4], v[5]
 
-        # World-frame position derivative:  dp/dt = R_world_body * v_body
+        # dp/dt = R_world_body * v_body
         dp = ca.vertcat(
             (1 - 2 * (qy**2 + qz**2)) * vx
             + 2 * (qx * qy - qw * qz) * vy
@@ -289,25 +234,12 @@ class SymbolicDynamics:
 
         return ca.vertcat(dp, dqx, dqy, dqz, dqw, v[6:])
 
-    # ==================================================================
-    # Full equations of motion
-    # ==================================================================
+    # --- Equations of motion ---
 
     def _build_eom(self):
-        """Assemble the complete EoM as CasADi Functions.
+        """Build forward dynamics, inverse dynamics and the ODE ``xdot = f(x, tau)``.
 
-        [M_rb(q) + M_A(q)] * vdot  +  [C_rb(q,v) + C_A(q,v)] * v  +  g_rb(q)
-            = tau  +  tau_buoyancy(q)  +  tau_drag(q, v)
-
-        The added-mass terms M_A·vdot + C_A·v come from the per-link
-        Kirchhoff force tau_added(q, v, a) built in the hydro model.
-
-        State-space ODE:
-          x  = [q (19); v (18)]           dim = 37
-          xdot  = [dq/dt (19); vdot (18)]       dim = 37
-
-        Note: dq/dt != v for the free-flyer because the quaternion
-        derivative and position derivative involve the current orientation.
+        State x = [q; v], xdot = [dq/dt; vdot] (dq/dt != v for the free-flyer).
         """
         q, v, tau = self.q, self.v, self.tau
 
@@ -323,7 +255,6 @@ class SymbolicDynamics:
         rhs = tau + tau_b + tau_d - C_rb @ v - C_A_v - g_rb
         #rhs = tau + tau_b + tau_d - C_rb @ v - g_rb
 
-        # Forward dynamics: vdot = M_total \ rhs   (nv = 18)
         a_expr = ca.solve(M_total, rhs)
 
         self.f_forward_dynamics = ca.Function(
@@ -334,11 +265,7 @@ class SymbolicDynamics:
             ["a"],
         )
 
-        # Inverse dynamics: tau = M_total * vdot + (C_rb + C_A)·v + g − tau_hydro
-        # Rigid-body part via RNEA — a single O(n) recursion for
-        # M_rb·a + C_rb·v + g_rb with a much smaller symbolic graph than
-        # assembling M_rb and C_rb explicitly.  Added-mass part via the
-        # per-link Kirchhoff force tau_added = M_A·a + C_A·v.
+        # Inverse dynamics; RNEA keeps the graph much smaller than assembling M_rb and C_rb.
         a = self.a
         tau_id = (
             cpin.rnea(self.cmodel, self.cdata, q, v, a)
@@ -355,7 +282,6 @@ class SymbolicDynamics:
             ["tau"],
         )
 
-        # Continuous-time state-space ODE  xdot = f(x, u)
         dq_dt = self._dq_dt(q, v)
         x = ca.vertcat(q, v)
         xdot = ca.vertcat(dq_dt, a_expr)
@@ -364,33 +290,22 @@ class SymbolicDynamics:
             "xdot", [x, tau], [xdot], ["x", "tau"], ["xdot"]
         )
 
-    # ==================================================================
-    # Tangent-space (reduced) state-space ODE
-    # ==================================================================
+    # --- Tangent-space dynamics for collocation ---
 
     def build_tangent_dynamics(
         self, q_ref_quat: np.ndarray
     ) -> tuple[ca.Function, ca.Function]:
-        """Return ``(f_kin, f_inv_dyn)`` for the tangent state representation.
+        """Return ``(f_kin, f_inv_dyn)`` on the tangent state.
 
-        Reduced state layout (dim = 2*nv_reduced; 36 for amph):
-            xt[0:3]                base position (world)
-            xt[3:6]                base rotation tangent phi  (around q_ref)
-            xt[6 : 6+n_act]        theta — the independent actuated coordinates
-            xt[6+n_act:]           reduced velocity [v_base (6); thetadot]
+        State layout (2 * nv_reduced):
+            xt[0:3]           base position (world)
+            xt[3:6]           base rotation vector phi around q_ref
+            xt[6 : 6+n_act]   actuated coordinates theta
+            xt[6+n_act:]      [v_base (6); thetadot]
 
-        For a serial robot theta is the joint vector and this is the tree
-        velocity.  For a closed-chain robot the robot's ``coord_map`` expands
-        both onto the tree and projects the resulting forces back.
-
-        Small-angle approx dphi/dt ≈ ω_body.
-
-        Use in collocation with v̇_poly_j = (1/dt)·Σ_i C[i,j]·v_all[i]:
-            f_kin(x_j) · dt          == xp[:6+n_act]      (kinematic rows)
-            f_inv_dyn(x_j, v̇_poly_j) == τ_j_full           (dynamic rows)
-
-        The dynamic constraint is the inverse-dynamics equality
-        ``M(q)·a + C·v + g − τ_hydro = τ``
+        Uses the small-angle approximation dphi/dt ≈ ω_body. In collocation:
+            f_kin(x_j) · dt          == xp[:6+n_act]
+            f_inv_dyn(x_j, v̇_poly_j) == τ_j_full
         """
         cmap = self.robot.coord_map
         n_act = cmap.n_theta
@@ -403,13 +318,7 @@ class SymbolicDynamics:
         vb, thd = v_r[0:6], v_r[6:]
         ab, thdd = a_r[0:6], a_r[6:]
 
-        # Recover quaternion from tangent vector:
-        #   q_base = q_ref ⊗ exp_SO3(φ),  exp_SO3(φ) = [sin(‖φ‖/2)·φ/‖φ‖, cos(‖φ‖/2)]
-        # cpin.integrate implements q_ref ⊞ dv on the Lie group; setting dv[3:6]=φ
-        # selects only the rotational DOF so position and joints stay at zero.
-        # pin.neutral rather than zeros: a tree with continuous joints stores
-        # (cos, sin) pairs, whose neutral element is (1, 0), not (0, 0).  For a
-        # purely revolute tree neutral *is* zeros, so this is a no-op there.
+        # q_base = q_ref ⊗ exp(φ). pin.neutral keeps continuous joints valid.
         q_ref_full = ca.SX(pin.neutral(self.robot.model))
         q_ref_full[3:7] = ca.SX(q_ref_quat)
         dv = ca.SX.zeros(self.nv)
@@ -417,21 +326,15 @@ class SymbolicDynamics:
         q_base = cpin.integrate(self.cmodel, q_ref_full, dv)[3:7]
         q_pin = ca.vertcat(pos, q_base, cmap.q_joints(theta))
 
-        # Kinematic time derivatives of the position block:
-        #   ṗ       = R(q_base) · v_lin          (body→world rotation of linear velocity)
-        #   φ̇       ≈ ω_body = v[3:6]            (small-angle: tangent rate ≈ body angular vel.)
-        #   q̇_joints = v_joints = v[6:]           (revolute joints: trivial)
+        # Kinematics: ṗ = R·v_lin, φ̇ ≈ ω_body, θ̇ = thd
         v_tree = ca.vertcat(vb, cmap.v_joints(theta, thd))       # nv rows
         a_tree = ca.vertcat(ab, cmap.a_joints(theta, thd, thdd))  # nv rows
 
         dp = self._dq_dt(q_pin, v_tree)[0:3]
         xt_kin = ca.vertcat(dp, vb[3:6], thd)               # 6 + n_act rows
 
-        # Inverse dynamics:  τ = (M_rb + M_a)·a + C_rb·v + g − τ_buoy − τ_drag
         tau_tree = self.f_inverse_dynamics(q_pin, v_tree, a_tree)   # nv rows
-        # Project onto the reduced coordinates (virtual work: tau_r = S^T tau).
-        # With n_theta actuators this keeps the reduced system fully actuated,
-        # which is what lets the collocation transcription stay unchanged.
+        # Project onto the reduced coordinates: tau_r = S^T tau
         tau_r = ca.vertcat(tau_tree[0:6], cmap.tau_joints(theta, tau_tree[6:]))
 
         f_kin = ca.Function(
@@ -442,9 +345,7 @@ class SymbolicDynamics:
         )
         return f_kin, f_inv_dyn
 
-    # ==================================================================
-    # Public convenience methods
-    # ==================================================================
+    # --- Numeric evaluation ---
 
     def eval_forward_dynamics(
         self,
@@ -464,29 +365,15 @@ class SymbolicDynamics:
         """Evaluate inverse dynamics numerically."""
         return np.array(self.f_inverse_dynamics(q, v, a)).flatten()
 
-    # ==================================================================
-    # Constrained (reduced-coordinate) dynamics
-    # ==================================================================
+    # --- Reduced-coordinate dynamics (closed chains) ---
 
     def build_reduced_dynamics(self) -> ca.Function:
         """``(q_base, theta, v_r) -> (M_r, b_r)`` with ``M_r a_r + b_r = tau_r``.
 
-        A closed-chain robot cannot be simulated in tree coordinates: the URDF
-        is a spanning tree with the loop-closure pins missing, so integrating it
-        lets the linkage come apart.  Its OCP controls are no help either --
-        ``tau_r = S^T tau_tree`` with ``S`` of shape (n_tree, n_theta), and the
-        16-dimensional null space of ``S^T`` is exactly the space of pin
-        reaction forces, which the reduced formulation eliminates by design.
-
-        The fix is to project the equations of motion onto the constraint
-        manifold, which ``CoordinateMap`` already spans.  Since inverse dynamics
-        is *affine* in acceleration, both blocks come straight out of it:
-
-            resid(a_r) = M_r a_r + b_r      (verified to ~1e-16)
-            M_r = d resid / d a_r           b_r = resid at a_r = 0
-
-        Built lazily and cached; the Jacobian makes it a few times more
-        expensive to construct than the tree functions.
+        Needed to simulate closed-chain robots, whose URDF tree would come apart.
+        Inverse dynamics is affine in the acceleration, so
+        ``M_r = d resid / d a_r`` and ``b_r = resid(a_r = 0)``. Built lazily
+        and cached.
         """
         if getattr(self, "_f_reduced_Mb", None) is not None:
             return self._f_reduced_Mb
@@ -521,10 +408,9 @@ class SymbolicDynamics:
         v_r: np.ndarray,
         tau_r: np.ndarray,
     ) -> np.ndarray:
-        """Reduced acceleration ``a_r`` given the reduced generalised force.
+        """Reduced acceleration ``a_r`` for the reduced force ``tau_r``.
 
-        A robot whose actuated coordinates *are* its tree joints is dispatched
-        to the ordinary tree forward dynamics, so its results are unchanged.
+        Serial robots use the tree forward dynamics directly.
         """
         if isinstance(self.robot.coord_map, IdentityMap):
             q = np.concatenate([np.asarray(q_base), np.asarray(theta)])
@@ -540,25 +426,10 @@ class SymbolicDynamics:
         v_r: np.ndarray,
         a_joints: np.ndarray,
     ) -> np.ndarray:
-        """Base acceleration with the actuated joints *kinematically prescribed*.
+        """Base acceleration with the joint motion prescribed.
 
-        The counterpart of ``eval_reduced_forward_dynamics`` for a replay whose
-        joints follow a reference rather than a torque: Gazebo drives them with
-        a position controller, so the actuator supplies whatever torque tracking
-        demands and the joint torque is a constraint force, not an input.  It
-        therefore drops out of the base rows entirely, leaving
-
-            M_bb a_b + M_bj a_j + b_b = 0
-
-        which is the same constraint the OCP imposes on those rows
-        (``ocp_common.build_collocation_nlp`` requires ``f_inv_dyn(x, a) ==
-        vertcat(zeros(6), U)``).  Passing the OCP's ``U`` into a full n_v solve
-        instead answers "same motors, different water" rather than "same joint
-        path, different water"; the two agree only where ``U`` is the inverse-
-        dynamics torque for that motion, i.e. at the coefficients the trajectory
-        was solved with.
-
-        Dispatches on the coordinate map exactly as its sibling does.
+        Solves the unactuated rows ``M_bb a_b + M_bj a_j + b_b = 0``, as for
+        a position-controlled replay (Gazebo) and as imposed by the OCP.
         """
         nv_base = 6
         if isinstance(self.robot.coord_map, IdentityMap):
@@ -585,17 +456,15 @@ class SymbolicDynamics:
         q_joints: np.ndarray | None = None,
         z_guess: float = 0.05,
     ) -> np.ndarray:
-        """Find the full floating-equilibrium configuration at rest.
+        """Hydrostatic equilibrium configuration at rest.
 
-        Solves for base z, pitch, and roll such that all base
-        accelerations are zero at v=0, tau=0.
+        Solves for base height and pitch (roll stays zero) such that heave
+        force and pitch moment vanish at v = 0, tau = 0.
 
         Parameters
         ----------
         q_joints : (n_actuated,) array, optional
-            Reduced actuated coordinates theta, held fixed during the solve.
-            Defaults to the robot's home pose (zeros unless the spec says
-            otherwise — a closed-chain robot may not be assemblable at zero).
+            Fixed actuated coordinates; defaults to the spec's home pose.
         z_guess : float
             Initial guess for base height [m].
 

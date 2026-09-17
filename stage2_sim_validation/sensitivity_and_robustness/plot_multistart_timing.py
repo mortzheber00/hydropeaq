@@ -1,25 +1,13 @@
 #!/usr/bin/env python3
-"""
-Gait diagram for the multi-start solutions: when does each leg push?
+"""Gait diagram (power-stroke timing per leg) of a guess_multistart.py sweep.
 
-The distance matrix says no two starts converged to the same solution.  This
-says what that means for coordination — whether the optimiser kept the
-inter-leg phasing it was seeded with (lateral sequence for LSPG, trot-like for
-TLPG50) or reorganised the gait entirely.
-
-Power stroke is ``v_foot,x < 0`` in the **base frame** — the foot sweeping
-backwards relative to the hull.  This is the kinematic definition of the stroke,
-and it matches ``plot_solution_legs.py`` and ``gait_diagnostics.py``.
-
-The alternative is the world-frame velocity, which asks instead whether the foot
-is pushing water backwards; because the hull is itself moving forward at
-0.15 m/s the foot has to beat that first, so that window is shorter -- 31-37% of
-the cycle against 37-49% here.  Both are defensible and they answer different
-questions; this figure is about coordination, so it uses the kinematic one.
+Shows whether the optimiser kept the seeded leg phasing. Power stroke means
+``v_foot,x < 0`` in the base frame, as in plot_solution_legs.py and
+gait_diagnostics.py (the world-frame definition gives shorter windows).
 
 Usage:
-  python plot_multistart_timing.py --sweep 20260828_105014
-  python plot_multistart_timing.py --sweep TAG --save ../docs/figures/gait_diagram.pdf
+  python stage2_sim_validation/sensitivity_and_robustness/plot_multistart_timing.py --sweep 20260828_105014
+  python stage2_sim_validation/sensitivity_and_robustness/plot_multistart_timing.py --sweep TAG --save gait_diagram.pdf
 """
 from __future__ import annotations
 
@@ -42,11 +30,9 @@ from thesis_style import style_for                                # noqa: E402
 
 
 def power_mask(robot, X, leg: str) -> np.ndarray:
-    """``v_foot,x < 0`` in the base frame, one entry per cycle sample.
+    """Power-stroke mask (``v_foot,x < 0`` in the base frame) per cycle sample.
 
-    The final column of ``X`` repeats the first (closed cycle), so it is dropped
-    — keeping it would double-count one instant and put a false seam in the run
-    that wraps phase 0.
+    The last column of ``X`` duplicates the first and is skipped.
     """
     nq, nv = robot.nq_reduced, robot.nv_reduced
     fid = robot.foot_frame_ids[leg]
@@ -67,8 +53,7 @@ def power_mask(robot, X, leg: str) -> np.ndarray:
 def runs(mask: np.ndarray):
     """Contiguous True intervals as ``(start, width)`` in cycle fractions.
 
-    Circular: a stroke straddling phase 0 is emitted as two pieces so it draws
-    at both ends of the axis rather than as one bar spanning the whole cycle.
+    A run wrapping past phase 1 is merged into one interval extending beyond 1.0.
     """
     K = len(mask)
     out, i = [], 0
@@ -81,11 +66,11 @@ def runs(mask: np.ndarray):
             j += 1
         out.append((i / K, (j - i) / K))
         i = j
-    # Stitch a run that wraps: last sample and first sample both in power.
+    # Merge a run that wraps around the cycle end
     if len(out) > 1 and mask[0] and mask[-1]:
         s0, w0 = out[0]
         s1, w1 = out[-1]
-        out = out[1:-1] + [(s1, w1 + w0)]     # the tail piece runs past 1.0
+        out = out[1:-1] + [(s1, w1 + w0)]     # extends past 1.0
     return out
 
 
@@ -155,7 +140,7 @@ def main():
 
     fig = build_figure(gaits, legs, masks)
     if args.save:
-        # pad_inches above the default: the tight bbox under-measures usetex.
+        # Extra padding: the tight bbox under-measures usetex text.
         fig.savefig(args.save, dpi=300, bbox_inches="tight", pad_inches=0.15)
         print(f"\nSaved → {args.save}")
         if args.save.suffix == ".pdf":

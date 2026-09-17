@@ -1,18 +1,11 @@
 """Mapping between reduced actuated coordinates and the Pinocchio tree.
 
-A URDF is always a tree.  A robot with closed kinematic loops therefore has
-more tree joints than it has degrees of freedom, and the cut pins show up
-nowhere in the model.  A ``CoordinateMap`` is the one place that discrepancy
-lives: it takes the independent actuated coordinates ``theta`` and produces the
-full tree configuration, velocity and acceleration, plus the projection of tree
-generalised forces back onto ``theta``.
+A closed-chain robot has more tree joints than degrees of freedom. A
+``CoordinateMap`` maps the actuated coordinates ``theta`` to the full tree
+configuration, velocity and acceleration, and projects tree forces back onto
+``theta``. Serial robots use ``IdentityMap``.
 
-For a serial robot the map is the identity and costs nothing (``IdentityMap``
-returns its arguments unchanged, so the CasADi graph is untouched).  For a
-closed-chain robot it carries the loop-closure solution.
-
-Shapes, with ``n_theta`` reduced DOF and tree blocks ``nq_j = model.nq - 7``,
-``nv_j = model.nv - 6``:
+Shapes, with ``nq_j = model.nq - 7`` and ``nv_j = model.nv - 6``:
 
     q_joints(theta)                 -> (nq_j,)     tree joint configuration
     v_joints(theta, thd)            -> (nv_j,)     S @ thd
@@ -22,9 +15,8 @@ Shapes, with ``n_theta`` reduced DOF and tree blocks ``nq_j = model.nq - 7``,
     feasibility(theta)              -> (m,)        required >= 0, m may be 0
     expand_numeric(theta)           -> ndarray (nq_j,)   numpy twin for plotting
 
-The symbolic methods accept and return CasADi SX/MX; ``expand_numeric`` is
-numpy.  ``nq_j != nv_j`` whenever the tree contains unbounded (continuous)
-joints, whose configuration is a ``(cos, sin)`` pair rather than an angle.
+Symbolic methods work on CasADi SX/MX. ``nq_j != nv_j`` if the tree has
+continuous joints, which are stored as ``(cos, sin)`` pairs.
 """
 
 from __future__ import annotations
@@ -34,7 +26,7 @@ import numpy as np
 
 
 class CoordinateMap:
-    """Interface; see module docstring.  Subclasses must set the three sizes."""
+    """Base interface; subclasses set ``n_theta``, ``nq_j`` and ``nv_j``."""
 
     n_theta: int
     nq_j: int
@@ -63,16 +55,14 @@ class CoordinateMap:
         raise NotImplementedError
 
     def v_numeric(self, theta: np.ndarray, thd: np.ndarray) -> np.ndarray:
-        """Numpy twin of ``v_joints`` — used when replaying saved trajectories."""
+        """Numeric version of ``v_joints``."""
         raise NotImplementedError
 
 
 class IdentityMap(CoordinateMap):
-    """Serial robot: theta *is* the tree joint vector.
+    """Serial robot: ``theta`` is the tree joint vector.
 
-    Every method returns its argument object rather than multiplying by an
-    identity, so a robot using this map produces exactly the expression graph
-    it did before coordinate maps existed.
+    Arguments are returned as-is so the CasADi graph stays unchanged.
     """
 
     def __init__(self, n_theta: int):

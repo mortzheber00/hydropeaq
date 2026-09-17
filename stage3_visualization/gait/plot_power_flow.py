@@ -1,52 +1,18 @@
 #!/usr/bin/env python3
-"""Where the cycle's mechanical energy goes, and what the optimiser is charged for.
+"""Actuator power and work over one cycle, and objective vs reported metric.
 
-``plot_thrust_budget.py`` and ``plot_thrust_attribution.py`` say how the forward
-force is made.  This says what it costs, and it is the figure that connects the
-thrust mechanism to the cost of transport the co-design chapter reports.
+``*_power``  net power sum(tau*qdot) and charged power sum|tau*qdot|; the gap
+             is negative work, which is charged but not recovered
+``*_joints`` delivered and absorbed work per joint
+``*_metric`` per-interval share of the reported |power| (COT) vs the minimised
+             squared power (objective)
 
-Three figures on the full text-width canvas:
-
-  ``*_power``   Instantaneous actuator power over the cycle: the signed total
-      sum_j tau_j qdot_j, and the charged |power| sum_j |tau_j qdot_j|.  The gap
-      between the two curves is negative work — joints being back-driven by the
-      water — and the model pays full price for it.
-
-  ``*_joints``  Positive and negative work per joint over the cycle.  Shows which
-      joints deliver and which absorb, so the power cost can be read against the
-      thrust attribution: a joint that absorbs is one the flow is driving.
-
-  ``*_metric``  The objective the solver minimises against the metric the thesis
-      reports, per interval.  They are different functionals (see below), and
-      this is the figure that says how differently they rank the same cycle.
-
-Two facts about the cost that this figure exists to make visible, both read off
-the source rather than assumed:
-
-  - The OCP minimises ``power_cost`` = sum_i B_i * ||tau .* qdot||^2
-    (``ocp_common.build_collocation_nlp``, a *squared* per-joint power), while
-    COT is reported from ``cycle_energy`` = integral of sum_j |tau_j qdot_j|
-    (``ocp_common.cycle_energy``, an *absolute* one).  Minimising a sum of
-    squares flattens power peaks; minimising absolute work reduces total work.
-    They are not the same objective and they do not rank cycles the same way.
-  - Both take |.| or (.)^2 per joint, so a joint absorbing power is charged
-    exactly as much as one delivering it.  The model assumes no regeneration,
-    which is the conservative assumption for a thesis to make, but it means the
-    reported COT is an upper bound rather than a net energy balance.
-
-Everything here — the traces, the per-joint split and the energy total — is
-taken at the collocation points on the Radau weights, so the total is the same
-number ``ocp_common.cycle_energy`` gives the co-design sweep rather than a
-second, coarser estimate.  Sampling at the grid nodes instead is a
-left-rectangle rule that reads 30-40% low, and it would also split the work at
-points where Radau never enforced the dynamics (tau=0 is not a collocation
-point).  That needs ``Xc``, which version-2 solution files carry and the
-per-point ``codesign_results`` files do not; those are refused rather than
-silently measured a second way.
+All values are taken at the collocation points with Radau weights, so the total
+matches ``ocp_common.cycle_energy``. Requires ``Xc`` in the solution.
 
 Usage:
-  python plot_power_flow.py
-  python plot_power_flow.py --solution ../task3_solution.npz --save power.pdf
+  python stage3_visualization/gait/plot_power_flow.py
+  python stage3_visualization/gait/plot_power_flow.py --solution task3_solution.npz --save power.pdf
 """
 
 from __future__ import annotations
@@ -72,15 +38,15 @@ from stage1_gait_optimization.ocp_common import (  # noqa: E402
     cycle_energy,
 )
 
-DELIVER_C = PALETTE[1]   # positive work — the actuator drives the joint
-ABSORB_C = PALETTE[2]    # negative work — the water drives the joint
+DELIVER_C = PALETTE[1]   # positive work
+ABSORB_C = PALETTE[2]    # negative work
 CHARGED_C = "0.25"
 
 full_width()
 
 
 def plot_power(P, T):
-    """Figure 1: signed and charged actuator power over the cycle."""
+    """Net and charged actuator power over two cycles."""
     total = P.sum(axis=0)
     charged = np.abs(P).sum(axis=0)
     n = P.shape[1]
@@ -97,8 +63,7 @@ def plot_power(P, T):
             label=r"charged $\sum_j|\tau_j\dot q_j|$")
     ax.plot(two, rep(total), color=PALETTE[0], lw=1.0, zorder=3,
             label=r"net $\sum_j\tau_j\dot q_j$")
-    # The area between them is the negative work, which is the whole point of
-    # drawing both: it is what the robot spends and never gets back.
+    # The gap between the curves is the negative work.
     ax.fill_between(two, rep(total), rep(charged), color=ABSORB_C, alpha=0.20,
                     lw=0, zorder=2, label="negative work (charged, not recovered)")
 
@@ -116,7 +81,7 @@ def plot_power(P, T):
 
 
 def plot_joints(P, T, labels, N):
-    """Figure 2: work delivered and absorbed, per joint."""
+    """Delivered and absorbed work per joint."""
     w_pos = np.array([cycle_integral(np.clip(row, 0.0, None), T, N) for row in P])
     w_neg = np.array([cycle_integral(np.clip(row, None, 0.0), T, N) for row in P])
 
@@ -138,13 +103,7 @@ def plot_joints(P, T, labels, N):
 
 
 def plot_metric(P):
-    """Figure 3: the minimised objective against the reported metric.
-
-    Per interval, the absolute power the COT integrates and the squared power
-    the NLP minimises, each normalised by its own cycle total so the two sit on
-    one axis.  Where the two curves separate, the optimiser is being pushed by
-    something the reported number does not measure.
-    """
+    """Absolute power (COT) vs squared power (objective), each normalised to its cycle total."""
     absolute = np.abs(P).sum(axis=0)
     squared = (P ** 2).sum(axis=0)
     n = P.shape[1]
@@ -167,7 +126,7 @@ def plot_metric(P):
 
 
 def report(P, meta, robot, labels):
-    """Energy totals, all on the Radau weights the sweep's own COT uses."""
+    """Print work, energy and COT totals."""
     T, N = float(meta["T"]), int(meta["N"])
     w_pos = cycle_integral(np.clip(P, 0.0, None).sum(axis=0), T, N)
     w_neg = cycle_integral(np.clip(P, None, 0.0).sum(axis=0), T, N)
@@ -179,9 +138,7 @@ def report(P, meta, robot, labels):
     print(f"  {'negative-work share of charged':<34s}"
           f"{-w_neg / charged * 100:>11.1f} %")
 
-    # The number the sweep records, taken through its own function rather than
-    # re-derived here.  It must equal `charged` above, which is the check that
-    # this script's split and the sweep's total describe one trajectory.
+    # Cross-check against cycle_energy; must equal `charged`.
     n_act = P.shape[0]
     nv = 6 + n_act
     _, _, _, B = collocation_coefficients(D_COLLOC)

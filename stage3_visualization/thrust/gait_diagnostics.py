@@ -1,76 +1,22 @@
 #!/usr/bin/env python3
-"""
-Gait time-asymmetry diagnostic.
+"""Per-leg drag diagnostics over one gait cycle: where does the net thrust come from?
 
-Answers the question: "if the OCP gait passes both strokes through the same
-heatmap region, where does its net forward thrust come from?"
-
-For a chosen leg, evaluates ``drag_model.py`` — the same model the OCP solved,
-and the one ``thrust_heatmap.py`` maps — against the OCP's actual joint state
-(q(t), v(t)) rather than a unit probe, and plots four standalone figures over
-one gait cycle, sharing a time axis:
-
-  velocity  Foot velocity         v_foot_x(t)  (signed) and |v_foot|(t), both
-                                  relative to the hull and in the base frame
-  thrust    Instantaneous thrust  F_drag_x(t)  on the leg's links combined
-  impulse   Cumulative impulse    ∫ F_drag_x dt  (final value = net per cycle)
-  area      Presented area        A(t), and the drag-relevant A|v|^2(t)
-
-``area`` is the one that tests "the recovery stroke presents a smaller area to
-the flow than the power stroke", which nothing else here measures.  For each
-link it is the exact silhouette of the cylinder the drag model uses, projected
-on the plane normal to the flow it sees:
-
-    A = alpha * (2 r L |sin θ| + π r² |cos θ|),   cos θ = v̂ · â
-
-— broadside gives the rectangle, end-on gives the end cap, and ``alpha`` is the
-submerged fraction, so a link out of the water presents nothing.  The direction
-v̂ is the **world-frame** velocity of the cylinder's midpoint, because that is
-the flow the link actually meets (still water, hull travelling at ~0.15 m/s), and
-it is the same velocity the thrust panel's drag is built from.  The green
-shading stays the *kinematic*, hull-relative power stroke, as everywhere else
-here; the two differ by the hull's own travel, which is the point the note in
-``compute_traces`` makes.
-
-The area alone is the quantity the hypothesis names; A|v|² is what the force
-follows, and it is far more asymmetric because the foot moves faster on the
-power stroke.  The cycle-mean ratio power/recovery is printed for both — that
-ratio is the number the claim stands or falls on.
-
-Sampling and quadrature are ``collocation.py``'s, so the net impulse below is
-``plot_thrust_budget.py``'s cycle mean times T.  The grid nodes this used to
-sample were the wrong place for the integral rather than for the state: drag
-depends only on (q, v), which are genuine at a node, but a rectangle sum over
-N+1 of them counts the periodic endpoint twice, which biased the per-leg
-impulses by about 7%.
-
-Power-stroke timesteps (v_foot_x < 0) are shaded green so the asymmetry
-between the two halves of the cycle is visually obvious.  ``--save x.pdf``
-writes ``x_velocity.pdf``, ``x_thrust.pdf``, ``x_impulse.pdf`` and
-``x_area.pdf`` (with the leg name folded in under ``--leg all``); the
-power/recovery speeds, impulses and areas go to stdout, and under ``--leg all``
-a row summing the four legs follows them.
-
-``--overlay`` adds a fifth figure, ``x_impulse_all.pdf``: all four legs'
-cumulative impulse on one half-width axes against **cycle phase**, so it can be
-read beside ``plot_thrust_attribution``'s phase-based traces.  Its power strokes
-go in a four-row ribbon under the axes rather than as shading — see
-``plot_impulse_overlay`` for why the shading cannot survive the merge.
-
-Both robots are handled.  ``--leg`` takes the loaded robot's own leg names —
-amph's ``Front_Left``-style names, BODY2's ``FL``/``FR``/``BL``/``BR`` — and
-defaults to its first leg.  Nothing here assumes a serial leg: the links a
-leg's drag and area are summed over come from ``drag_model.leg_links``, so
-BODY2's six-link closed chain is summed over all six, and the states are
-expanded from the solution's reduced coordinates onto the tree once, in
-``main``, because FK and the frame Jacobians are tree-level.
+Evaluates the OCP drag model on the solved states and writes four figures per
+leg (``<name>_{velocity,thrust,impulse,area}``):
+  velocity  hull-relative foot velocity v_foot_x and |v_foot| (base frame)
+  thrust    forward drag force on the leg's links
+  impulse   cumulative impulse (final value = net per cycle)
+  area      wetted projected area A = alpha (2rL|sin θ| + πr²|cos θ|) of the
+            link cylinders against their world-frame flow, and A|v|²
+Power stroke (v_foot_x < 0) is shaded green. Power/recovery averages are
+printed. --overlay (with --leg all) adds ``<name>_impulse_all`` with all legs
+over cycle phase. Works for amph and BODY2 (use the robot's leg names).
 
 Usage:
-  python gait_diagnostics.py
-  python gait_diagnostics.py --solution ../task3_solution.npz --leg Hind_Left
-  python gait_diagnostics.py --leg all --save diag.pdf
-  python gait_diagnostics.py --leg all --overlay --save diag.pdf
-  python gait_diagnostics.py --solution body2.npz --leg BL --save diag.pdf
+  python stage3_visualization/thrust/gait_diagnostics.py
+  python stage3_visualization/thrust/gait_diagnostics.py --solution task3_solution.npz --leg Hind_Left
+  python stage3_visualization/thrust/gait_diagnostics.py --leg all --overlay --save diag.pdf
+  python stage3_visualization/thrust/gait_diagnostics.py --solution body2.npz --leg BL --save diag.pdf
 """
 from __future__ import annotations
 
@@ -83,9 +29,6 @@ import numpy as np
 import pinocchio as pin
 from matplotlib.patches import Patch
 
-# resolve() first: run as "python gait_diagnostics.py" from this directory,
-# __file__ is relative and parents[1] does not exist, which is what the usage
-# line above asks for.
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "stage1_gait_optimization"))
@@ -121,20 +64,10 @@ full_width()
 
 
 def _presented_area(robot: QuadrupedRobot, link_name: str, q, v):
-    """``(A, A|v|^2)`` for one link — its wetted silhouette against the flow.
+    """Wetted projected area ``A`` of one link cylinder and ``A|v|^2``.
 
-    The projection is exact for a cylinder: the side wall contributes
-    ``2 r L |sin θ|`` and the two end caps ``π r² |cos θ|``, with θ between the
-    flow and the cylinder axis, so an end-on link still presents its cap rather
-    than vanishing.  Scaled by the submersion ratio, which is what makes a leg
-    lifted clear of the water contribute nothing.
-
-    Velocity is taken at the cylinder's midpoint (``center_local`` off the link
-    frame), not at the frame origin: a thigh pivoting about a nearly stationary
-    hip has almost no origin velocity while sweeping a large area.  The epsilon
-    on the norm only matters where the midpoint is instantaneously at rest, and
-    there the direction is arbitrary but the area stays bounded between the cap
-    and the broadside value — which is less misleading than a hole in the trace.
+    Uses the velocity at the cylinder midpoint (the frame origin may barely
+    move for a pivoting link) and scales by the submersion ratio.
     """
     terms = link_drag_terms(robot, link_name, q)
     if terms is None:
@@ -150,11 +83,9 @@ def _presented_area(robot: QuadrupedRobot, link_name: str, q, v):
 
 
 def compute_traces(robot: QuadrupedRobot, leg: str, Xc_tree: np.ndarray):
-    """The five traces, one value per collocation sample of ``Xc_tree``.
+    """``(v_foot_x, v_foot_mag, F_drag_x, area, area_v2)`` per collocation sample.
 
-    States are the tree's, not the solution's: a closed-chain robot solves in
-    reduced coordinates, and every call below — FK, the frame Jacobians, the
-    drag model — is a tree-level one.  ``main`` does that expansion once.
+    ``Xc_tree`` must already be expanded to tree coordinates.
     """
     foot_fid = robot.foot_frame_ids[leg]
     foot_offset = robot.foot_offsets[leg]
@@ -178,19 +109,9 @@ def compute_traces(robot: QuadrupedRobot, leg: str, Xc_tree: np.ndarray):
             robot.model, robot.data, q, foot_fid,
             pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
         )
-        # Foot velocity relative to the hull, in the base frame: zero the base
-        # twist so only joint motion contributes, then rotate out of the world
-        # axes.  The world-frame velocity would fold in the body's own 0.15 m/s
-        # of forward travel, which shortens the power window by up to 18 points
-        # of the cycle and answers a different question -- "is this foot pushing
-        # water backwards" rather than "is this leg sweeping backwards".  The
-        # kinematic definition is the one plot_solution_legs.py already uses,
-        # and this is what its docstring has always claimed the two share.
-        #
-        # The foot point is the frame origin on amph but the blade tip on
-        # BODY2, 66 mm down the last link, so the Jacobian is carried out to
-        # ``foot_offsets`` the same way ``_presented_area`` carries it to a
-        # cylinder midpoint.  The offset is zero wherever it does not apply.
+        # Hull-relative foot velocity in the base frame (base twist zeroed), as in
+        # plot_solution_legs.py. The Jacobian is shifted to the foot offset
+        # (non-zero for BODY2's blade tip).
         v_rel = np.asarray(v, dtype=float).copy()
         v_rel[:6] = 0.0
         r_tip = np.array(robot.data.oMf[foot_fid].rotation) @ foot_offset
@@ -216,18 +137,9 @@ def _shade_power(ax, t_arr, v_foot_x):
 
 
 def stroke_stats(w, N, T, v_foot_x, v_foot_mag, F_drag_x, area, area_v2):
-    """Cumulative impulse plus the power/recovery split, printed by ``main``.
+    """Cumulative impulse and Radau-weighted power/recovery statistics.
 
-    The split used to be figure text; it is reported on stdout now that the
-    figures carry no titles.  The two area ratios are the ones the "recovery
-    presents a smaller area" claim is read off: above 1 means the power stroke
-    presents more.
-
-    Every sum and every mean carries the Radau weight ``w`` of its sample.  The
-    collocation points are not equally spaced, so an unweighted mean over a half
-    of the cycle silently reweights it — on this solution that alone moved the
-    leg impulses by several percent, which is the size of the effects the panel
-    is used to argue about.
+    Area ratios > 1 mean the power stroke presents more area.
     """
     impulse = cumulative_integral(F_drag_x, T, N)
     power = v_foot_x < 0
@@ -251,35 +163,19 @@ def stroke_stats(w, N, T, v_foot_x, v_foot_mag, F_drag_x, area, area_v2):
     }
 
 
-# Green shading means the same thing in all three figures, and is the only
-# encoding that no line or fill in them explains.
+# Legend entry for the power-stroke shading
 _POWER_PATCH = Patch(facecolor=PALETTE[1], alpha=0.10,
                      label=r"power stroke ($v_{\mathrm{foot},x} < 0$)")
 
 
 def plot_impulse_overlay(phase, per_leg, legs):
-    """All four legs' cumulative impulse on one axes, over a power-stroke ribbon.
+    """Cumulative impulse of all legs vs cycle phase, with a per-leg power-stroke ribbon.
 
-    ``per_leg`` maps leg name to ``(impulse, v_foot_x)``.  The x-axis is cycle
-    phase rather than time so the panel lines up with ``plot_thrust_attribution``
-    's traces figure, which is phase-based; the four curves share one cycle, so
-    a seconds axis would only restate T.
-
-    The single-leg panels shade their power stroke with ``axvspan``, which cannot
-    survive the merge: four legs have four different power windows, and the hind
-    pair's are fragmented — the stroke grazes ``v_foot_x = 0`` two or three extra
-    times per cycle — so overlaid shading would wash the axes grey and say
-    nothing about which leg is which.  A four-row ribbon under the axes says it
-    per leg instead, in the same colour as that leg's curve.
-
-    Spans come from ``collocation.power_spans``, not from a scan over samples:
-    the collocation points are unevenly spaced, so a crossing has to be
-    interpolated in phase to land where the stroke actually turns.
+    ``per_leg`` maps leg name to ``(impulse, v_foot_x)``. A ribbon is used
+    instead of shading because the legs' power windows differ.
     """
     colours = dict(zip(legs, LEG_COLORS))
-    # Constrained rather than tight layout: on a canvas this small, with a 5:1
-    # height ratio and a legend outside the axes, tight_layout declares the axes
-    # incompatible and leaves the y-label hanging 0.1 in off the left edge.
+    # tight_layout fails for this layout; use constrained layout.
     fig, (ax, ax_r) = plt.subplots(
         2, 1, figsize=HALF, sharex=True, layout="constrained",
         gridspec_kw={"height_ratios": [5, 1]})
@@ -288,15 +184,12 @@ def plot_impulse_overlay(phase, per_leg, legs):
     for leg in legs:
         ax.plot(phase, per_leg[leg][0], lw=1.3, color=colours[leg],
                 label=leg.replace("_", " "))
-    # Short label: the full integral expression is wider than a 2.94 in canvas
-    # can spare, and the standalone impulse panel already carries it in full.
     ax.set_ylabel(r"impulse [N$\cdot$s]")
     ax.grid(alpha=0.3)
 
     for row, leg in enumerate(legs):
         spans = power_spans(phase, per_leg[leg][1])
-        # Spans may wrap past 1; draw the tail at the front so the ribbon reads
-        # as one cycle rather than running off the axis.
+        # Split spans that wrap past 1
         drawn = []
         for start, width in spans:
             drawn.append((start, min(width, 1.0 - start)))
@@ -316,8 +209,7 @@ def plot_impulse_overlay(phase, per_leg, legs):
     ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2,
               frameon=False, handlelength=1.4, columnspacing=1.2,
               borderaxespad=0.2)
-    # Buy the legend rows on the canvas.  legend_row is not used: it pins a
-    # single axes south, which on this two-row grid is the wrong axes.
+    # Extra height for the legend (legend_row does not fit this two-axes layout)
     w_in, h_in = fig.get_size_inches()
     fig.set_size_inches(w_in, h_in + 2 * LEGEND_ROW_IN)
     return fig
@@ -332,11 +224,7 @@ def plot_diagnostic(
     area: np.ndarray,
     area_v2: np.ndarray,
 ):
-    """The four diagnostics as standalone figures, keyed by name.
-
-    Separate rather than stacked so each can stand on its own in the text; they
-    keep the shared time axis, which is all the stack really bought.
-    """
+    """The four diagnostic figures, keyed by name."""
     figs = {}
 
     def panel(name):
@@ -349,7 +237,7 @@ def plot_diagnostic(
         figs[name] = fig
         return ax
 
-    # ── Foot velocities ──────────────────────────────────────────────────────
+    # --- Foot velocity ---
     ax = panel("velocity")
     ax.plot(t_arr, v_foot_x, "C0-", lw=2, label=r"$v_{\mathrm{foot},x}$ (signed)")
     ax.plot(t_arr, v_foot_mag, "C1--", lw=1.5, label=r"$|v_{\mathrm{foot}}|$ (magnitude)")
@@ -357,9 +245,8 @@ def plot_diagnostic(
     ax.legend(handles=ax.get_legend_handles_labels()[0] + [_POWER_PATCH],
               loc="upper right")
 
-    # ── Instantaneous drag-thrust ────────────────────────────────────────────
+    # --- Drag thrust ---
     ax = panel("thrust")
-    # C4, not C2: C2 is the red of the anti-thrust fill.
     ax.plot(t_arr, F_drag_x, "C4-", lw=2)
     ax.fill_between(t_arr, 0, F_drag_x, where=F_drag_x > 0,
                      alpha=0.35, color=PALETTE[1], label=r"thrust ($+x$)")
@@ -369,23 +256,19 @@ def plot_diagnostic(
     ax.legend(handles=ax.get_legend_handles_labels()[0] + [_POWER_PATCH],
               loc="upper right")
 
-    # ── Cumulative impulse ───────────────────────────────────────────────────
+    # --- Cumulative impulse ---
     ax = panel("impulse")
     ax.plot(t_arr, impulse, "C3-", lw=2)
     ax.set_ylabel(r"$\int F_{\mathrm{drag},x}\,\mathrm{d}t$  [N$\cdot$s]")
     ax.legend(handles=[_POWER_PATCH], loc="upper right")
 
-    # ── Presented area ───────────────────────────────────────────────────────
-    # Two axes rather than one normalised pair: both quantities are absolute and
-    # in different units, and the area in cm^2 is the number the hypothesis is
-    # about, so it should be readable off the axis rather than as a ratio.
+    # --- Presented area (twin axes, different units) ---
     ax = panel("area")
     ax.plot(t_arr, area * 1e4, "C0-", lw=2, label=r"$A$ (wetted, projected)")
     ax.set_ylabel(r"presented area $A$ [cm$^2$]", color="C0")
     ax.tick_params(axis="y", labelcolor="C0")
     ax2 = ax.twinx()
-    # C3, not the C1 the velocity panel uses for its second curve: C1 is green
-    # in this style and would sit on top of the green power-stroke shading.
+    # C3 rather than green C1, which would blend with the shading
     ax2.plot(t_arr, area_v2 * 1e4, "C3--", lw=1.5,
              label=r"$A\,|v|^2$ (drag-relevant)")
     ax2.set_ylabel(r"$A\,|v|^{2}$ [cm$^2$m$^2$s$^{-2}$]", color="C3")
@@ -407,9 +290,7 @@ def main():
     )
     parser.add_argument("--solution", type=Path,
                         default=_ROOT / "task3_solution.npz")
-    # No choices=: the leg names are the robot's, and which robot this is only
-    # becomes known when the solution loads.  Default is its first leg, which
-    # on amph is the Front_Left this always defaulted to.
+    # Leg names depend on the robot in the solution; default is its first leg.
     parser.add_argument("--leg", default=None)
     parser.add_argument("--save", type=Path, default=None)
     parser.add_argument(
@@ -433,8 +314,7 @@ def main():
             f"{d['robot']} has legs {all_legs}, not {leg_arg!r}.")
 
     Xc_leg, phase, _ = solution_states(robot, d, args.solution.name)
-    # Reduced coordinates for a closed-chain robot; the identity for a serial
-    # one, whose array is returned untouched.
+    # FK and Jacobians need tree coordinates.
     Xc_tree = expand_to_tree(robot, Xc_leg, nq)
     t_arr = phase * T
     w, _ = quadrature_weights(N, T)
@@ -472,8 +352,7 @@ def main():
               f"net {totals['net']:+.4f} N·s")
 
     if args.overlay:
-        # half_width() is an rcParams update, so it is scoped: the standalone
-        # panels above are full-width figures and must keep their own type.
+        # Scope the half-width rcParams to this figure
         with plt.rc_context():
             half_width()
             fig = plot_impulse_overlay(phase, overlay, legs)

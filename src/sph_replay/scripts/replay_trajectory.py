@@ -1,26 +1,17 @@
 #!/usr/bin/env python3
-"""Prescribe an OCP solution to a robot in Gazebo.
+"""ROS node that replays an OCP solution's joint trajectory in Gazebo.
 
-Parameters (private):
-    ~npz_path   solution written by extract_solution()
-    ~n_repeat   how many times to repeat the cycle
-    ~robot      registered robot name; see hydro_model/robots/.  Optional --
-    the solution file records which robot it belongs to, so this only has to
-    be set to assert that the two agree.
+Publishes a JointTrajectory to /<robot>/joint_trajectory_replay, which the
+replay plugin applies. The base stays free and is moved only by the fluid.
+Shuts roslaunch down when the replay is done.
 
-Only the joints are prescribed.  They are published as a JointTrajectory that
-the model's replay plugin interpolates and applies with Joint::SetPosition.
+Private parameters:
+  ~npz_path   solution file (required)
+  ~n_repeat   number of cycles (default 1)
+  ~robot      optional; must match the robot recorded in the solution
 
-The base is never touched: it spawns wherever the world file puts it and is
-free from then on, so its trajectory is whatever the fluid coupling produces.
-This script used to set it once from the solution's q0 via
-/gazebo/set_model_state, but that call had in fact never taken effect -- the
-vendored gazebo_ros rejects a ModelState whose scale is (0,0,0), which is the
-default, and reports the failure only in the response nobody read.  Both robots
-have therefore always run with a free base, and that is the intended behaviour.
-
-For a closed-chain robot the trajectory carries the *tree* joints, not the
-actuated ones -- see expand_trajectory().
+Usually started by swimming_pool.launch:
+  roslaunch amph swimming_pool.launch npz_path:=/home/ws/task3_solution.npz
 """
 import os
 import sys
@@ -36,20 +27,11 @@ from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
 from stage1_gait_optimization.hydro_model.robot import QuadrupedRobot  # noqa: E402
 from stage1_gait_optimization.hydro_model.trajectory import load_solution  # noqa: E402
 
-# State layout in the OCP solution, with nq read from the file:
-#   q[0:3]      = base position (x, y, z)
-#   q[3:7]      = base quaternion (x, y, z, w)
-#   q[7:nq]     = actuated coordinates (theta)
-#   dq[0:6]     = base velocity (linear xyz + angular xyz)
-#   dq[6:]      = actuated velocities (thetadot)
+# Solution state: [pos (3), quat xyzw (4), theta; base twist (6), thetadot]
 
-# Waypoints per solution interval for a closed-chain robot.  The plugin lerps
-# between waypoints in joint space, but tree angles are a nonlinear function of
-# theta, so interpolating the knots directly leaves the loops open in between:
-# on the body2 solution the pins separate by up to 1.7 mm mid-interval, against
-# links ~50 mm long.  16 subdivisions puts a waypoint every ~4 ms and brings
-# that to 35 um (closure is exact at the waypoints themselves).  A serial robot
-# needs none of this.
+# Waypoints per interval for closed-chain robots. The plugin interpolates tree
+# joints linearly, which opens the loops between waypoints (BODY2: 1.7 mm gap
+# with 1 subdivision, 35 um with 16).
 SUBDIV_CLOSED_CHAIN = 16
 
 
@@ -69,15 +51,10 @@ def resample(theta, thd, times, n_sub):
 
 
 def expand_trajectory(spec, theta, thd):
-    """Return (joint_names, positions, velocities) for the joints Gazebo has.
+    """``(joint_names, positions, velocities)`` for all Gazebo joints.
 
-    A serial robot's actuated coordinates *are* its joints, so this is a
-    rename.  A closed-chain robot's URDF is a tree with more joints than
-    degrees of freedom -- 24 against 8 for BODY2 -- because URDF cannot express
-    the loop-closure pins.  Prescribing only the 8 actuated joints would leave
-    the other 16 links to swing free and the legs would come apart, so the
-    coordinate map expands theta onto the whole tree and every joint of it is
-    prescribed.  The loops then close by construction.
+    For closed-chain robots theta is expanded to every tree joint, so the
+    passive joints are prescribed too and the loops stay closed.
     """
     if spec.coordinate_map is None:
         return list(spec.actuated_joint_names), theta, thd
@@ -85,10 +62,8 @@ def expand_trajectory(spec, theta, thd):
     robot = QuadrupedRobot(spec)
     cmap, model = robot.coord_map, robot.model
 
-    # (name, offset into the joint block, nq, offset into the velocity block)
-    # per tree joint, in model order, skipping the free-flyer the coordinate
-    # map's blocks exclude.  An unbounded joint stores (cos, sin) rather than
-    # an angle, so its nq is 2.
+    # (name, q offset, nq, v offset) per tree joint, excluding the free-flyer.
+    # Continuous joints have nq = 2 (cos, sin).
     tree = [(model.names[j], model.joints[j].idx_q - 7, model.joints[j].nq,
              model.joints[j].idx_v - 6)
             for j in range(1, model.njoints)
@@ -104,9 +79,7 @@ def expand_trajectory(spec, theta, thd):
             pos[i, k] = np.arctan2(q_j[iq + 1], q_j[iq]) if nq_j == 2 else q_j[iq]
             vel[i, k] = v_j[iv]
 
-    # atan2 cuts at +-pi and BODY2's hips run right up to it, so a joint can
-    # come back on the far side between two waypoints; the plugin would then
-    # lerp the long way round.  Unwrapping is a no-op unless that happens.
+    # Unwrap so the plugin never interpolates across the +-pi cut.
     return [name for name, _, _, _ in tree], np.unwrap(pos, axis=1), vel
 
 
@@ -121,8 +94,7 @@ def main():
         rospy.logfatal('~npz_path parameter is required')
         return
 
-    # The solution names its own robot (v1 files predate the field and are read
-    # as what they are), so nothing here has to assume one.
+    # The robot is read from the solution file.
     sol = load_solution(npz_path)
     if declared and declared != sol['robot']:
         rospy.logfatal('%s holds a solution for %r, but ~robot says %r',
@@ -151,7 +123,7 @@ def main():
         '/%s/joint_trajectory_replay' % spec.ros,
         JointTrajectory, queue_size=1, latch=True)
 
-    # ── Send initial joint positions so legs reach start pose ─────────────
+    # --- Move to the start pose ---
     init_traj = JointTrajectory()
     init_traj.header.stamp = rospy.Time.now()
     init_traj.joint_names = joint_names
@@ -174,7 +146,7 @@ def main():
     except rospy.exceptions.ROSInterruptException:
         return
 
-    # ── Build trajectory repeated n_repeat times ──────────────────────────
+    # --- Full trajectory, repeated n_repeat times ---
     traj = JointTrajectory()
     traj.header.stamp = rospy.Time.now()
     traj.joint_names = joint_names
@@ -182,7 +154,7 @@ def main():
     for rep in range(n_repeat):
         t_offset = rep * T_total
         for i in range(len(times)):
-            # Skip the first point of subsequent cycles — it duplicates the last
+            # The first point of later cycles duplicates the previous last one
             if rep > 0 and i == 0:
                 continue
             pt = JointTrajectoryPoint()

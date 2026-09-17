@@ -1,37 +1,15 @@
 #!/usr/bin/env python3
-"""
-Cost of transport vs. cycle period at a fixed forward speed, one curve per gait.
+"""Cost of transport vs. solved cycle period at one speed of a co-design sweep.
 
-Reads ``codesign_summary.json`` — the sweep summary written by
-``codesign/run_codesign.py`` — and plots a single speed slice of it.  The inner
-OCP minimises energy subject to an average-speed floor (ε-constraint), and the
-floor binds to ~1e-7, so every point at one ``v_target`` really is at the same
-forward speed and the only thing varying along the curve is the cadence.  The
-figure is therefore the answer to "at this speed, what cycle period swims most
-efficiently, and does the answer depend on the gait?".
-
-COT here is the sweep's own definition (``codesign/solver.py``):
-
-    COT = ∫|τ·q̇| dt / (m g d)
-
-— mechanical work over one cycle per unit weight per unit distance travelled,
-so it is dimensionless and comparable across gaits and speeds.
-
-Two features of the sweep the figure makes explicit:
-
-  - The period grid is over the *centre* T of a free-T refine window
-    (``FREE_T_BAND``, ±0.15 s by default), and the solver may move T inside it.
-    x is the solved period, so the samples are unevenly spaced.  Points whose T
-    ended up pinned at a window edge are drawn open: their cadence is set by the
-    window, not by an efficiency optimum, so they are not stationary points of
-    the curve.  In the shipped sweep that is 57% of all solves.
-  - Each point is an independent local NLP solution, so the connecting line is a
-    guide to the eye, not an interpolation of one continuous branch.
+One curve per gait; COT = ∫|τ·q̇| dt / (m g d) as in codesign/solver.py. Open
+markers: T pinned at the edge of its free-T window (not a true optimum).
+Stars: lowest COT per gait. Rings: Pareto-front points. Lines only guide the
+eye; each point is an independent solve.
 
 Usage:
-  python plot_cot_vs_period.py
-  python plot_cot_vs_period.py --speed 0.15 --save ../../docs/figures/cot_vs_period.pdf
-  python plot_cot_vs_period.py --gaits LSPG25 LSPG33 --speed 0.25
+  python stage3_visualization/speed_sweep/plot_cot_vs_period.py
+  python stage3_visualization/speed_sweep/plot_cot_vs_period.py --speed 0.15 --save cot_vs_period.pdf
+  python stage3_visualization/speed_sweep/plot_cot_vs_period.py --gaits LSPG25 LSPG33 --speed 0.25
 """
 from __future__ import annotations
 
@@ -57,7 +35,7 @@ from stage3_visualization.common import sweep_io
 
 DEFAULT_SUMMARY = (Path(__file__).resolve().parents[2] / "stage1_gait_optimization" /
                    "codesign" / "codesign_results" / "codesign_summary.json")
-DEFAULT_SPEED = 0.2      # m/s — the pipeline's nominal design speed (V_TARGET)
+DEFAULT_SPEED = 0.2      # [m/s]
 
 full_width()
 
@@ -86,30 +64,20 @@ def load_slice(rows: list, speed: float, gaits=None):
 
 
 def plot_cot_vs_period(by_gait: dict, v_target: float, band: float):
-    # The text-block canvas, so the figure goes in unscaled and its type matches
-    # the rest of the thesis.  It used to be 8.8 in wide against a 5.98 in block,
-    # which LaTeX shrank to 68% and took the tick labels with it.
+    """COT vs T curves for one speed slice."""
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 3.0))
 
     for gait, rows in by_gait.items():
         colour, marker = style_for(gait)
         T = np.array([r["T"] for r in rows])
         cot = np.array([r["cot"] for r in rows])
-        # Pinned at a window edge -> the cadence is the constraint's, not the
-        # solver's choice.  Drawn open; interior optima drawn filled.
         pinned = np.array([sweep_io.is_pinned(r, band) for r in rows])
-        # On the sweep's own Pareto front: this point is the one the front
-        # figure carries at this speed, so a reader can find it on the curve
-        # rather than inferring it from the minimum.
         front = np.array([bool(r.get("pareto")) for r in rows])
 
         best = int(np.argmin(cot))
-        # Name only.  The per-gait minimum used to ride along in the label, but
-        # at text width that column is 1.8 in and the numbers no longer fit;
-        # they are printed to stdout, which is where a caption takes them from.
         ax.plot(T, cot, color=colour, lw=1.2, alpha=0.85, zorder=2,
                 label=tex(gait))
-        # Ring under the marker, wide enough to stay visible around it.
+        # Ring around Pareto-front points
         ax.plot(T[front], cot[front], color="0.25", linestyle="none", marker="o",
                 markersize=10, markerfacecolor="none", markeredgewidth=0.8,
                 zorder=2.5)
@@ -118,26 +86,21 @@ def plot_cot_vs_period(by_gait: dict, v_target: float, band: float):
         ax.plot(T[pinned], cot[pinned], color=colour, linestyle="none",
                 marker=marker, markersize=5.5, markerfacecolor="none",
                 markeredgewidth=0.9, zorder=3)
-        # Most efficient cadence for this gait.
+        # Lowest COT of this gait
         ax.plot(T[best], cot[best], color=colour, linestyle="none", marker="*",
                 markersize=13, markeredgecolor="k", markeredgewidth=0.4, zorder=4)
 
     ax.set_xlabel(r"cycle period $T$ [s]")
     ax.set_ylabel(r"cost of transport $\mathrm{COT} = \int|\tau\dot{q}|\,"
                   r"\mathrm{d}t \,/\, (m g d)$ [-]")
-    # No title: this goes into the thesis via \includegraphics and the LaTeX
-    # caption describes it, as it does for every other figure here.  The speed
-    # the slice is taken at is the one thing the axes do not carry, so it is
-    # annotated inside them instead.
+    # No title (LaTeX caption); annotate the slice speed instead.
     ax.annotate(rf"$v = {v_target:.3f}$ m\,s$^{{-1}}$", xy=(0.99, 0.97),
                 xycoords="axes fraction", ha="right", va="top", fontsize=8,
                 color="0.35")
     ax.grid(alpha=0.3)
     ax.margins(y=0.08)
 
-    # Both legends go above the axes, in one block: at text width there is no
-    # room for a right-hand column, and the curves cross freely so an in-axes
-    # box lands on data.
+    # Combined legend above the axes
     marks = [
         Line2D([], [], color="0.35", linestyle="none", marker="o",
                markersize=5.5, label=r"$T$ interior to refine window"),
@@ -156,7 +119,6 @@ def plot_cot_vs_period(by_gait: dict, v_target: float, band: float):
               columnspacing=1.2, handlelength=1.6, frameon=False,
               borderaxespad=0.2)
 
-    # An outside legend is invisible to tight_layout, so buy its rows here.
     legend_row(fig, ax, rows=2)
     fig.tight_layout(pad=0.3)
     return fig
@@ -202,8 +164,7 @@ def main():
 
     fig = plot_cot_vs_period(by_gait, v, band)
     if args.save:
-        # pad_inches above the default: the tight bbox under-measures usetex
-        # text, which shaves the last glyph off the widest legend entry.
+        # Extra padding: the tight bbox under-measures usetex text.
         fig.savefig(args.save, dpi=300, bbox_inches="tight", pad_inches=0.15)
         print(f"Saved → {args.save}")
     else:

@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
-"""Log a codesign_results/ directory produced elsewhere (e.g. on a server) as an
-MLflow run in the local tracking store.
+"""Log a codesign_results/ directory from another machine as a local MLflow run.
 
-``run_codesign.py`` logs its sweep at the end of the solve.  When the sweep ran
-on another machine and only the output directory came back, this replays that
-logging step from the files: the metrics are all recomputed from
-``codesign_summary.json`` and the whole directory is attached as artifacts.
+Metrics and sweep parameters are recomputed from ``codesign_summary.json``.
+Settings that cannot be derived from the results (solver options, git SHA, ...)
+are only logged if given via ``--params``, e.g.
+``{"N_collocation": 40, "tau_max": 12.0, "git_sha": "4f49780"}``.
 
-The sweep params that are *visible in the data* (speed targets, T grid, gaits,
-number of solves) are derived from the summary.  The ones that are not — solver
-settings, free-T band, git SHA — are NOT taken from this checkout, because the
-local config may differ from what the server actually solved with.  Pass them in
-a JSON file to record them:
-
-    python import_codesign_run.py ~/downloads/codesign_results \\
-        --params server_config.json --label server
-
-where server_config.json holds e.g.
-    {"N_collocation": 40, "tau_max": 12.0, "free_T_band": 0.2,
-     "git_sha": "4f49780", "parallel": true}
+Usage:
+  python stage1_gait_optimization/codesign/import_codesign_run.py ~/downloads/codesign_results \\
+      --params server_config.json --label server
 """
 
 from __future__ import annotations
@@ -36,7 +26,7 @@ MLFLOW_EXPERIMENT = "gait_codesign"
 
 
 def _derived_params(rows: list[dict]) -> dict:
-    """The sweep configuration that can be read back off the results."""
+    """Sweep parameters that can be recovered from the results."""
     speeds = np.array(sorted({r["v_target"] for r in rows}))
     t_grid = np.array(sorted({r["t_center"] for r in rows}))
     gaits = list(dict.fromkeys(r["gait"] for r in rows))
@@ -91,13 +81,12 @@ def main() -> None:
     params = _derived_params(rows)
     if args.params:
         extra = json.loads(args.params.read_text())
-        # null means "I don't know what the server used" — leave it unlogged
-        # rather than recording a wrong value.
+        # null marks an unknown value; skip it rather than log a wrong one.
         params.update({k: v for k, v in extra.items() if v is not None})
     else:
         print("  (no --params: solver settings and git_sha are not recorded)")
 
-    # The sweep finished when its summary was written, not when it was imported.
+    # Timestamp the run by when the sweep finished, not when it was imported.
     finished = datetime.fromtimestamp(summary_path.stat().st_mtime)
     stamp = finished.strftime("%Y%m%d_%H%M%S")
     run_name = args.run_name or (f"{stamp}_{args.label}" if args.label else stamp)

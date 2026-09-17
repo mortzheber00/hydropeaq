@@ -1,50 +1,27 @@
 #!/usr/bin/env python3
-"""
-SPH boundary particles overlaid on the robot's true STL mesh.
+"""Plot amph's SPH boundary particles on top of its STL meshes (neutral pose).
 
-The boundary particles FluidSimulator samples on the robot's collision mesh
-(Poisson-disk surface sampling, see
-splishsplash/GazeboFluidSimulator/FluidSimulator.cpp::publishBoundaryParticles)
-are drawn in red on top of the URDF visual meshes at the same neutral
-configuration.
+The particles in data/boundary_particles_full_robot.npy were captured from a
+Gazebo run at the zero pose, in the base frame. To regenerate them:
 
-The boundary particles were captured once from a live run and are checked in
-at data/boundary_particles_full_robot.npy (world-frame pool/wall points
-already filtered out, and the spawn translation removed so the cloud sits in
-the base_link-relative frame the hydro_model uses, at the zero joint
-configuration).
+1. Write a zero-pose solution (npz_path:='' does not disable the replay):
 
-swimming_pool.launch always starts sph_replay's replay_trajectory.py, which
-drives every joint toward frame 0 of whatever ~npz_path resolves to (default:
-/home/ws/task3_solution.npz -- not the zero pose). Passing npz_path:='' on
-the roslaunch command line does NOT disable it: roslaunch treats an empty
-CLI override as not given and falls back to the arg's default, so the replay
-runs anyway. To sample at the true zero pose, point npz_path at a synthetic
-solution file whose actuated coordinates are all zero instead -- one array
-per key expected by hydro_model/trajectory.py::load_solution():
+       n_theta = 12; nq = 7 + n_theta; nv = 6 + n_theta
+       X = np.zeros((nq + nv, 2)); X[6, :] = 1.0   # identity quaternion
+       np.savez("zero_pose_solution.npz", T=1.0, X=X, U=np.zeros((n_theta, 1)),
+                N=1, nq=nq, version=2, robot="amph", coords="tree", n_theta=n_theta)
 
-    n_theta = 12; nq = 7 + n_theta; nv = 6 + n_theta
-    X = np.zeros((nq + nv, 2)); X[6, :] = 1.0   # identity quaternion
-    np.savez("zero_pose_solution.npz", T=1.0, X=X, U=np.zeros((n_theta, 1)),
-             N=1, nq=nq, version=2, robot="amph", coords="tree",
-             n_theta=n_theta)
+2. Run the simulation and dump the particles once "Boundary particles: N" is printed:
 
-then:
+       roslaunch amph swimming_pool.launch gui_required:=false bag_path:='' \\
+           npz_path:=/path/to/zero_pose_solution.npz
+       gz topic -e /gazebo/swimming_pool/rigids_pos -d 1 > rigids_pos_raw.txt
 
-    roscore &
-    roslaunch amph swimming_pool.launch gui_required:=false bag_path:='' \\
-        npz_path:=/path/to/zero_pose_solution.npz
-    # once "Boundary particles: N" has printed:
-    gz topic -e /gazebo/swimming_pool/rigids_pos -d 1 > rigids_pos_raw.txt
-
-then parse the text dump's repeated "x:"/"y:"/"z:" fields into an (N,3) array,
-keep only points with z > 0.2, |x| < 0.85, |y| < 0.4 (drops the pool floor
-and walls, which is everything outside the robot's own footprint), and add
-(0.5, 0, -0.5) to undo the robot's spawn pose <pose>-0.5 0 0.5 0 0 0</pose>
-in src/amph/worlds/swimming_pool.world.
+3. Parse the x/y/z fields, keep z > 0.2, |x| < 0.85, |y| < 0.4 (drops the pool)
+   and add (0.5, 0, -0.5) to undo the spawn pose.
 
 Usage:
-  python boundary_particles_on_mesh.py
+  python stage3_visualization/model/boundary_particles_on_mesh.py
 """
 from __future__ import annotations
 
@@ -71,11 +48,7 @@ SAVE_PATH = Path(__file__).parents[2] / "docs" / "figures" / "sim" / "boundary_p
 
 ELEV, AZIM = 25.0, -60.0
 
-# What a point of legend text is worth on the page depends on how far LaTeX
-# scales the figure, so the size is set relative to the sibling robot figures
-# rather than in isolation: run_hydro_validation's are 8 pt on a 5.0 in page,
-# this one is 5.91 in wide once savefig's tight bbox has cropped it, and
-# 8 * 5.91 / 5.0 puts the two at the same size in the document.
+# Matches the 8 pt legends of run_hydro_validation after LaTeX scaling (8 * 5.91 / 5.0)
 LEGEND_PT = 9.5
 
 
@@ -87,11 +60,7 @@ def main() -> None:
     robot.forward_kinematics(q)
 
     tm = _make_urdf_transform_manager(robot)
-    # Every tree joint has to be set, not just the actuated ones: on a
-    # closed-chain robot the passive joints carry the loop closure, and leaving
-    # them at zero tears the legs off their pins.  The angle comes from the
-    # Pinocchio configuration by joint index -- for a continuous joint that
-    # configuration is a (cos, sin) pair rather than an angle.
+    # Set all tree joints; continuous joints are stored as (cos, sin).
     for jid in range(1, robot.model.njoints):
         joint = robot.model.joints[jid]
         if joint.nq == 1:
@@ -106,10 +75,7 @@ def main() -> None:
 
     fig = plt.figure(figsize=(7, 6))
     ax = fig.add_subplot(111, projection="3d")
-    # Axes3D normally overwrites every artist's zorder with a depth ranking
-    # computed per collection, so a link mesh whose mean depth is nearest hides
-    # the whole particle cloud (the front-right hip did exactly that).  Turning
-    # that off keeps the draw order we ask for: meshes first, particles on top.
+    # Use explicit zorder (meshes below particles) instead of Axes3D depth sorting
     ax.computed_zorder = False
 
     with warnings.catch_warnings():
@@ -119,8 +85,7 @@ def main() -> None:
     for coll in ax.collections:
         coll.set_zorder(1)
 
-    # The particles sample the same surface the mesh draws, so they hide it
-    # unless they stay small and semi-transparent.
+    # Small and translucent so the mesh stays visible
     ax.scatter(
         boundary_pts[:, 0], boundary_pts[:, 1], boundary_pts[:, 2],
         s=1.5, c=thesis_style.PALETTE[2], alpha=0.45, linewidths=0, rasterized=True,

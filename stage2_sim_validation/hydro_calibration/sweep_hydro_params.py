@@ -1,38 +1,20 @@
 #!/usr/bin/env python3
-"""
-Hydrodynamic parameter sweep to match SPH simulation.
+"""Grid-search fit of the hydrodynamic coefficients to SPH replays.
 
-Builds six unit-coefficient CasADi functions once (quadratic drag Cd_t/Cd_a,
-linear drag Cd_lin_t/Cd_lin_a, added mass Ca_t/Ca_a, each set to 1 in
-isolation), then evaluates any parameter combination cheaply at rollout time
-by scaling and summing the pre-compiled components.
+Every force is linear in its coefficient, so each term is compiled once with a
+unit coefficient and any parameter set is evaluated by scaling and summing:
+    tau_drag  = Cd_t * tau_drag_t + Cd_a * tau_drag_a
+              + Cd_lin_t * tau_drag_lin_t + Cd_lin_a * tau_drag_lin_a
+    M_added   = Ca_t * M_added_t + Ca_a * M_added_a
 
-This works because every force is linear in its coefficient. The quadratic
-and linear drag terms are independently linear (the linear-drag unit
-components keep the model default v_linear_threshold):
-    tau_drag  = Cd_t * tau_drag_t(q,v)     + Cd_a * tau_drag_a(q,v)
-              + Cd_lin_t * tau_drag_lin_t(q,v) + Cd_lin_a * tau_drag_lin_a(q,v)
-    M_added   = Ca_t * M_added_t(q)        + Ca_a * M_added_a(q)
-    C_added_v = Ca_t * C_A_t_v(q,v)        + Ca_a * C_A_a_v(q,v)
-
-Several runs can be fitted jointly: pass matching lists to --ocp and --bag and
-each contributes its weighted RMSE divided by its own SPH cycle distance, so a
-long stride does not outweigh a short one.  One coefficient set then has to
-explain every run, which is what makes it worth reporting as identified rather
-than tuned to a single recording.
+Several (--ocp, --bag) pairs are fitted jointly; each run's loss is normalised
+by its own SPH cycle distance. --start is the bag time of OCP t=0 and rarely 0,
+since the replay first moves to the start pose.
 
 Usage:
-    python3 sweep_hydro_params.py [--ocp PATH...] [--bag PATH...] [--start T...]
-                                  [--grid-n N]
-
-Options:
-    --ocp PATH...   OCP solution .npz, one per bag   (default: /home/ws/task3_solution.npz)
-    --bag PATH...   SPH rosbag, paired by position   (default: sim_log.bag in mlruns)
-    --start T...    Bag time [s] at OCP t=0; one value for all, or one per bag
-                    (default: 0.0 -- the replay's start-pose phase runs first,
-                    so this is almost never the value you want)
-    --fix N=V...    Hold a coefficient out of the search, e.g. --fix Ca_t=1.0
-    --grid-n INT    Grid points per param            (default: 5)
+  python stage2_sim_validation/hydro_calibration/sweep_hydro_params.py \\
+      --ocp run1.npz run2.npz --bag run1.bag run2.bag --start 1.49 --grid-n 5
+  python stage2_sim_validation/hydro_calibration/sweep_hydro_params.py --fix Ca_t=1.0 Ca_a=0.05
 """
 
 import argparse
@@ -56,59 +38,31 @@ from stage1_gait_optimization.hydro_model.trajectory import (
     load_solution,
 )
 
-# ── Parameter bounds [lower, upper] ───────────────────────────────────────────
-# The paddle's flow regime, measured from the solved trajectories rather than
-# assumed (calf cylinder D = 0.040 m, peak base-relative speed 1.40-1.66 m/s):
+# --- Search bounds ---
+# Flow regime of the paddles: KC ~ 31-35, Re ~ 6e4. The legs act like flat
+# plates rather than cylinders, so Cd_t is expected around 2 or higher and Ca_t
+# around 1 (plate of width c, referenced to the circle of diameter c).
 #
-#     KC = U_max*T/D  =  35.0, 35.0, 31.2      Re = U_max*D/nu  =  5.6-6.6e4
-#
-# All three runs sit within 12% of one another, which is the saturated-stroke
-# problem in one number: the gait OCP pins the thigh against its joint limits,
-# so every gait excites the same KC and the drag/added-mass split is only
-# weakly observable.  That is the gap AMP-1 exists to open.
-#
-# The reference body for Cd is a flat plate, not a circular cylinder.  The
-# cylinder primitive is only a carrier for the drag area: the calf's fitted
-# radius (19.98 mm) already reproduces its measured broadside silhouette
-# (4478 mm^2, equivalent radius 19.35 mm) to within 3%, so the area is right
-# and Cd has to be the coefficient for the shape that area belongs to.  Face-on
-# that shape is a paddle -- the two crossflow silhouettes differ by 1.5x
-# (2957 vs 4478 mm^2), which a cylinder's cannot.  A flat plate normal to the
-# flow is Cd ~ 2.0 in steady flow and higher in oscillatory flow at this KC,
-# against ~1.2 for a cylinder.  The upper bound is set to leave room for that.
-#
-# Added mass is less affected by the shape swap: for a plate of width c the 2D
-# added mass is rho*pi*c^2/4, i.e. Ca ~ 1.0 referenced to the circle of
-# diameter c, which is the radius the model already carries.  Sarpkaya's data
-# at KC ~ 30, beta ~ 1600 puts Ca past its KC ~ 15 trough and recovering toward
-# that value.  Bounded away from zero so the optimiser cannot buy forward
-# displacement by deleting the fluid inertia, which is what Ca_t -> 0 was.
-#
-#   name      search          basis
-#   Cd_t      0.0 - 4.0       flat plate normal to flow ~2.0 steady, more in
-#                             oscillatory flow at KC ~ 30.  Left wide: a fit
-#                             landing near 2 inside a wide box is evidence
-#   Cd_a      0.0 - 2.0       left wide; 0.1-1.0 axial blunt-body expected
-#   Ca_t      0.6 - 1.4       Ca(KC~30, beta~1600) ~ 0.7-1.2; 1.0 for a plate
-#                             of width c referenced to the circle of diameter c
-#   Ca_a      0.05 - 0.40     Lamb's k1 for the measured fineness ratios --
-#                             base_link L/D = 2.01 -> 0.21, calf 2.90 -> 0.14
-#   Cd_lin_*  0.0 - 5.0       no literature value: a linearisation scale tied
-#                             to V_LINEAR_THRESHOLD, not a drag coefficient
+#   name      search        basis
+#   Cd_t      2.0 - 5.0     flat plate normal to flow, ~2 steady, more when oscillating
+#   Cd_a      0.0 - 2.0     axial blunt body, 0.1-1.0 expected
+#   Ca_t      0.6 - 2.4     kept away from 0 so the fit cannot drop the fluid inertia
+#   Ca_a      0.05 - 0.40   Lamb's k1 for the link fineness ratios (0.14-0.21)
+#   Cd_lin_*  0.0 - 5.0     linearisation scale tied to V_LINEAR_THRESHOLD
 BOUNDS = [(2.0, 5.0), (0.0, 2.0), (0.6, 2.4), (0.05, 0.40), (0.0, 5.0), (0.0, 5.0)]
 PARAM_NAMES = ["Cd_t", "Cd_a", "Ca_t", "Ca_a", "Cd_lin_t", "Cd_lin_a"]
 
 # Objective weights for (x, y, z) RMSE
 W_XYZ = np.array([1.0, 0.01, 0.0])
 
-# Loss returned when the rollout diverges; well above any converged loss (~0.1)
+# Loss for diverged rollouts; far above any converged loss (~0.1)
 DIVERGED_LOSS = 1e3
 
 
-# ── Build ─────────────────────────────────────────────────────────────────────
+# --- Model components ---
 
 def build_components(robot):
-    """Build the base rigid-body dynamics and four unit hydro components.
+    """Build the hydro-free base dynamics and the six unit hydro components.
 
     Returns
     -------
@@ -128,10 +82,8 @@ def build_components(robot):
     base_dyn = SymbolicDynamics(robot, Cd_t=0, Cd_a=0, Ca_t=0, Ca_a=0)
     print(f"  Done in {time.time() - t0:.1f}s\n")
 
-    # FK was already set up in base_dyn; reuse cmodel/cdata/q/v for unit models.
-    # Quadratic-drag units set Cd_lin_*=0 explicitly so the linear damping is
-    # carried only by the dedicated drag_lin_* units (otherwise Cd_lin_*
-    # defaults to the quadratic Cd and would double-count).
+    # Reuse base_dyn's CasADi model and symbols. Set every coefficient
+    # explicitly; omitted ones would take their fitted defaults.
     unit_specs = [
         ("drag_t",     dict(Cd_transverse=1, Cd_axial=0, Cd_lin_transverse=0,
                             Cd_lin_axial=0, Ca_transverse=0, Ca_axial=0)),
@@ -168,36 +120,15 @@ def build_components(robot):
 
 
 def make_eval_fd(base_dyn, components):
-    """Return a base-acceleration callable parametrised by
-    (Cd_t, Cd_a, Ca_t, Ca_a, Cd_lin_t, Cd_lin_a).
+    """Base acceleration ``eval_fd(q, v, a_joints, *coefficients)`` with prescribed joints.
 
-    Assembles:
-        M   = M_rb + Ca_t * M_added_t + Ca_a * M_added_a
-        rhs = tau_buoyancy
-              + Cd_t * tau_drag_t + Cd_a * tau_drag_a
-              + Cd_lin_t * tau_drag_lin_t + Cd_lin_a * tau_drag_lin_a
-              - C_rb @ v - (Ca_t * C_A_t_v + Ca_a * C_A_a_v) - g_rb
+        M      = M_rb + Ca_t * M_added_t + Ca_a * M_added_a
+        rhs    = tau_buoyancy + sum(Cd_i * tau_drag_i)
+                 - C_rb @ v - (Ca_t * C_A_t_v + Ca_a * C_A_a_v) - g_rb
         a_base = solve(M[:6, :6], rhs[:6] - M[:6, 6:] @ a_joints)
 
-    The joint torques are deliberately absent.  Gazebo prescribes the joints
-    through a position controller, so the actuator supplies whatever torque
-    tracking demands and the base responds only to the fluid, to gravity and
-    buoyancy, and to the inertial reaction of the joint motion.  That is the
-    first six rows of the inverse dynamics set to zero -- exactly the constraint
-    the OCP itself imposes (``ocp_common.build_collocation_nlp`` requires
-    ``f_inv_dyn(x, a) == vertcat(zeros(6), U)``), so this solves the same base
-    equation the trajectory was generated under.
-
-    Feeding the OCP's ``U`` into a full n_v solve instead would answer a
-    different question -- "same motors, different water" rather than "same joint
-    path, different water".  The two coincide only where U is the inverse-
-    dynamics torque for that motion, i.e. at the coefficients the OCP was solved
-    with, which is the one point a coefficient sweep does not stay at.
-
-    The added-mass Coriolis force C_A·v is recovered the same way
-    SymbolicDynamics does it: tau_added = M_A(q)·a + C_A(q,v)·v is linear in a,
-    so evaluating it at a = 0 isolates C_A·v.  It is linear in the Ca
-    coefficients like M_A, so the unit-component scaling still applies.
+    Joint torques are not used: the joints are position-controlled, so only the
+    unactuated base rows apply (as in the OCP). C_A·v is tau_added at a = 0.
     """
     f_M_rb  = base_dyn.f_M_rb
     f_C_rb  = base_dyn.f_C_rb
@@ -217,9 +148,7 @@ def make_eval_fd(base_dyn, components):
     diverged = np.full(nv_base, np.nan)
 
     def eval_fd(q, v, a_joints, Cd_t, Cd_a, Ca_t, Ca_a, Cd_lin_t, Cd_lin_a):
-        # A rollout that has already blown up feeds inf/nan back in here.  Bail
-        # with NaN rather than evaluating on garbage: rollout_fast's guard turns
-        # that into an aborted rollout and the objective into DIVERGED_LOSS.
+        # Diverged state: return NaN so rollout_fast aborts.
         if not (np.isfinite(q).all() and np.isfinite(v).all()):
             return diverged
         M = (np.array(f_M_rb(q))
@@ -239,16 +168,13 @@ def make_eval_fd(base_dyn, components):
             return np.linalg.solve(M[:nv_base, :nv_base],
                                    rhs[:nv_base] - M[:nv_base, nv_base:] @ a_joints)
         except np.linalg.LinAlgError:
-            # The base block goes singular where a diverging state has already
-            # driven the mass matrix to inf/nan.  The full-nv solve this
-            # replaced returned NaN there instead of raising, and the rollout's
-            # guard is built to handle NaN, so match that.
+            # Singular mass matrix from a diverging state
             return diverged
 
     return eval_fd
 
 
-# ── Rollout ───────────────────────────────────────────────────────────────────
+# --- Rollout ---
 
 def _dq_base_dt(q_base, v_base):
     qx, qy, qz, qw = q_base[3], q_base[4], q_base[5], q_base[6]
@@ -270,21 +196,10 @@ def _dq_base_dt(q_base, v_base):
 
 def rollout_fast(X_ocp, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a,
                  Cd_lin_t, Cd_lin_a):
-    """RK4 base rollout with prescribed joints and parametric hydro.
+    """RK4 base rollout with prescribed joints; returns base position (3, N+1).
 
-    The prescribed joints are linearly interpolated between the interval's two
-    nodes and sampled at each stage's own time (0, dt/2, dt/2, dt).  Holding
-    them at the left node instead lags the joint motion by half a step, which
-    at these step sizes excites a large spurious roll — and here that bias
-    would be absorbed into the fitted coefficients.
-
-    Linear interpolation of the joint velocity makes the joint acceleration
-    constant across the interval, so it is differenced once per step rather
-    than per stage.  It is the only thing the joints contribute to the base
-    equation; the OCP's torques are not used at all, for the reason set out in
-    ``make_eval_fd``.
-
-    Returns xyz : (3, N+1) world-frame base position.
+    Same scheme as simulate_ocp.rk4_base_step: joints interpolated at each
+    stage, joint acceleration constant per interval.
     """
     dt = T / N
     nv_base = 6
@@ -319,8 +234,7 @@ def rollout_fast(X_ocp, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a,
         q_base[3:7] /= np.linalg.norm(q_base[3:7])
         xyz[:, k+1] = q_base[:3]
 
-        # Fixed-step RK4 goes unstable when the damping time constant drops
-        # below dt (large Cd_lin_*).  Abort instead of integrating overflows.
+        # Fixed-step RK4 is unstable for large damping (Cd_lin_*); abort.
         if not np.isfinite(q_base).all() or not np.isfinite(v_base).all():
             xyz[:, k+1:] = np.nan
             break
@@ -328,10 +242,10 @@ def rollout_fast(X_ocp, eval_fd, T, N, nq, Cd_t, Cd_a, Ca_t, Ca_a,
     return xyz
 
 
-# ── Data loading ──────────────────────────────────────────────────────────────
+# --- Data loading ---
 
 def load_ocp(path, robot=None):
-    """Solution arrays in *tree* coordinates (reduced files are expanded)."""
+    """``(X, U, T, N, nq)`` in tree coordinates."""
     d = load_solution(path)
     if robot is None:
         robot = load_robot(d["robot"])
@@ -341,10 +255,7 @@ def load_ocp(path, robot=None):
 
 
 def load_sph_bag(bag_path, start_time, t_ocp):
-    """Read /gazebo/model_states from a rosbag and interpolate to OCP grid.
-
-    Returns xyz_aligned : (3, len(t_ocp)) world-frame position [m].
-    """
+    """Base position (3, len(t_ocp)) from ``/gazebo/model_states``, resampled to the OCP grid."""
     try:
         import rosbag
     except ImportError:
@@ -377,18 +288,10 @@ def load_sph_bag(bag_path, start_time, t_ocp):
     return xyz_aligned
 
 
-# ── Objective ─────────────────────────────────────────────────────────────────
+# --- Objective ---
 
 def dataset_loss(ds, eval_fd, params):
-    """One dataset's contribution: weighted per-axis RMSE, in cycle-distance units.
-
-    Dividing by the run's own SPH cycle distance is what makes several runs
-    poolable.  Without it a fast run's residuals are numerically larger than a
-    slow one's for the same *relative* mismatch, so the fit would quietly
-    optimise the longest stride and ignore the rest.
-
-    Returns (loss, rmse) with rmse in metres for reporting.
-    """
+    """``(loss, rmse)``: weighted RMSE divided by the run's SPH cycle distance, and per-axis RMSE [m]."""
     xyz = rollout_fast(ds["X"], eval_fd, ds["T"], ds["N"], ds["nq"], *params)
     xyz -= xyz[:, [0]]
     rmse = np.sqrt(np.mean((xyz - ds["xyz_ref_rel"])**2, axis=1))  # (3,)
@@ -396,16 +299,9 @@ def dataset_loss(ds, eval_fd, params):
 
 
 def make_objective(datasets, eval_fd, expand=None):
-    """Return objective(params) -> scalar loss over one or more datasets.
+    """Mean ``dataset_loss`` over all datasets as a function of the search vector.
 
-    Loss = mean over datasets of the weighted per-axis RMSE on relative
-    displacement, each normalised by that dataset's own SPH cycle distance.
-    The mean rather than the sum keeps the scale independent of how many runs
-    are pooled, so DIVERGED_LOSS stays comparable across fits.
-
-    ``expand`` maps the grid's search vector to the full six coefficients,
-    so ``--fix`` can hold some of them out of the search entirely rather than
-    pinning them with a degenerate bound.
+    ``expand`` maps the search vector to all six coefficients (for ``--fix``).
     """
     eval_count = [0]
 
@@ -419,8 +315,7 @@ def make_objective(datasets, eval_fd, expand=None):
 
         loss = float(np.mean(losses))
         if not np.isfinite(loss):
-            # Diverged rollout: reject with a finite penalty so argmin stays
-            # well defined (a NaN would win argmin outright).
+            # Finite penalty; NaN would break argmin.
             loss = DIVERGED_LOSS
 
         eval_count[0] += 1
@@ -436,8 +331,6 @@ def make_objective(datasets, eval_fd, expand=None):
 
     return objective
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     _DEFAULT_BAG = (
@@ -480,14 +373,14 @@ def main():
         parser.error("every coefficient is fixed; nothing left to fit")
 
     def expand(free_vals):
-        """Free search vector -> the full six the rollout takes."""
+        """Search vector -> all six coefficients."""
         p = np.empty(len(PARAM_NAMES))
         for n, v in fixed.items():
             p[PARAM_NAMES.index(n)] = v
         p[free] = free_vals
         return p
 
-    # ── Robot & component functions ────────────────────────────────────────
+    # --- Model ---
     robot = load_robot(ROBOT)
     q_n = robot.neutral_config()
     robot.forward_kinematics(q_n)
@@ -496,7 +389,7 @@ def main():
     base_dyn, components = build_components(robot)
     eval_fd = make_eval_fd(base_dyn, components)
 
-    # ── Load OCP & SPH data ────────────────────────────────────────────────
+    # --- Data ---
     datasets = []
     for ocp_path, bag_path, start in zip(args.ocp, args.bag, starts):
         X_ocp, _U, T, N, nq = load_ocp(ocp_path)
@@ -524,7 +417,7 @@ def main():
     objective = make_objective(datasets, eval_fd, expand)
     search_bounds = [BOUNDS[i] for i in free]
 
-    # ── Grid ───────────────────────────────────────────────────────────────
+    # --- Grid search ---
     n = args.grid_n
     ndim = len(search_bounds)
     print(f"Grid sweep: {n}^{ndim} = {n**ndim} evaluations …\n")
@@ -539,7 +432,7 @@ def main():
     best_loss = float(losses[best_idx])
 
 
-    # ── Report ─────────────────────────────────────────────────────────────
+    # --- Report ---
     print("\n" + "="*60)
     print("Best parameters:")
     for i, (name, val) in enumerate(zip(PARAM_NAMES, best)):
@@ -551,9 +444,7 @@ def main():
         print(f"  {name:<8} = {val:.4f}  (range [{lo}, {hi}]){note}")
     print(f"Loss = {best_loss:.6f}")
 
-    # Final rollout per dataset.  Printed separately rather than pooled: a fit
-    # that is good on average can still be poor on one run, and that is exactly
-    # what you want to see before freezing the coefficients.
+    # Report each dataset separately; a good mean fit can hide a poor run.
     for ds in datasets:
         loss_i, _ = dataset_loss(ds, eval_fd, best)
         xyz_best = rollout_fast(ds["X"], eval_fd, ds["T"], ds["N"], ds["nq"], *best)
@@ -565,8 +456,7 @@ def main():
             model_val = xyz_best_rel[i, -1]
             sph_val   = ds["xyz_ref_rel"][i, -1]
             err = model_val - sph_val
-            # SPH is the reference, so it is the denominator; near zero the ratio
-            # is meaningless rather than large.
+            # Relative to SPH; undefined near zero.
             rel = f"{100 * err / abs(sph_val):.2f}%" if abs(sph_val) > 1e-9 else "n/a"
             print(f"  {axis:<6}  {model_val:10.4f}  {sph_val:10.4f}  {err:10.4f}  {rel:>9}")
 

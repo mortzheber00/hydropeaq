@@ -1,30 +1,13 @@
 #!/usr/bin/env python3
-"""
-Prescribed-joint simulation of an OCP solution through the symbolic hydrodynamics.
+"""Roll out an OCP solution through the hydrodynamic model with prescribed joints.
 
-Joint angles and velocities are taken directly from the OCP reference at each
-step (matching what a position controller does in Gazebo). Only the base state
-(position + orientation + base velocity) is integrated forward under the
-hydrodynamic forces.
-
-This isolates the effect of hydrodynamic parameter changes on the base
-trajectory, making it the right tool for tuning Cd_t / Cd_a against a bag.
+The joints follow the solution, as a position controller in Gazebo would; only
+the base is integrated (RK4). Coefficients default to hydro_params; the flags
+override them for this run only. Writes ``<stem>_rollout.npz``.
 
 Usage:
-    python3 simulate_ocp.py [options]
-
-All hydrodynamic coefficients default to the fitted values in
-``hydro_model/hydro_params.py``, the same ones the OCP is solved with, so an
-unflagged run compares like with like.  Override a flag only to probe a
-parameter; to change the model everywhere, edit that file.
-
-Options:
-    --ocp PATH          Input OCP .npz                    (default: task3_solution.npz)
-    --out PATH          Output .npz path                  (default: <stem>_rollout.npz)
-    --Cd_t FLOAT        Transverse drag coefficient
-    --Cd_a FLOAT        Axial drag coefficient
-    --Ca_t FLOAT        Transverse added-mass coefficient
-    --Ca_a FLOAT        Axial added-mass coefficient
+  python stage2_sim_validation/hydro_calibration/simulate_ocp.py --ocp task3_solution.npz
+  python stage2_sim_validation/hydro_calibration/simulate_ocp.py --Cd_t 2.5 --Ca_t 1.0
 """
 
 import argparse
@@ -46,14 +29,10 @@ from stage1_gait_optimization.hydro_model.trajectory import (
     save_solution,
 )
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# --- Helpers ---
 
 def load_ocp(path: str, robot=None):
-    """Solution arrays in the robot's own coordinates, plus the robot.
-
-    Deliberately *not* expanded to the tree: the rollout integrates the base
-    against the reduced dynamics, for which the stored theta is exactly right.
-    """
+    """``(X, U, T, N, nq, robot)`` in the robot's reduced coordinates."""
     d = load_solution(path)
     if robot is None:
         robot = load_robot(d["robot"])
@@ -80,11 +59,7 @@ def build_dynamics(args, robot) -> SymbolicDynamics:
 
 
 def dq_base_dt(q_base: np.ndarray, v_base: np.ndarray) -> np.ndarray:
-    """Time derivative of the base configuration [x,y,z, qx,qy,qz,qw].
-
-    Mirrors SymbolicDynamics._dq_dt but evaluated numerically.
-    v_base = [vx, vy, vz, wx, wy, wz] in body frame.
-    """
+    """Numeric version of ``SymbolicDynamics._dq_dt`` for the base (body-frame twist)."""
     qx, qy, qz, qw = q_base[3], q_base[4], q_base[5], q_base[6]
     vx, vy, vz = v_base[0], v_base[1], v_base[2]
     wx, wy, wz = v_base[3], v_base[4], v_base[5]
@@ -115,22 +90,11 @@ def rk4_base_step(
     dyn: SymbolicDynamics,
     dt: float,
 ):
-    """RK4 step for the base DOF only, with the actuated joints prescribed.
+    """One RK4 step of the base with prescribed joints (reduced coordinates).
 
-    Works in the robot's own coordinates: ``theta`` is the tree joint vector
-    for a serial robot and the reduced coordinate vector for a closed-chain
-    one.  ``eval_reduced_base_acceleration`` dispatches accordingly, so a serial
-    robot follows exactly the tree path it always did.
-
-    The prescribed joints are linearly interpolated between the interval's two
-    nodes and sampled at each stage's own time (0, dt/2, dt/2, dt).  Holding
-    them at the left node instead lags the joint motion by half a step, which
-    at these step sizes excites a large spurious roll.
-
-    The joints reach the base through the off-diagonal mass-matrix block, which
-    multiplies their *acceleration*: ``a_joints``, differenced once per interval
-    because linear interpolation of the joint velocity makes it constant there.
-    The OCP's torques are not used — see ``eval_reduced_base_acceleration``.
+    Joint position and velocity are interpolated at each stage's time; holding
+    them at the left node lags the motion and causes spurious roll. The joint
+    acceleration is constant per interval. The OCP torques are not used.
     """
     def f(qb, vb, s):
         theta = (1 - s) * theta_k + s * theta_k1
@@ -151,7 +115,7 @@ def rk4_base_step(
     return q_next, v_next
 
 
-# ── Rollout ───────────────────────────────────────────────────────────────────
+# --- Rollout ---
 
 def rollout(
     X_ocp: np.ndarray,
@@ -159,18 +123,11 @@ def rollout(
     T: float,
     N: int,
 ):
-    """Prescribed-joint rollout: joints follow X_ocp; only the base is integrated.
-
-    Returns X_sim : (nq+nv, N+1).
-    """
-    # The rollout state lives in the robot's own coordinates, which for a
-    # closed-chain robot is much smaller than the tree.
+    """Integrate the base with the joints following ``X_ocp``; returns X_sim (nq+nv, N+1)."""
     nq, nv = dyn.robot.nq_reduced, dyn.robot.nv_reduced
     dt = T / N
 
-    # State index boundaries
-    # q:  [0:3]=pos, [3:7]=quat, [7:nq]=theta
-    # v:  [nq:nq+6]=base vel,   [nq+6:]=thetadot
+    # q = [pos (3), quat (4), theta], v = [base twist (6), thetadot]
     i_vbase_end = nq + 6
 
     X_sim = np.zeros((nq + nv, N + 1))
@@ -203,8 +160,6 @@ def rollout(
     return X_sim
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser(
         description="Prescribed-joint simulation through the hydrodynamic model.",
@@ -236,7 +191,7 @@ def main():
     )
 
     print(f"Loading OCP: {ocp_path}")
-    # the robot is recorded in the solution file, so there is nothing to select
+    # The robot is read from the solution file.
     X_ocp, U, T, N, nq, robot = load_ocp(str(ocp_path))
     print(f"  Robot: {robot.spec.name}")
     print(f"  X: {X_ocp.shape}, U: {U.shape}, T={T:.3f}s, N={N}, nq={nq}")

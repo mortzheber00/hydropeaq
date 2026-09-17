@@ -1,50 +1,20 @@
 #!/usr/bin/env python3
-"""How the optimised gait's structure changes with the commanded speed.
+"""Gait structure vs speed along the Pareto front.
 
-``plot_solution_legs.py`` draws the stroke geometry of one solution.  This
-measures four numbers off *every* solution on the sweep's Pareto front and puts
-them against the speed that solution was solved for, which is the question H3
-actually asks: does the phase timing and the stride frequency shift with the
-commanded speed, or stay fixed?
+Writes four half-width figures (``<name>_{duty,frequency,phase,depth}``):
+  - duty factor: power-stroke share averaged over the legs, with per-leg range
+  - stride frequency 1/T
+  - inter-limb phase lag (front right vs front left, hind left vs front left),
+    from circular means of the power spans so wrap-around does not cause jumps
+  - depth separation: foot height in recovery minus in power (positive = power
+    stroke deeper)
 
-Four standalone half-width figures, each written to its own file:
-
-  duty factor      Fraction of the cycle the foot sweeps backwards, averaged
-      over the four legs, with the per-leg spread as a bar.  The 0.5 line is
-      drawn because the hypothesis is stated against it — below the line the
-      power stroke is the shorter half of the cycle.
-  stride frequency 1/T of the solved period.
-  inter-limb phase Lag of the right front leg behind the left (a left-right
-      pair), and of the left hind behind the left front (a front-hind pair).
-  depth separation Mean foot height over the recovery stroke minus the mean over
-      the power stroke.  Positive means the power stroke runs deeper, which is
-      the arrangement that presents more area to the flow when pushing than when
-      recovering.
-
-**The phase is a circular quantity and is treated as one.**  Taking the start of
-the first power segment and subtracting instead makes the number jump by a whole
-cycle whenever the stroke straddles phase 0: on the shipped sweep that metric
-read 0.99 at one speed and 0.26 at the next, which is wrap-around, not a change
-in coordination.  Each leg's stroke here is reduced to a circular mean of its
-power spans, weighted by span width, and differences are wrapped into [0, 1).
-
-**Sampled at the collocation points**, so a stroke reversal is placed on ~3x as
-many samples as the grid nodes carry.  ``power_spans`` therefore interpolates
-crossings in *phase*, not in sample index — the Radau roots are unevenly spaced
-inside each interval and an index-based interpolation would put every transition
-in the wrong place.  Given the grid nodes it reproduces
-``plot_solution_legs.power_segments`` to ~1e-12, which ``--check`` asserts.
-
-The duty factor is a property of the *hypothesis*, not of the biology: no
-literature value is baked in.  ``--duty-ref LO HI`` draws a reference band where
-the source says it should be, and without it no band is drawn.
+Sampled at the collocation points. ``--duty-ref LO HI`` adds a literature band.
 
 Usage:
-  python plot_structure_vs_speed.py
-  python plot_structure_vs_speed.py --results /path/to/codesign_results
-  python plot_structure_vs_speed.py --duty-ref 0.35 0.45 --save structure.pdf
-      -> structure_duty.pdf, structure_frequency.pdf, structure_phase.pdf,
-         structure_depth.pdf
+  python stage3_visualization/speed_sweep/plot_structure_vs_speed.py
+  python stage3_visualization/speed_sweep/plot_structure_vs_speed.py --results /path/to/codesign_results
+  python stage3_visualization/speed_sweep/plot_structure_vs_speed.py --duty-ref 0.35 0.45 --save structure.pdf
 """
 from __future__ import annotations
 
@@ -75,7 +45,7 @@ from stage1_gait_optimization.hydro_model import load_robot  # noqa: E402
 from stage1_gait_optimization.ocp_common import collocation_coefficients  # noqa: E402
 
 
-# The two limb pairs the phase panel reports, as (lagging leg, reference leg).
+# Phase panel pairs: (lagging leg, reference leg)
 PAIRS = {
     "left--right (front)": ("Front_Right", "Front_Left"),
     "front--hind (left)": ("Hind_Left", "Front_Left"),
@@ -85,10 +55,7 @@ half_width()
 
 
 def circular_centre(spans) -> float:
-    """Width-weighted circular mean of the span midpoints, in [0, 1).
-
-    A single contiguous span — the usual case — gives exactly its midpoint.
-    """
+    """Width-weighted circular mean of the span midpoints, in [0, 1)."""
     if not spans:
         return float("nan")
     z = sum(w * np.exp(2j * np.pi * (s + w / 2.0)) for s, w in spans)
@@ -96,13 +63,10 @@ def circular_centre(spans) -> float:
 
 
 def leg_metrics(robot, Xc_leg, phase, nq, N, leg, d=D_COLLOC):
-    """``(duty, centre, depth_sep)`` for one leg of one solution.
+    """``(duty, centre, depth_sep)`` for one leg.
 
-    ``depth_sep`` is the Radau-weighted mean foot height over the recovery
-    stroke minus the same over the power stroke, in metres, in the base frame:
-    positive when the power stroke runs deeper.  The foot height is taken
-    relative to the hip, as ``plot_solution_legs`` draws it, so the base's own
-    heave over the cycle does not enter.
+    ``depth_sep`` [m] is the weighted mean hip-relative foot height (base frame)
+    in recovery minus that in power.
     """
     _, _, _, B = collocation_coefficients(d)
     foot_fid = robot.foot_frame_ids[leg]
@@ -116,9 +80,7 @@ def leg_metrics(robot, Xc_leg, phase, nq, N, leg, d=D_COLLOC):
         R_b = np.array(robot.data.oMi[1].rotation)
         pos = robot.leg_centerline_positions(leg)
         z[col] = (R_b.T @ (pos["foot"] - pos["side"]))[2]
-        # Foot velocity relative to the hull, in the base frame — the same
-        # definition gait_diagnostics.py and plot_solution_legs.py split the
-        # stroke on.  Zeroing the base twist is what makes it hull-relative.
+        # Hull-relative foot velocity (base twist zeroed), in the base frame
         J = pin.computeFrameJacobian(robot.model, robot.data, q, foot_fid,
                                      pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
         v_rel = np.asarray(v, dtype=float).copy()
@@ -128,17 +90,15 @@ def leg_metrics(robot, Xc_leg, phase, nq, N, leg, d=D_COLLOC):
     spans = power_spans(phase, vx)
     w = np.array([B[col % d] for col in range(n_col)])
     power = vx < 0
-    # Conditional Radau-weighted means: a plain .mean() would weight the three
-    # roots of every interval equally, which the quadrature does not.
+    # Radau-weighted phase means
     z_pow = float((w * z)[power].sum() / w[power].sum()) if power.any() else np.nan
     z_rec = float((w * z)[~power].sum() / w[~power].sum()) if (~power).any() else np.nan
     return sum(width for _, width in spans), circular_centre(spans), z_rec - z_pow
 
 
 def measure(robot, meta):
-    """Per-solution structure metrics, averaged or paired over the legs."""
+    """Structure metrics of one solution (Xc presence is checked by sweep_io)."""
     X, T, N, nq = meta["X"], meta["T"], meta["N"], meta["nq"]
-    # sweep_io has already refused any solve without an Xc block.
     Xc_leg, phase, _ = collocation_states(robot, X, meta["Xc"], nq, N)
 
     per_leg = {leg: leg_metrics(robot, Xc_leg, phase, nq, N, leg)
@@ -158,12 +118,7 @@ def measure(robot, meta):
 
 
 def plot_structure(points, band, duty_ref):
-    """The four structure metrics against commanded speed, keyed by name.
-
-    One standalone half-width figure each, so they can be placed on the page in
-    pairs; the marker legend the shared canvas carried once now goes on every
-    panel, because each one stands on its own.
-    """
+    """One half-width figure per metric vs speed, as ``{name: fig}``."""
     v = np.array([p["speed"] for p in points])
     pinned = np.array([p["pinned"] for p in points])
     figs = {}
@@ -191,14 +146,12 @@ def plot_structure(points, band, duty_ref):
                       label=rf"$T$ pinned ($\pm{band:.2f}$ s)")
 
     def legend(ax, handles, **kw):
-        # 'science' draws legends frameless.  Inside the axes on a panel this
-        # size there is no corner free of data, so the box has to mask what it
-        # sits on; a legend placed above the axes overrides this and keeps none.
+        # Framed by default so the legend masks the data beneath it
         opts = dict(frameon=True, framealpha=0.92, edgecolor="0.8")
         opts.update(kw)
         return ax.legend(handles=handles, **opts)
 
-    # ── duty factor ─────────────────────────────────────────────────────────
+    # --- Duty factor ---
     ax = panel("duty")
     duty = np.array([p["duty"] for p in points])
     lo = np.array([p["duty_lo"] for p in points])
@@ -211,32 +164,27 @@ def plot_structure(points, band, duty_ref):
     series(ax, duty, PALETTE[0])
     ax.annotate("half the cycle", xy=(0.02, 0.5), xycoords=("axes fraction", "data"),
                 fontsize=7, color="0.45", va="top")
-    # The hypothesis is stated against the 0.5 line, so it has to be on the
-    # panel with room above it even when every solution sits well below.
+    # Keep the 0.5 reference line in view
     ax.set_ylim(top=max(ax.get_ylim()[1], 0.53))
     ax.set_ylabel("duty factor [-]")
     handles = [pinned_mark()]
     if duty_ref:
         handles.append(Line2D([], [], color="0.85", lw=6,
                               label="reported for the dog paddle"))
-    # These two entries are as wide as the panel, so "best" has no free corner
-    # to find: open a strip above the 0.5 line and put them there, clear of the
-    # front and of the line's own label.
+    # Add headroom for the wide legend
     y0, y1 = ax.get_ylim()
     ax.set_ylim(top=y1 + 0.45 * (y1 - y0))
     legend(ax, handles, loc="upper center")
 
-    # ── stride frequency ────────────────────────────────────────────────────
+    # --- Stride frequency ---
     ax = panel("frequency")
     series(ax, np.array([p["freq"] for p in points]), PALETTE[1])
-    # Without this, a sweep whose periods happen to agree to float precision
-    # (an N-continuation, say) gets an axis zoomed onto 1e-12 of solver noise
-    # and an offset label, which reads as structure that is not there.
+    # No offset notation, which would amplify solver noise for near-equal periods
     ax.ticklabel_format(axis="y", useOffset=False, style="plain")
     ax.set_ylabel(r"stride frequency $1/T$ [Hz]")
     legend(ax, [pinned_mark()], loc="best")
 
-    # ── inter-limb phase ────────────────────────────────────────────────────
+    # --- Inter-limb phase ---
     ax = panel("phase")
     for i, name in enumerate(PAIRS):
         y = np.array([p["phases"].get(name, np.nan) for p in points])
@@ -245,16 +193,14 @@ def plot_structure(points, band, duty_ref):
     ax.set_ylim(0, 1)
     ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
     ax.set_ylabel("phase lag [cycles]")
-    # Three entries cover the front wherever they are put inside a panel this
-    # size, and the y-axis is a whole cycle by definition, so there is no
-    # headroom to open either: this one's legend goes above the axes.
+    # Legend above the axes (the y range is fixed to one cycle)
     legend(ax, ax.get_legend_handles_labels()[0] + [pinned_mark()],
            loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2,
            frameon=False, handlelength=1.4, columnspacing=1.2,
            borderaxespad=0.2)
     legend_row(ax.figure, ax, rows=2)
 
-    # ── depth separation ────────────────────────────────────────────────────
+    # --- Depth separation ---
     ax = panel("depth")
     ax.axhline(0.0, color="0.45", lw=0.8, ls="--", zorder=1)
     series(ax, np.array([p["depth"] for p in points]), PALETTE[4])
@@ -267,13 +213,7 @@ def plot_structure(points, band, duty_ref):
 
 
 def check_against_grid(robot, meta):
-    """``power_spans`` on the grid nodes must equal ``power_segments`` there.
-
-    The two split the stroke on the same rule; this one interpolates in phase
-    and the other in sample index, which agree exactly when the samples are the
-    uniformly spaced grid nodes.  It is the check that the phase-aware version
-    did not quietly change the definition of a power stroke.
-    """
+    """Max duty difference between ``power_spans`` and ``plot_solution_legs.power_segments`` on the grid nodes."""
     from stage3_visualization.gait.plot_solution_legs import leg_traces, power_segments
 
     X, nq, N = meta["X"], meta["nq"], meta["N"]
@@ -281,8 +221,7 @@ def check_against_grid(robot, meta):
     for leg in robot.spec.leg_names:
         _, _, vx = leg_traces(robot, X, nq, leg)
         ref = sum(w for _, w in power_segments(vx))
-        # leg_traces' last column repeats the first; drop it and put the
-        # remaining N nodes on their own phases.
+        # Drop the repeated last node
         phase = np.arange(N) / N
         got = sum(w for _, w in power_spans(phase, vx[:-1]))
         worst = max(worst, abs(ref - got))
@@ -317,7 +256,7 @@ def main():
     print(f"{len(pairs)} solves from {args.results}, "
           f"free-T window +/- {band:.3f} s")
 
-    # One robot build for the whole sweep; it dominates the runtime here.
+    # Build the robot once
     names = {m["robot"] for _, m in pairs}
     if len(names) > 1:
         raise SystemExit(f"sweep mixes robots ({', '.join(sorted(names))})")
@@ -349,9 +288,7 @@ def main():
     if args.save:
         for name, fig in figs.items():
             path = args.save.with_name(f"{args.save.stem}_{name}{args.save.suffix}")
-            # Page = the canvas set above — the same half-text-width for all
-            # four, and only the phase panel taller, by its legend row; see the
-            # half_width() call at the top of the module.
+            # Uncropped half-width canvas (see half_width())
             fig.savefig(path, dpi=300)
             print(f"Saved → {path}")
     else:

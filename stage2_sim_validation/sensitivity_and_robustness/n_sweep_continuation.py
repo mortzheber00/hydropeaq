@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
-"""
-Mesh-refinement ladder for the gait OCP, warm-started by continuation.
+"""Mesh-refinement study: solve the OCP over a ladder of N with continuation.
 
-Throwaway analysis script — not part of the pipeline.  It answers "how fine does
-the collocation grid have to be?", which the existing driver cannot: solving
-each N independently lands in a different local optimum (five independent solves
-at N=16..64 came out 10-38 deg apart in joint angle, with COT scattering +-20%),
-so the differences measure basin-hopping, not discretisation error.
+Independent solves at different N land in different local optima, so each rung
+is warm-started from the previous solution resampled to the new grid. Run the
+ladder in both directions: if both agree at each N, the differences reflect
+discretisation error. Symmetry is off; each rung is logged as its own MLflow
+run (``ladder``, ``ladder_pos``, ``warm_start_from``). Plot the result with
+plot_mesh_convergence.py.
 
-Here each rung is warm-started from the previous rung's solution, resampled onto
-the new grid.  That keeps the solver in one basin, so what changes between rungs
-is the mesh.  Run the ladder in both directions to check that claim:
-
-    python n_sweep_continuation.py                        # 16 24 32 48 64
-    python n_sweep_continuation.py --ladder 64 48 32 24 16
-    python n_sweep_continuation.py --ladder 96 --tag <existing> \
-        --seed sweep_results/<existing>_N64_solution.npz   # extend by one rung
-
-If both directions land on the same trajectory at each N, there is one basin and
-the sweep is a convergence study.  If they do not, the sweep is not one, and
-that is the finding.
-
-Everything else is held fixed — gait, d, T, target speed, weights — and symmetry
-is left off, matching how the runs being compared were solved.  Each rung is
-logged to MLflow as its own run in the same experiment, with the same params,
-metrics and artifacts the collocation driver writes, plus ``ladder``,
-``ladder_pos`` and ``warm_start_from`` params so the sweep can be pulled back
-out of a shared experiment.
+Usage:
+  python stage2_sim_validation/sensitivity_and_robustness/n_sweep_continuation.py
+  python stage2_sim_validation/sensitivity_and_robustness/n_sweep_continuation.py --ladder 64 48 32 24 16
+  python stage2_sim_validation/sensitivity_and_robustness/n_sweep_continuation.py --ladder 96 --tag <tag> \\
+      --seed sweep_results/<tag>_N64_solution.npz
 """
 from __future__ import annotations
 
@@ -59,9 +45,8 @@ OUT_DIR = Path(__file__).parent / "sweep_results"
 MLFLOW_TRACKING_URI = "http://localhost:5000"
 MLFLOW_EXPERIMENT = "gait_ocp"
 
-# Copied from trajopt/run_collocation.py so the rungs solve the same problem the
-# comparison runs did.  Kept as a literal rather than imported: the driver holds
-# them inside build_ocp(), which cannot be called for one rung of a ladder.
+# Same options as trajopt/run_collocation.py (defined inside build_ocp there,
+# so they cannot be imported). Keep in sync.
 IPOPT_OPTS = {
     "max_iter": 3000,
     "tol": 1e-4,
@@ -78,7 +63,7 @@ IPOPT_OPTS = {
 
 
 def cold_guess(dyn, gait: str, n: int, t_init: float, tau_max: float):
-    """The guess the driver would build for this grid (rung 1 only)."""
+    """Initial guess as built by the collocation driver (first rung only)."""
     if gait in ("LSPG25", "LSPG33", "TLPG50"):
         return build_initial_guess(dyn, gait, n, t_init, tau_max)
     if gait == "Prototype":
@@ -87,21 +72,18 @@ def cold_guess(dyn, gait: str, n: int, t_init: float, tau_max: float):
 
 
 def resample(X: np.ndarray, U: np.ndarray, n_new: int) -> tuple[np.ndarray, np.ndarray]:
-    """Put a solution on an ``n_new``-interval grid, for use as a warm start.
+    """Resample a solution onto ``n_new`` intervals as a warm start.
 
-    ``X`` carries both endpoints (``n+1`` columns) so every row interpolates
-    linearly in cycle phase with no periodic wrap — including base x, which
-    advances over the cycle and must not be treated as periodic.  ``U`` is
-    piecewise constant over intervals, so it is resampled by taking the old
-    interval each new interval's midpoint falls in rather than interpolated.
+    ``X`` is interpolated linearly in phase without periodic wrap (base x is
+    not periodic). ``U`` is piecewise constant, so each new interval takes the
+    old interval containing its midpoint.
     """
     n_old = X.shape[1] - 1
     ph_old = np.arange(n_old + 1) / n_old
     ph_new = np.arange(n_new + 1) / n_new
     X_new = np.array([np.interp(ph_new, ph_old, row) for row in X])
 
-    # Rows 3:7 are the base quaternion; component-wise interpolation leaves it
-    # off the unit sphere, which legacy_to_tangent would silently accept.
+    # Renormalise the interpolated base quaternion.
     quat = X_new[3:7, :]
     X_new[3:7, :] = quat / np.linalg.norm(quat, axis=0, keepdims=True)
 
@@ -112,7 +94,7 @@ def resample(X: np.ndarray, U: np.ndarray, n_new: int) -> tuple[np.ndarray, np.n
 
 def solve_rung(robot, dyn, cfg, n, X_guess, U_guess, gait, robot_name,
                warm_from, ladder_pos, ladder_tag):
-    """Solve one rung and log it exactly as the collocation driver does."""
+    """Solve one rung and log it like the collocation driver does."""
     nq = robot.nq_reduced
     coords = coords_of(robot)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -131,8 +113,6 @@ def solve_rung(robot, dyn, cfg, n, X_guess, U_guess, gait, robot_name,
             "ENFORCE_SYMMETRY": False, "SYMMETRY_PHASE": None,
             "W_POWER": cfg.w_power, "W_DIST": cfg.w_dist,
             "W_VEL_SMOOTH": cfg.w_vel_smooth, "W_DRIFT": cfg.w_drift,
-            # Sweep bookkeeping: what makes these runs a ladder rather than a
-            # pile of independent solves.
             "ladder": ladder_tag,
             "ladder_pos": ladder_pos,
             "warm_start_from": warm_from,
@@ -154,7 +134,7 @@ def solve_rung(robot, dyn, cfg, n, X_guess, U_guess, gait, robot_name,
         )
         opti, X, U, T = nlp["opti"], nlp["X"], nlp["U"], nlp["T"]
 
-        # Same objective the driver assembles (run_collocation.py:159-165).
+        # Objective of run_collocation.py without the joint smoothing term
         opti.minimize(
             cfg.w_power * nlp["power_cost"]
             - cfg.w_dist * (X[0, -1] - X[0, 0]) / T
@@ -181,9 +161,6 @@ def solve_rung(robot, dyn, cfg, n, X_guess, U_guess, gait, robot_name,
         X_val = tangent_to_legacy(src.value(X), nlp["q_ref_quat"], robot.model,
                                   nq=robot.nq_reduced, nv=robot.nv_reduced)
         U_val = src.value(U)
-        # Xc (tangent, at the collocation points) is what the objective's
-        # quadrature ran on; without it the sweep cannot be re-measured the way
-        # it was optimised.
         extract_solution(X_val, U_val, nq, n, T_val, robot=robot_name,
                          coords=coords, Xc_val=src.value(nlp["Xc"]),
                          out_path=str(OUT_DIR / f"{ladder_tag}_N{n}_solution.npz"))

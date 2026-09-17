@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""
-Direct collocation OCP for efficient swimming gait.
+"""Solve the periodic swimming-gait OCP for one robot (Radau collocation).
 
-Uses degree-3 Radau collocation within each interval.
-Minimises squared joint torques over a periodic swim cycle.
-The cycle period T is a free optimization variable; the performance
-target is an average forward speed (distance / T), not distance per
-cycle, so the optimizer can pick the most efficient stride frequency.
+Minimises joint power plus smoothness and drift penalties subject to an average
+speed floor; the cycle period is free. Settings come from the robot's
+``OCPSettings``. Writes task3_guess.npz and task3_solution.npz and logs to
+MLflow (localhost:5000).
+
+Usage:
+  python stage1_gait_optimization/trajopt/run_collocation.py
+  python stage1_gait_optimization/trajopt/run_collocation.py --robot body2
 """
 
 import sys
@@ -34,14 +36,11 @@ from ocp_common import (
     tangent_to_legacy,
 )
 
-# ── OCP parameters ──────────────────────────────────────────────────────
-# Per robot, on its spec (hydro_model/robots/<name>.py -> OCPSettings).  They
-# were module globals here, which meant retuning them for one robot silently
-# retuned the other; amph's values are OCPSettings' defaults.
+# OCP parameters live in each robot's spec (hydro_model/robots/<name>.py).
 
 
 def build_ocp(robot_name: str = "amph"):
-    # ── 1. Robot & dynamics ─────────────────────────────────────────────
+    # --- Robot and dynamics ---
     print("Building robot and symbolic dynamics...")
     robot = load_robot(robot_name)
     dyn = SymbolicDynamics(robot)
@@ -67,7 +66,7 @@ def build_ocp(robot_name: str = "amph"):
         "W_JOINT_SMOOTH": cfg.w_joint_smooth,
     })
 
-    # ── 2. Initial guess ────────────────────────────────────────────────
+    # --- Initial guess ---
     print(f"Building initial guess from paper trajectory ({GAIT})...")
     if GAIT in ["LSPG25", "LSPG33", "TLPG50"]:
         X_guess, U_guess = build_initial_guess(dyn, GAIT, N, T_INIT, TAU_MAX)
@@ -83,8 +82,7 @@ def build_ocp(robot_name: str = "amph"):
     mlflow.log_artifact(str(guess_path))
     print(f"  Initial guess saved to {guess_path}")
 
-    # F=None: collocation has no single-step integrator to check defects
-    # against; the cost-term breakdown is still useful for weight tuning.
+    # No integrator for collocation, so only the cost-term breakdown is printed.
     diagnose_initial_guess(
         X_guess, U_guess, nq, N, T_INIT,
         cfg.w_power, cfg.w_dist, cfg.w_vel_smooth, cfg.w_drift, F=None,
@@ -96,7 +94,7 @@ def build_ocp(robot_name: str = "amph"):
         mlflow.end_run()
         return
 
-    # ── 3. NLP setup (shared collocation transcription) ─────────────────
+    # --- NLP ---
     print("Setting up NLP...")
     nlp = build_collocation_nlp(
         dyn, robot, X_guess, U_guess, N,
@@ -109,9 +107,7 @@ def build_ocp(robot_name: str = "amph"):
     alpha = nlp["alpha"]
     q_ref_quat = nlp["q_ref_quat"]
 
-    # Objective: shared effort / smoothness / drift terms plus a forward-distance
-    # reward (this driver rewards distance directly; the codesign evaluator does
-    # not, relying on the speed floor instead).
+    # Unlike the codesign evaluator, this objective also has a distance reward.
     dist_cost = -cfg.w_dist * (X[0, -1] - X[0, 0]) / T
     opti.minimize(
         cfg.w_power * nlp["power_cost"]
@@ -121,13 +117,12 @@ def build_ocp(robot_name: str = "amph"):
         + cfg.w_drift * nlp["drift_cost"]
     )
 
-    # Left–right symmetry, phase free; see ocp_common.add_symmetry_constraints.
-    sym_phase = []      # solved phase per pair, reported after the solve
+    sym_phase = []      # phase variable per leg pair
     if cfg.enforce_symmetry:
         sym_phase = add_symmetry_constraints(
             opti, X, X_guess, robot, N, phases=cfg.symmetry_phase)
 
-    # ── 4. Solve ────────────────────────────────────────────────────────
+    # --- Solve ---
     opti.solver(
         "ipopt",
         {
@@ -163,11 +158,8 @@ def build_ocp(robot_name: str = "amph"):
             print(f"  solved phase {r_leg}: {solved:.4f} cycles")
         X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model,
                                   nq=robot.nq_reduced, nv=robot.nv_reduced)
-        # Tangent, not legacy: Xc is what the objective's quadrature ran on, so
-        # it is saved in the coordinates the transcription used.
-        Xc_val = src.value(nlp["Xc"])
-        # COT on the same quadrature the co-design sweep uses, so a nominal
-        # solve can be placed on the sweep's Pareto front.
+        Xc_val = src.value(nlp["Xc"])  # kept in tangent coordinates
+        # Same COT definition as the codesign sweep, so results are comparable.
         forward = float(X_val[0, -1] - X_val[0, 0])
         energy = cycle_energy(U_val, Xc_val[nlp["V_J"], :],
                               nlp["B"], nlp["d"], N, T_val)

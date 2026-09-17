@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
-"""
-Visualise the OCP solution saved in task3_solution.npz.
+"""Quick-look plots of an OCP solution: joint angles, base state, foot positions
+and an animated 3D skeleton.
 
-Produces:
-  1. Joint angle trajectories (thigh/calf/side per leg) over the cycle.
-  2. Foot position trajectories (x, z vs time).
-  3. Base state trajectories (position + velocity).
-  4. Animated 3D skeleton of the swim cycle.
+``--save out.pdf`` writes ``out_{joint_angles,base_state,foot_positions}.pdf``
+and ``out_swim_cycle.gif``; otherwise the figures are shown.
 
 Usage:
-  python plot_solution.py
-  python plot_solution.py --solution ../task3_solution.npz --save ocp.pdf
-
-``--save`` writes one vector file per static figure (``*_joint_angles`` /
-``*_base_state`` / ``*_foot_positions``, format from the extension) plus the
-animation as ``*_swim_cycle.gif``; with no ``--save`` the figures are shown.
+  python stage3_visualization/gait/plot_solution.py
+  python stage3_visualization/gait/plot_solution.py --solution task3_solution.npz --save ocp.pdf
 """
 
 import argparse
@@ -91,11 +84,7 @@ def plot_base_state(X, T, N, nq):
 
 
 def plot_foot_positions(robot, X, T, N, nq):
-    """Foot trajectories over the cycle, in the base frame.
-
-    Body-relative rather than world: base heave and pitch are comparable to the
-    stroke itself, so a world-frame plot shows mostly the base moving.
-    """
+    """Foot trajectories in the base frame (base motion would dominate in world frame)."""
     LEG_NAMES = robot.spec.leg_names
     t = np.linspace(0, T, N + 1)
     X_tree = expand_to_tree(robot, X, nq)
@@ -106,9 +95,7 @@ def plot_foot_positions(robot, X, T, N, nq):
     for k in range(N + 1):
         q_k = X_tree[:nq_tree, k]
         robot.forward_kinematics(q_k)
-        # oMi[1] is the free-flyer placement, and it is a view into robot.data,
-        # so read it inside the loop.  actInv undoes the base rotation as well
-        # as its translation, which subtracting the base position would not.
+        # Base placement (a view into robot.data, so read it per step)
         oMb = robot.data.oMi[1]
         feet = robot.foot_positions()
         for leg in LEG_NAMES:
@@ -146,11 +133,7 @@ def plot_foot_positions(robot, X, T, N, nq):
 
 
 def animate_skeleton(robot, X, T, N, nq):
-    """Animated 3D skeleton cycling through all N+1 poses.
-
-    The skeleton is the robot's cylinder chain, so a closed-chain leg draws
-    both of its sub-chains without any extra bookkeeping here.
-    """
+    """Animated 3D skeleton over all N+1 nodes; returns ``(fig, animation)``."""
     LEG_NAMES = robot.spec.leg_names
     X_tree = expand_to_tree(robot, X, nq)
     nq_tree = robot.nq
@@ -289,10 +272,8 @@ def main():
             fig.savefig(path, dpi=150, bbox_inches="tight")
             print(f"Saved → {path}")
         gif_path = args.save.with_name(f"{args.save.stem}_swim_cycle.gif")
-        # GIF frame delays are whole centiseconds; round up so the cycle plays
-        # at (just under) real time instead of rounding down to fast-forward.
-        # PillowWriter writes int(1000 / fps), so aim half a millisecond past
-        # the delay: 1000 / (100 / 3) is 29.999..., which would truncate to 29.
+        # GIF delays are whole centiseconds: round up to stay close to real time.
+        # The +0.5 ms offsets PillowWriter's int(1000 / fps) truncation.
         delay_cs = max(1, int(np.ceil(100 * T / (N + 1))))
         ani.save(str(gif_path), writer=animation.PillowWriter(fps=1000 / (10 * delay_cs + 0.5)))
         print(f"Saved → {gif_path}")

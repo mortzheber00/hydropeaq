@@ -1,61 +1,20 @@
 #!/usr/bin/env python3
-"""What the hind pair is for: the solved gait forward-simulated with them held still.
+"""Forward-simulate the solved gait with both hind legs parked.
 
-\\Cref{sec:results-structure} reads the hind legs' negative forward drag impulse
-as unavoidable parasitic drag on the most deeply submerged limbs, and assigns the
-pair a stabilising and steering role rather than a propulsive one.  Both halves of
-that claim are inferences from an attribution taken *at* the solved trajectory,
-where the base motion is held as solved.  ``stroke_asymmetry.py`` says as much in
-its own docstring: freezing a leg there changes the forces, not the motion they
-produce.  This script is the counterfactual that lets the base answer back.
+Uses the prescribed-joint rollout from simulate_ocp.py: the front legs follow the
+solved stroke, the hind legs are held at a fixed pose, and only the base is
+integrated. Compares forward travel, heave, attitude drift, hind submersion and
+drag impulses for the nominal gait and three park poses (extended, tucked,
+home). The hind legs cannot be lifted out of the water at any reachable pose,
+so this tests "held still", not "removed".
 
-The instrument is ``stage2_sim_validation/hydro_calibration/simulate_ocp.py``'s prescribed-joint
-rollout: the joints follow a reference and only the floating base is integrated
-against the hydrodynamics, which is what makes a modified reference a well-posed
-experiment rather than a new optimisation.  The reference here is the OCP's own
-front-leg stroke with the two hind legs replaced by a constant pose at zero joint
-rate.  Everything else -- the hydrodynamic coefficients, the front-leg
-trajectory, the initial base state -- is the solved gait's.
-
-**"Out of the water" is not on the menu, and that is a result.**  The thesis
-draft asked for the hind legs folded clear of the surface.  Sweeping the hind
-leg's (thigh, calf) box shows it cannot be done: the hip sits 1.6 mm above the
-base origin and the highest the whole leg ever gets is 39 mm *below* it, so with
-the hull trimming at a 47 mm mean height the leg is in the water at every
-reachable pose.  Parking it costs it only about ten points of mean submersion
-(74 % stroking against 64-74 % parked, per ``--report``).  The counterfactual
-this script runs is therefore "held still", not "removed from the fluid", and
-that is the stronger comparison anyway: the parked leg pays essentially the same
-drag, so what changes is only whether it is being *moved*.
-
-Three park poses are run because no single one is "the" answer and they must
-agree for the finding to be about the hind pair rather than about a pose:
-
-  ``extended``  thigh at its upper stop with the calf horizontal and pointing
-      aft -- the leg straight back, the most aft the foot can be placed.
-  ``tucked``    the highest the leg gets with the foot still behind the hip;
-      the closest the mechanism comes to the draft's "folded up".
-  ``home``      the URDF zero pose, as a neutral reference.
-
-All three clear the front shanks by more than the solved gait does (checked by
-``--report``), so none of them is confounded by a self-collision the OCP would
-have rejected.
-
-**What this does and does not establish.**  The front legs keep the stroke that
-was optimised *with* the hind legs moving, so the result is a perturbation of the
-solved gait, not a comparison of two optimised gaits: it says the solved gait
-depends on the hind pair for heading and trim, not that no gait could swim
-without one.  Re-solving the OCP with the hind joints pinned is the separate
-experiment that would answer the design question.
-
-A second figure draws the left half of the robot in side view: the solved stroke
-of both legs, and the three hind park poses on top of it, so the poses the table
-names can be read as configurations.  ``--save x.pdf`` writes it as
-``x_poses.pdf``.
+This perturbs the solved gait; it does not compare optimised gaits (that would
+need a re-solve with the hind joints pinned). A second figure
+(``<name>_poses``) shows the park poses on the side view of the left legs.
 
 Usage:
-  python hind_parked_rollout.py --report
-  python hind_parked_rollout.py --save hind_parked.pdf
+  python stage3_visualization/thrust/hind_parked_rollout.py --report
+  python stage3_visualization/thrust/hind_parked_rollout.py --cycles 4 --save hind_parked.pdf
 """
 from __future__ import annotations
 
@@ -81,46 +40,43 @@ from stage3_visualization.common.drag_model import leg_drag_x  # noqa: E402
 from stage3_visualization.common.thesis_style import (PALETTE, TEXT_WIDTH_IN, LEGEND_ROW_IN, full_width,  # noqa: E402
                           legend_row)
 
-# The thesis nominal, same file nominal_metrics.py measures.
+# Thesis nominal (same as nominal_metrics.py)
 _DEFAULT_SOLUTION = (_ROOT / "experiment_results" / "mlruns" / "2" /
                      "69943d2cffc94ca5b78271a7df24c546" / "artifacts" /
                      "TLPG50_v0p180_T1p400.npz")
 
 HIND = ("Hind_Left", "Hind_Right")
 
-# The half of the robot the side view draws.  Both pairs are mirror-symmetric by
-# construction (``add_symmetry_constraints``), so one side is the whole shape.
+# Side drawn in the side view (left and right are symmetric)
 LEFT = ("Front_Left", "Hind_Left")
 
-# (thigh, calf) in degrees.  ``mirror_joint_sign`` is +1 on both of these joints,
-# so left and right take the same value and the park pose stays symmetric.
+# Park poses (thigh, calf) [deg], same for left and right:
+#   extended  thigh at upper stop, calf pointing aft
+#   tucked    highest pose with the foot behind the hip
+#   home      URDF zero pose
 POSES = {
     "extended": (75.06, 37.64),
     "tucked": (-6.35, -43.54),
     "home": (0.0, 0.0),
 }
 
-# Cycles the divergence run covers.  One cycle already separates the cases; the
-# point of the longer run is that the nominal returns to its attitude every cycle
-# while the parked cases do not, which only a multi-cycle run can show.
+# Several cycles show whether the attitude drifts over time.
 N_CYCLES = 4
 
 full_width()
 
 
 def _joint_index(robot, leg: str, which: str) -> int:
+    """Index of a leg's side/thigh/calf joint in the actuated coordinates."""
     legs = list(robot.spec.leg_names)
     per = robot.n_actuated // len(legs)
     return per * legs.index(leg) + {"side": 0, "thigh": 1, "calf": 2}[which]
 
 
 def park(robot, X: np.ndarray, nq: int, thigh_deg: float, calf_deg: float) -> np.ndarray:
-    """``X`` with both hind legs pinned at a constant pose and zero joint rate.
+    """Copy of ``X`` with both hind legs at a constant pose and zero joint rate.
 
-    The 7/6 split of the legacy state layout is why the angle and the rate take
-    different offsets: joint angles are rows ``7 + j`` and joint rates rows
-    ``nq + 6 + j``.  The side joint is written too, but the pose constraints
-    already pin it to zero, so that write never changes anything.
+    Joint angles are rows ``7 + j``, joint rates rows ``nq + 6 + j``.
     """
     out = X.copy()
     for leg in HIND:
@@ -134,12 +90,10 @@ def park(robot, X: np.ndarray, nq: int, thigh_deg: float, calf_deg: float) -> np
 
 
 def tile_cycles(X: np.ndarray, n_cycles: int) -> np.ndarray:
-    """Repeat the reference's columns over ``n_cycles`` periods.
+    """Repeat a periodic reference over ``n_cycles`` periods.
 
-    The solution is periodic, so concatenating it with its own first column
-    dropped is a continuous joint reference.  Only column 0 of the base block is
-    ever read (it is the rollout's initial condition), so the stale base rows in
-    the repeats are harmless.
+    The base rows of the repeats are stale but unused (only column 0 is the
+    initial condition).
     """
     if n_cycles == 1:
         return X
@@ -147,12 +101,7 @@ def tile_cycles(X: np.ndarray, n_cycles: int) -> np.ndarray:
 
 
 def base_traces(X: np.ndarray, nq: int):
-    """World position, Euler angles [deg] and world-frame linear velocity.
-
-    ``X[nq:nq+3]`` is the base twist in the *body* frame and the base pitches
-    ~25 deg per stroke, so it has to be rotated before it means "forward speed".
-    Same convention as ``plot_base_motion.base_pose``.
-    """
+    """World position, roll/pitch/yaw [deg] and world-frame velocity (as plot_base_motion.base_pose)."""
     pos, quat = X[0:3, :], X[3:7, :]
     rpy = np.empty_like(pos)
     vel_w = np.empty_like(pos)
@@ -164,10 +113,9 @@ def base_traces(X: np.ndarray, nq: int):
 
 
 def base_stats(X: np.ndarray, T: float, nq: int) -> dict:
+    """Speed, heave, attitude range and drift of a base trajectory."""
     pos, rpy, vel_w = base_traces(X, nq)
-    # Distance actually covered in the horizontal plane against the net advance
-    # along x.  A base that yaws off heading spends stroke on path length without
-    # gaining x, so the pair separates "less thrust" from "thrust pointed away".
+    # Horizontal path length vs net x advance separates less thrust from heading loss.
     path = float(np.linalg.norm(np.diff(pos[:2, :], axis=1), axis=0).sum())
     return {
         "v_x": (pos[0, -1] - pos[0, 0]) / T,
@@ -184,12 +132,7 @@ def base_stats(X: np.ndarray, T: float, nq: int) -> dict:
 
 
 def hind_submersion(robot, X: np.ndarray, nq: int) -> float:
-    """Mean submerged fraction over the hind-leg cylinders and the whole run.
-
-    The same geometry ``SymbolicHydrodynamicModel.submersion_ratio`` uses, with
-    its smooth clamp replaced by a hard one: this is a reported quantity, not
-    something anything differentiates.
-    """
+    """Mean submerged fraction of the hind-leg cylinders (hard-clamped submersion ratio)."""
     alphas = []
     for name, link in robot.links.items():
         if not name.startswith(HIND) or link.cylinder is None:
@@ -208,18 +151,10 @@ def hind_submersion(robot, X: np.ndarray, nq: int) -> float:
 
 
 def drag_impulse(robot, X: np.ndarray, T: float, nq: int) -> dict:
-    """Forward drag impulse per leg over the run [N s], positive forward.
+    """Forward drag impulse per leg [N s], trapezoid rule on the grid nodes.
 
-    Same drag model and sign convention as ``gait_diagnostics``, but sampled at
-    the rollout's grid nodes and integrated by the trapezoid rule -- the rollout
-    has no collocation block, so the Radau weighting that script uses is not
-    available.  Run on the solved trajectory it reproduces
-    \\cref{tab:results-stroke} to 0.005 N s on the hind legs and overshoots the
-    front ones by ~0.08 N s: the front force has two sharp peaks per cycle (at
-    phase 0.25 and 0.75) that 49 nodes resolve less well than 144 collocation
-    points do.  That bias is a property of the quadrature, not of a case, so it
-    is common to every row and the *differences* between rows survive it; the
-    absolute front numbers here should not be quoted against the table.
+    The rollout has no collocation states, so absolute front-leg values are
+    slightly biased; compare cases rather than quoting them.
     """
     dt = T / (X.shape[1] - 1)
     out = {}
@@ -251,6 +186,7 @@ def run_cases(robot, dyn, X, T, N, nq, n_cycles: int) -> dict:
 
 
 def report(cases: dict, n_cycles: int, T: float) -> None:
+    """Print base statistics, drift and drag impulses per case."""
     print(f"\n===== {n_cycles} cycle(s), T_total = {T * n_cycles:.3f} s =====")
     print(f"  {'case':<10}{'v_x':>8}{'v_path':>8}{'vx min':>8}{'vx max':>8}"
           f"{'z [mm]':>8}{'heave':>8}{'roll':>7}{'pitch':>7}{'yaw':>7}{'subm.':>8}")
@@ -321,12 +257,7 @@ def plot_cases(cases: dict, T: float, nq: int, n_cycles: int):
 
 
 def leg_polyline(robot, leg: str, theta: np.ndarray) -> np.ndarray:
-    """Base-frame ``(x, z)`` of one leg's joint chain, hip first and foot last.
-
-    The base is left at its neutral pose, so world coordinates *are* base
-    coordinates here and no rotation has to be removed.  ``leg_skeleton`` drops
-    the zero-length foot cap, so the chain's last endpoint is the foot.
-    """
+    """Base-frame ``(x, z)`` of a leg's joint chain from hip to foot (base at neutral)."""
     q = robot.neutral_config()
     q[robot.n_base_q:] = robot.coord_map.expand_numeric(theta)
     robot.forward_kinematics(q)
@@ -335,13 +266,7 @@ def leg_polyline(robot, leg: str, theta: np.ndarray) -> np.ndarray:
 
 
 def hull_outline(robot, n: int = 40) -> np.ndarray:
-    """Closed ``(x, z)`` outline of the trunk, in the base frame.
-
-    Drawn from the inertia-derived cylinder the drag model itself uses, not from
-    a mesh, so the hull in the figure is the hull the rollout swims with.  It
-    lies along the base x axis on this robot, which is what makes the two end
-    caps semicircles in this plane.
-    """
+    """Closed base-frame ``(x, z)`` outline of the hull cylinder used by the model."""
     cyl = robot.links[robot.spec.base_link].cylinder
     cx, cz = cyl.center_local[0], cyl.center_local[2]
     half, r = 0.5 * cyl.length, cyl.radius
@@ -352,13 +277,9 @@ def hull_outline(robot, n: int = 40) -> np.ndarray:
 
 
 def surface_lines(X: np.ndarray, x_ends: np.ndarray, y_leg: float) -> np.ndarray:
-    """Base-frame ``z`` of the free surface at ``x_ends``, one row per node.
+    """Base-frame height of the free surface at ``x_ends`` (a line per node).
 
-    In the base frame the hull stands still and the water moves, so these lines
-    are where the hull's heave and pitch end up in a body-fixed drawing.  A
-    world point is on the surface when ``t_z + R[2, :] . p_base = 0``, which is
-    a straight line in the leg's sagittal plane once ``y`` is fixed — so two
-    abscissae describe it exactly.
+    Solves ``t_z + R[2, :] . p_base = 0`` at fixed ``y``.
     """
     zs = []
     for k in range(X.shape[1]):
@@ -368,24 +289,14 @@ def surface_lines(X: np.ndarray, x_ends: np.ndarray, y_leg: float) -> np.ndarray
 
 
 def plot_side_view(robot, X_nom: np.ndarray, n_nodes: int, n_frames: int = 10):
-    """The robot's left half in side view, with the three park poses on top.
+    """Side view of the left legs' solved stroke with the park poses.
 
-    The stroke is the nominal rollout's, which carries the same joint reference
-    every case is run with, so the front legs drawn here are the front legs of
-    all four cases and only the hind leg differs between them.
-
-    Drawn in the base frame — the hull is the one thing every case shares, so
-    it is what the poses should be read against — but *levelled on the mean free
-    surface*, which the hull's mean trim angle otherwise sends running downhill
-    across the panel.  The rotation is rigid and common to everything drawn, so
-    lengths and angles are unchanged; it only means "z" is height above the mean
-    water line rather than height above the base origin.
+    Drawn in the base frame, rotated so the mean free surface is horizontal at z = 0.
     """
     theta = X_nom[7:7 + robot.n_actuated, :n_nodes]
     poly = {leg: np.array([leg_polyline(robot, leg, theta[:, k])
                            for k in range(n_nodes)]) for leg in LEFT}
-    # Column n_nodes-1 repeats column 0, so the last drawn frame would be the
-    # first one over again.
+    # Skip the last node (same as the first)
     idx = np.unique(np.linspace(0, n_nodes - 2, n_frames).round().astype(int))
 
     parked = {}
@@ -402,8 +313,7 @@ def plot_side_view(robot, X_nom: np.ndarray, n_nodes: int, n_frames: int = 10):
     y_leg = float(np.array(robot.leg_skeleton(LEFT[0]))[0, 0, 1])
     lines = surface_lines(X_nom[:, :n_nodes], x_ends, y_leg)
 
-    # The transform is affine, so the mean of the rotated lines is the rotation
-    # of the mean line: it lands on z = 0 by construction and needs no drawing.
+    # Rigid transform that maps the mean surface line onto z = 0
     mean = lines.mean(0)
     phi = np.arctan2(mean[1] - mean[0], x_ends[1] - x_ends[0])
     c = mean[0] - np.tan(phi) * x_ends[0]
@@ -422,8 +332,7 @@ def plot_side_view(robot, X_nom: np.ndarray, n_nodes: int, n_frames: int = 10):
 
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 3.0))
 
-    # Each surface line stays straight under the transform, so its two levelled
-    # endpoints extend it over the panel without extrapolating a sampled curve.
+    # Band of surface lines over the cycle, extended across the panel
     ends = np.array([level(np.column_stack([x_ends, z])) for z in lines])
     x_ax = np.array([x0 - mx, x1 + mx])
     slope = ((ends[:, 1, 1] - ends[:, 0, 1])

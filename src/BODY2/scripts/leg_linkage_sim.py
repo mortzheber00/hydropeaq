@@ -24,21 +24,18 @@ that ties the foot orientation to link 2.1.  Both close in one pass:
     P8    =  rigid on 1.3
     P7    =  circle(P5, |P5P7|) x circle(P8, |P8P7|)     -> pose of 2.2 and 2.3
 
-All pin locations are read from the mesh geometry rather than from the exported
-joint origins, which sit up to 2.6 mm off the physical hole centres.
+Pin positions are fitted to the STL holes (the exported joint origins are off
+by up to 2.6 mm).
 
-Run with no arguments for the slider viewer; ``Leg("BR").solve(q1, q2)`` gives the
-passive joint values for driving a simulator.  The viewer opens a second window
-holding the same leg in the optimiser's own coordinates -- see
-``_optimiser_margin`` below.  ``--limits`` puts a box constraint on the two hip
-angles, the viewer's twin of bounding ``theta`` in the OCP -- ``--spec-limits``
-takes that box from stage1's own spec rather than the command line -- and
-``--trajectory`` draws a saved solution or initial guess across both windows.
+Without arguments an interactive viewer opens: the leg with hip sliders, and a
+second window with the optimiser's (q1, q2) coordinate map. ``--export`` writes
+the stick figure and the map as thesis figures instead.
+``Leg("BR").solve(q1, q2)`` gives the passive joint values.
 
-``--export out.pdf`` skips the viewer and writes that coordinate map as a
-thesis figure instead, in the shared style of ``stage3_visualization``.  It is
-the same painted set the viewer's second window shows -- one function draws
-both -- so what is checked interactively is what reaches the page.
+Usage:
+  python src/BODY2/scripts/leg_linkage_sim.py --leg BR
+  python src/BODY2/scripts/leg_linkage_sim.py --spec-limits --trajectory task3_solution.npz
+  python src/BODY2/scripts/leg_linkage_sim.py --export body2.pdf --circles --pose 20 10
 """
 
 import struct
@@ -52,13 +49,14 @@ URDF = PKG / "urdf" / "BODY2.urdf"
 MESHES = PKG / "meshes"
 LEGS = ["FL", "FR", "BL", "BR"]
 
-# the leg planes are normal to world Y, so all planar maths runs on (x, z)
+# Leg planes are normal to world y, so planar maths uses (x, z).
 PLANE = [0, 2]
 
 
-# ---------------------------------------------------------------- URDF / STL
+# --- URDF / STL ---
 
 def _rpy(r, p, y):
+    """Rotation matrix from URDF roll/pitch/yaw."""
     cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
     return np.array([[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
                      [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
@@ -75,6 +73,7 @@ def _read_stl(path):
 
 
 def _joints():
+    """URDF joints by name: parent, child, origin and axis."""
     out = {}
     for j in ET.parse(URDF).getroot().findall("joint"):
         o, a = j.find("origin"), j.find("axis")
@@ -90,10 +89,8 @@ def _joints():
 def _visual_offsets():
     """Per-link translation from the link frame to its mesh frame.
 
-    A rotated visual origin is rejected, but only when the link is actually
-    looked up: the hole fitting below assumes bores run along the mesh frame's
-    local z, which a rotation would break.  ``base_link`` legitimately carries
-    one after the base is re-framed, and is never consulted here.
+    Rotated visual origins are stored as an error raised on lookup, since hole
+    fitting assumes bores along the mesh z (base_link has one but is never used).
     """
     out = {}
     for link in ET.parse(URDF).getroot().findall("link"):
@@ -109,6 +106,7 @@ def _visual_offsets():
 
 
 def _visual_offset(link: str) -> np.ndarray:
+    """Mesh offset of ``link``; raises for rotated visual origins."""
     tv = VISUAL[link]
     if isinstance(tv, Exception):
         raise tv
@@ -122,17 +120,7 @@ VISUAL = _visual_offsets()
 def urdf_joint(leg: str, key: str) -> str:
     """URDF joint name for a linkage key: ``("FL", "1.1") -> "Joint_FL1_1"``.
 
-    The pins are named ``1.1``-style throughout this module and the coordinate
-    map, because that is the CAD's nomenclature.  The URDF spells the same
-    joints with an underscore: ROS graph resource names forbid dots, so a
-    dotted joint name is illegal anywhere a name is built out of it -- a
-    controller's parameter namespace, a rosparam key, a dynamic_reconfigure
-    server.  Link names and mesh files keep the dots; they never become ROS
-    names.  ``prepare_urdf.py`` enforces this on every run.
-
-    hydro_model/robots/body2.py carries the same one-liner; neither package is
-    on the other's import path.  Only the viewer reaches across, optionally and
-    one way, to draw the optimiser's feasible set (``_optimiser_margin``).
+    ROS names cannot contain dots. Duplicated in hydro_model/robots/body2.py.
     """
     return f"Joint_{leg}{key.replace('.', '_')}"
 
@@ -147,15 +135,13 @@ def _link_frames(leg):
     return T
 
 
-# ---------------------------------------------------------------- pin holes
+# --- Pin holes ---
 
 def _hole_centres(tri, nrm):
-    """Centres of the through-holes of a link, in its own frame (local x, y).
+    """Centres (local x, y) of a link's pin holes.
 
-    Every pin bore in these parts runs along the link's local z, so its wall
-    triangles are the ones with a normal perpendicular to z.  Those are grouped
-    by position and fitted with |p - c| = r, which is linear in (c, r) once the
-    inward and outward walls of a boss are separated.
+    Bore walls are the triangles with normals perpendicular to local z; they
+    are clustered and fitted with circles (inner and outer walls separately).
     """
     side = np.abs(nrm[:, 2]) < 0.1
     cen = tri[side].mean(axis=1)[:, :2]
@@ -238,12 +224,12 @@ def _pins(leg):
     P5 = other(holes["2.1"], P6)
     P7 = other(holes["2.2"], P5)
     P8 = other(holes["1.3"], P3, P6)
-    # the hips carry a D-profile servo horn rather than a bore: take the URDF axes
+    # Hips have a servo horn instead of a bore: use the URDF joint origins
     return dict(P1=T[f"Link_{leg}1.1"][1][PLANE], P2=P2, P3=P3,
                 P4=T[f"Link_{leg}2.1"][1][PLANE], P5=P5, P6=P6, P7=P7, P8=P8)
 
 
-# ---------------------------------------------------------------- planar maths
+# --- Planar maths ---
 
 def _rot2(v, th):
     """Rotate (..., 2) vectors CCW in the (x, z) plane."""
@@ -282,7 +268,7 @@ class Leg:
         self.pins0 = _pins(name)
         p = self.pins0
 
-        # sign mapping a URDF joint value onto a CCW rotation of the (x, z) plane
+        # Sign mapping each URDF joint value to a CCW rotation in the (x, z) plane
         self.sgn = {}
         hip = None
         for c in (1, 2):
@@ -290,23 +276,23 @@ class Leg:
                 j = JOINTS[f"Joint_{name}{c}_{k}"]
                 axis = self.frames[j["parent"]][0] @ j["R"] @ j["axis"]
                 if np.linalg.norm(axis) < 1e-9:
-                    axis = hip          # *.3 still exported as a weld: it is a pin
+                    axis = hip          # *.3 exported as fixed; use the hip axis
                 if abs(abs(axis[1]) - 1) > 1e-6:
                     raise RuntimeError(f"{name}{c}.{k}: joint axis is not along world Y")
                 hip = hip if hip is not None else axis
                 self.sgn[f"{c}.{k}"] = -1.0 if axis[1] > 0 else 1.0
 
-        self.L = {  # rigid distances that the loops must preserve
+        self.L = {  # rigid pin distances
             "P2P3": np.linalg.norm(p["P3"] - p["P2"]),
             "P6P3": np.linalg.norm(p["P3"] - p["P6"]),
             "P5P7": np.linalg.norm(p["P7"] - p["P5"]),
             "P8P7": np.linalg.norm(p["P7"] - p["P8"]),
         }
-        # assembly modes that reproduce the zero pose
+        # Assembly branches of the zero pose
         self.branch = (self._branch(p["P2"], p["P6"], p["P3"]),
                        self._branch(p["P5"], p["P8"], p["P7"]))
 
-        # meshes and the foot tip, in the frame of the body that carries them
+        # Planar link meshes at the zero pose and the foot tip (farthest point from P7)
         self.mesh = {}
         for c in (1, 2):
             for k in (1, 2, 3):
@@ -320,6 +306,7 @@ class Leg:
 
     @staticmethod
     def _branch(c1, c2, pt):
+        """Side (+-1) of ``pt`` relative to the line c1 -> c2."""
         d, e = c2 - c1, pt - c1
         return np.sign(d[0] * e[1] - d[1] * e[0])
 
@@ -360,12 +347,12 @@ class Leg:
             theta={"1.1": th1, "1.2": th12, "1.3": th13,
                    "2.1": th2, "2.2": th22, "2.3": th23},
             tip=tip,
-            # values for the joints the URDF already declares
+            # URDF passive joints
             joints={urdf_joint(self.name, "1.2"): wrap(self.sgn["1.2"] * (th12 - th1)),
                     urdf_joint(self.name, "1.3"): wrap(self.sgn["1.3"] * (th13 - th12)),
                     urdf_joint(self.name, "2.2"): wrap(self.sgn["2.2"] * (th22 - th2)),
                     urdf_joint(self.name, "2.3"): wrap(self.sgn["2.3"] * (th23 - th22))},
-            # the two pins that have no URDF joint at all
+            # Loop-closure pins (not in the URDF)
             closures={"P6 (2.1<->1.3)": wrap(self.sgn["1.1"] * (th13 - th2)),
                       "P8 (1.3<->2.3)": wrap(self.sgn["1.1"] * (th23 - th13))})
 
@@ -377,27 +364,17 @@ class Leg:
         return a + _rot2(self.mesh[key] - a0, sol["theta"][key])
 
 
-# ------------------------------------------------------- optimiser coordinates
+# --- Optimiser coordinates ---
 
 STAGE1 = PKG.parents[1] / "stage1_gait_optimization"
 
 
 def _optimiser_margin():
-    """Loop-closure margin of the coordinate map stage1 optimises through.
+    """Loop half-chord of stage1's coordinate map, for the OCP's ``h >= H_MIN`` constraint.
 
-    ``hydro_model.robots.body2_map`` drives a leg from the same two hip angles
-    this module does, and stage1's OCP additionally holds both circle-circle
-    intersections at ``h^2 >= H_MIN^2`` so a trajectory cannot pass through a
-    configuration where the loops fall apart.  That constraint, not the raw
-    assemblability the viewer draws, is the set the optimiser may plan in.
-
-    Returns ``(margin, H_MIN_mm)`` where ``margin(leg, Q1, Q2)`` is the signed
-    half-chord ``sign(h^2) * sqrt(|h^2|)`` of whichever loop binds, in mm.  It
-    is monotone in ``h^2``, so its zero and its ``H_MIN`` contour are exactly
-    the constraint's, on a scale that can be measured off the leg.
-
-    Returns ``None`` if stage1 or casadi is not importable; nothing else in
-    this module needs either.
+    Returns ``(margin, H_MIN_mm)`` with ``margin(leg, Q1, Q2)`` the signed
+    half-chord [mm] of the binding loop, or None if stage1/casadi cannot be
+    imported.
     """
     import sys
 
@@ -427,16 +404,9 @@ def _optimiser_margin():
 
 
 def _trajectory(path):
-    """Reduced hip coordinates from a stage1 solution or initial-guess ``.npz``.
+    """``(theta (8, N+1), T)`` from a BODY2 solution or guess ``.npz``.
 
-    Both come out of ``hydro_model.trajectory.save_solution`` and share one
-    layout: ``X`` is ``(nq + nv, N+1)`` and its rows ``7:nq`` hold ``theta``,
-    ordered ``(1.1, 2.1)`` per leg over ``LEG_NAMES``.  The file is read with
-    numpy rather than through ``hydro_model`` so a trajectory can be drawn on a
-    machine without casadi, and because importing that package for a dict of
-    arrays would pull in pinocchio too.
-
-    Returns ``(theta (8, N+1), T)`` in radians and seconds.
+    Read with plain numpy to avoid importing hydro_model (casadi, pinocchio).
     """
     data = np.load(path, allow_pickle=False)
     if "version" not in data.files:
@@ -454,31 +424,21 @@ def _trajectory(path):
     return theta, float(data["T"])
 
 
-# theta's leg order, i.e. hydro_model.robots.body2.LEG_NAMES.  Spelled out
-# rather than reusing LEGS: this one indexes somebody else's array.
+# Leg order of theta (= hydro_model.robots.body2.LEG_NAMES)
 THETA_LEGS = ("FL", "FR", "BL", "BR")
 
 
 def _wrap_break(a, b):
-    """Wrap two degree series into (-180, 180] and cut the polyline where either wraps.
-
-    Solutions run in unwrapped angles -- the hips are continuous and the
-    coordinate map has no branch cut -- so a path may leave the square the map
-    is drawn on.  Without the cut, re-entering on the far side draws a stripe
-    straight across the plot that was never part of the trajectory.
-    """
+    """Wrap two angle series [deg] into (-180, 180] and insert NaN breaks at the wraps."""
     wa, wb = (a + 180) % 360 - 180, (b + 180) % 360 - 180
     cut = np.flatnonzero((np.abs(np.diff(wa)) > 180) | (np.abs(np.diff(wb)) > 180)) + 1
     return np.insert(wa, cut, np.nan), np.insert(wb, cut, np.nan)
 
 
 def _box(limits):
-    """Validate ``--limits`` (four degrees) into ``((q1lo, q1hi), (q2lo, q2hi))``.
+    """Validate four limits [deg] into ``((q1lo, q1hi), (q2lo, q2hi))``.
 
-    The zero pose has to be inside.  It is the configuration the leg is
-    assembled in, and the assembly branch every solve here runs on is read off
-    it; a box excluding it would describe a range the leg could only enter by
-    first leaving the box, leaving nothing honest to draw.
+    The box must contain the zero pose, which defines the assembly branch.
     """
     box = ((limits[0], limits[1]), (limits[2], limits[3]))
     for joint, (lo, hi) in zip(("x1.1", "x2.1"), box):
@@ -492,23 +452,10 @@ def _box(limits):
 
 
 def _spec_hip_box(leg):
-    """The OCP's own box on this leg's two hips, in degrees, from the spec.
+    """This leg's hip box [deg] from the current body2 spec (HIP_BOX).
 
-    A solution ``.npz`` records which robot it was solved for but not the
-    bounds it was solved under, so there is nothing in the file to read: this
-    goes to that robot's spec instead and takes ``HIP_BOX``, the array
-    ``ocp_common.limits_for`` hands the OCP as ``theta_lower``/``theta_upper``.
-    It is therefore the box as the spec stands now, which is the solution's
-    only if the spec has not moved since it was written -- the file carries
-    nothing to check that against, the same gap ``hind_workspace.py`` reports
-    when it overlays a saved guess.
-
-    Indexed through that module's own ``LEG_NAMES`` rather than this one's
-    ``LEGS``, for the reason ``THETA_LEGS`` is spelled out below: the order is
-    somebody else's array's, not ours.  The two sides mount mirrored, so their
-    boxes negate and there is no single square for the robot -- the box is per
-    leg, and a figure drawing one leg's box on another would be drawing the
-    wrong constraint.
+    Solutions do not store their limits, so this is the spec as it is now.
+    The box differs per side (mirrored mounting).
     """
     import sys
 
@@ -522,55 +469,33 @@ def _spec_hip_box(leg):
     i = 2 * LEG_NAMES.index(leg)
     lo1, hi1 = np.degrees(HIP_BOX[i])
     lo2, hi2 = np.degrees(HIP_BOX[i + 1])
-    # Through _box, so a spec box that cannot be drawn -- one excluding the zero
-    # pose the assembly branch is read off -- fails the way a typed one does.
+    # Validate like a --limits box
     return _box((lo1, hi1, lo2, hi2))
 
 
 def _box_of(limits, spec_limits):
-    """Resolve the two box flags into ``leg -> box or None``.
-
-    ``--spec-limits`` varies with the leg; an explicit ``--limits`` is one box
-    for whichever leg is drawn, and no flag at all is no box.
-    """
+    """Function ``leg -> box or None`` from the --limits / --spec-limits flags."""
     if spec_limits:
         return _spec_hip_box
     fixed = None if limits is None else _box(limits)
     return lambda _: fixed
 
 
-# ---------------------------------------------------------------- the map
+# --- Coordinate map ---
 
-# The thesis palette, i.e. stage3_visualization/common/thesis_style.py's ``PALETTE``,
-# by the index each is taken from.  It is spelled out rather than imported for
-# the reason ``urdf_joint`` is spelled out twice: importing that module is not
-# free, and here it is worse than not free -- it switches matplotlib to LaTeX
-# text rendering, which a viewer run has no business paying for.  Keep these in
-# step with it; they are the same five colours every figure in the thesis uses.
-CHAIN = ("#0173B2", "#B2182B")   # PALETTE[0], PALETTE[2]: the two hip chains
-# Not reachable from zero pose: a grey hatch, since it is mechanism, not identity.
-UNREACH, UNREACH_HATCH = "0.15", "////"
-# PALETTE[0], which is what hind_workspace.py draws its "trajectory" in; a
-# trajectory is the same object here, so it is the same colour.
-TRACE = "#0173B2"
-# PALETTE[2]: the h bound stage1 enforces, the line the trajectory is read
-# against.  h = 0 stays black -- a hard limit, and the hatch already marks it.
-BOUND = "#B2182B"
-# Everything that is mechanism rather than identity stays greyscale, so that
-# inside the stick figure colour encodes exactly one thing: which chain a link
-# belongs to.  The joints, the ground and the foot are roles, not identities.
-FRAME = "0.2"
+# Colours from thesis_style.PALETTE, copied to avoid importing it (it enables
+# LaTeX rendering). Keep in sync.
+CHAIN = ("#0173B2", "#B2182B")   # the two hip chains
+UNREACH, UNREACH_HATCH = "0.15", "////"   # not reachable from the zero pose
+TRACE = "#0173B2"   # trajectory
+BOUND = "#B2182B"   # stage1 h bound
+FRAME = "0.2"       # ground, joints and foot (colour is reserved for the chains)
 
 
 def _inbox(Q1, Q2, box):
-    """Grid cells a ``--limits`` box admits; all of them when there is no box.
+    """Grid cells inside ``box`` (all if None).
 
-    The comparison carries a tolerance far below the grid step, which is not
-    about where the edge belongs but about a cell that is *on* it: the grid
-    point nearest 66 deg comes out of ``linspace`` at 66.000000000000014, so a
-    bare ``<=`` drops it, and a box and its mirror image then keep different
-    columns.  --spec-limits makes that easy to walk into, both of its bounds
-    being exact multiples of the radian-to-degree conversion.
+    A small tolerance keeps cells lying exactly on the edge despite float error.
     """
     if box is None:
         return np.ones(Q1.shape, bool)
@@ -582,17 +507,9 @@ def _inbox(Q1, Q2, box):
 
 
 def _reachable(leg, Q1, Q2, grid, inbox):
-    """Configurations reachable from the zero pose without taking the leg apart.
+    """Assemblable cells connected to the zero pose, and their foot tips.
 
-    Assemblable (q1, q2) cells split into several islands; only the one holding
-    the zero pose can be driven to, so the rest are flooded away.  The hips are
-    continuous joints, hence the wrap-around neighbourhood -- a box constraint
-    needs no special case there, since wrapping from +180 to -180 has to cross
-    cells the box already masks out unless the box spans the full turn.
-
-    Returns the reachable mask over the (q1, q2) grid and the foot tips it
-    maps to: the set the viewer draws as the tip cloud in one window and as the
-    island boundary in the other.
+    Flood fill with wrap-around (continuous hips). Returns ``(mask, tips)``.
     """
     sol = leg.solve(Q1, Q2)
     ok = sol["ok"] & np.isfinite(sol["tip"][..., 0]) & inbox
@@ -613,18 +530,10 @@ def _reachable(leg, Q1, Q2, grid, inbox):
 
 
 def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
-    """Paint one leg's optimiser coordinate map onto ``ax``; returns the image.
+    """Draw one leg's (q1, q2) map: half-chord field, h = 0 and H_MIN contours,
+    unreachable hatch, optional box and trajectory. Returns the image.
 
-    The grey field is the binding loop's half-chord: dark where the leg cannot
-    be assembled at all, light where it can, and the two black contours are the
-    assembly limit and the tighter bound stage1 actually constrains.  The
-    reachable island is the same set the viewer's other window draws as the
-    foot-tip cloud, so the two are readable side by side.
-
-    ``scale`` thins the linework for a figure printed at half the text width,
-    where the viewer's weights would be several times too heavy.  Everything
-    else is identical in both, which is the point of there being one painter:
-    the thesis figure cannot drift from the set that was checked on screen.
+    Used by both the viewer and --export; ``scale`` thins the lines for print.
     """
     from matplotlib import colormaps
     from matplotlib.colors import ListedColormap
@@ -635,21 +544,12 @@ def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
     lim = 180 + half
     vmax = np.nanmax(margin)
 
-    # Greyscale, so the field is mechanism and leaves colour to the island, the
-    # chains and the trajectory -- on a red/blue map the palette-blue trajectory
-    # vanished into the feasible half.  The black end is cut off: infeasible
-    # bottoms out at mid-grey, where the black h = 0 and h = 2 mm contours
-    # still read.
+    # Greyscale field (without the black end, so the contours stay visible)
     greys = ListedColormap(colormaps["Greys_r"](np.linspace(0.35, 1.0, 256)))
     im = ax.imshow(margin, origin="lower", extent=(-lim, lim, -lim, lim),
                    cmap=greys, vmin=-vmax, vmax=vmax, interpolation="nearest")
-    # Hatch what is not reachable from zero pose rather than outlining what is:
-    # on all four legs of this build the island's edge is the h = 0 contour, so
-    # an outline only doubled that line, and a hatch still marks an h > 0
-    # island the leg cannot get to.  Near-black but thin: inside the box the
-    # unreachable part is the dark h < 0 field, where a light hatch vanishes.  Matplotlib 3.7 takes the hatch colour when the
-    # artist is made but the hatch width from rcParams when the figure is
-    # saved, hence the global setting.
+    # Hatch the unreachable region. Matplotlib 3.7 reads the hatch width from
+    # rcParams at save time, hence the global setting.
     import matplotlib
     matplotlib.rcParams["hatch.linewidth"] = 0.4 * scale
     with matplotlib.rc_context({"hatch.color": UNREACH}):
@@ -659,10 +559,8 @@ def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
     ax.contour(deg1, deg2, margin, [hmin_mm], colors=BOUND,
                linewidths=1.0 * scale, linestyles="dashed")
     if box is not None:
-        # shade out what the constraint forbids, rather than cropping to it:
-        # the excluded structure is exactly what one wants to see when
-        # deciding whether the box is drawn in the right place.
-        veil = np.ones(Q1.shape + (4,))          # white, i.e. wash out
+        # Fade (not crop) the region outside the box
+        veil = np.ones(Q1.shape + (4,))          # white overlay
         veil[..., 3] = np.where(inbox, 0.0, 0.62)
         ax.imshow(veil, origin="lower", extent=(-lim, lim, -lim, lim),
                   interpolation="nearest", zorder=4)
@@ -670,9 +568,7 @@ def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
                                box[1][1] - box[1][0], fill=False, ec="k",
                                lw=1.4 * scale, zorder=6))
     if traj is not None:
-        # PALETTE[0], as the thesis draws every trajectory; on the grey field it
-        # reads everywhere.  The thin white casing only separates it from the
-        # black contours where the path hugs the h = 2 mm bound.
+        # White casing separates the path from nearby contours
         from matplotlib.patheffects import withStroke
 
         ax.plot(*traj, "-", color=TRACE, lw=1.4 * scale, zorder=7,
@@ -687,44 +583,31 @@ def paint_map(ax, Q1, Q2, margin, reach, inbox, box, hmin_mm, traj, scale=1.0):
 
 
 def _map_trace(theta, leg):
-    """The leg's hip path in degrees, cut where it wraps, ready for ``paint_map``."""
+    """The leg's hip path [deg] for ``paint_map``."""
     i = THETA_LEGS.index(leg)
     return _wrap_break(np.degrees(theta[2 * i]), np.degrees(theta[2 * i + 1]))
 
 
-# ------------------------------------------------------------ the stick figure
+# --- Stick figure ---
 
-# The pins each rigid body carries, in order along the bar -- the topology of
-# the module docstring, read as a kinematic diagram rather than as two exported
-# chains.  Three of the six links are ternary: 1.3 carries P3, P6 and P8, 2.1
-# carries P4, P5 and P6, and 2.3 carries P7, P8 and the foot.  On this build the
-# first two come out collinear to within a few microns, so every link draws as a
-# polyline; a filled triangle would be a sliver on two of the three.  ``TIP``
-# stands in for the foot, which is a point on 2.3 and not a pin.
+# Pins carried by each link, in order along the bar (drawn as polylines; the
+# ternary links 1.3 and 2.1 are nearly collinear). TIP is the foot point on 2.3.
 TIP = "tip"
 LINK_PINS = {"1.1": ("P1", "P2"), "1.2": ("P2", "P3"), "1.3": ("P3", "P6", "P8"),
              "2.1": ("P4", "P5", "P6"), "2.2": ("P5", "P7"), "2.3": ("P7", "P8", TIP)}
-GROUND = ("P1", "P4")        # both hips are mounted on base_link
-ACTUATED = ("P1", "P4")      # ... and both are driven; the other six are free
+GROUND = ("P1", "P4")        # pins on base_link
+ACTUATED = ("P1", "P4")      # driven pins
 
 
 def _hatch(ax, a, b, away_from, colour, scale, n=7):
-    """Draw the fixed-frame hatching along the ground link ``a``-``b``.
-
-    The strokes go on the side of the link away from ``away_from``, which is
-    the foot: the mechanism hangs off the base, so that is the side with
-    nothing on it whichever way round the leg is mounted.
-    """
+    """Ground hatching along ``a``-``b``, on the side away from ``away_from`` (the foot)."""
     d = b - a
     L = np.linalg.norm(d)
     u = d / L
     nrm = np.array([-u[1], u[0]])
     if np.dot(nrm, away_from - (a + b) / 2) > 0:
         nrm = -nrm
-    # 45 degrees to the link, the usual mark, and swept back along it so the
-    # strokes lean the same way rather than fanning.  Both the spacing and the
-    # stroke length scale with the link, which on this leg is only 2.8 cm long:
-    # a fixed stroke length closes the hatching up into a solid blob there.
+    # 45 deg strokes; spacing and length scale with the (short) link
     step, run = L / n, 0.22 * L
     for k in range(n + 1):
         p = a + u * (step * k)
@@ -732,25 +615,18 @@ def _hatch(ax, a, b, away_from, colour, scale, n=7):
                 color=colour, lw=0.6 * scale, zorder=2, solid_capstyle="butt")
 
 
-# The two loops ``_circle_circle`` closes, as (centre, centre, intersection).
-# Loop 1 is chain 1's, loop 2 is chain 2's, which is the order CHAIN is in.
+# Loops as (centre, centre, intersection pin), in CHAIN order
 LOOPS = (("P2", "P6", "P3"), ("P5", "P8", "P7"))
 
 
 def _pin_label_spots(P):
-    """Where each pin's label goes: off the bars that meet at that pin.
-
-    Each label is pushed away from the mean of the pins it is jointed to,
-    rather than radially off the mechanism's centre.  P3, P5 and P6 all sit near
-    that centre, where a radial offset is both too short to clear anything and
-    very nearly along link 1.3, so all three labels would land on the bar.
-    """
+    """Label position per pin, offset away from the pins it connects to."""
     nbr = {k: set() for k in P}
     for pins in LINK_PINS.values():
         for a in pins:
             nbr[a] |= {b for b in pins if b != a}
     nbr["P1"].add("P4")
-    nbr["P4"].add("P1")                         # the ground link joins these two
+    nbr["P4"].add("P1")                         # ground link
     out = {}
     for name in (k for k in P if k != TIP):
         off = P[name] - np.mean([P[k] for k in nbr[name]], axis=0)
@@ -760,36 +636,18 @@ def _pin_label_spots(P):
 
 
 def _draw_loops(ax, P, scale, chain=CHAIN, avoid=()):
-    """Draw each loop's two construction circles and its half-chord ``h``.
+    """Draw each loop's construction circles and its half-chord ``h_i``.
 
-    These are the circles the closure actually intersects: one about each
-    centre pin, drawn through the intersection pin.  Their radii are therefore
-    the rigid link lengths the loop preserves, and can be measured off the pose
-    itself rather than passed in -- which is the same fact that makes the
-    closure solvable in the first place.
-
-    ``h`` is the perpendicular offset of the intersection pin from the line
-    joining the two centres: half the circles' common chord, and the quantity
-    the OCP holds away from zero.  It is drawn as that perpendicular, from its
-    foot on the centre line out to the pin, so the picture shows what shrinking
-    it means -- the two intersections merging as the circles fall tangent, which
-    is the only way the mechanism can change assembly branch.
-
-    ``avoid`` holds points the labels must keep clear of, in cm: the pins, their
-    labels and samples along the bars.  Each label is called out on a leader
-    rather than set beside its segment.  At any pose worth drawing the segment
-    is a few millimetres long -- that is what "near the bound" means -- so there
-    is no room beside it, and the pins it runs between already carry their own
-    labels.  The two loops' labels are numbered, and each one's leader goes to
-    its own segment, so they can be told apart when they end up close together.
+    ``h`` is the distance of the intersection pin from the line between the
+    circle centres (the quantity the OCP keeps positive). Labels are placed on
+    leaders at the spot farthest from ``avoid`` (points in cm).
     """
     from matplotlib.patches import Circle
     from matplotlib.patheffects import withStroke
 
     avoid = [np.asarray(p) for p in avoid]
     placed = []
-    # Candidate spots are kept inside the box the circles span, which is the box
-    # export() frames to, so a label never gets pushed off the panel.
+    # Keep labels inside the circles' bounding box (the export frame)
     ext = np.array([c + s * np.linalg.norm(P[x] - c)
                     for a, b, x in LOOPS for c in (P[a], P[b]) for s in (-1, 1)])
     lo, hi = ext.min(0), ext.max(0)
@@ -802,27 +660,18 @@ def _draw_loops(ax, P, scale, chain=CHAIN, avoid=()):
         d = c2 - c1
         u = d / np.linalg.norm(d)
         foot = c1 + u * np.dot(pin - c1, u)
-        # Kept to two thin strokes: the centre line dashed in the loop's colour,
-        # and h as a dark line from it to the pin.  On this leg each half-chord
-        # runs almost parallel to a ternary bar (h1 beside P3-P6, h2 beside
-        # P7-P8), so any heavier mark merges with the bar into a smudge.  That
-        # includes a white casing, end ticks and a right-angle box, all tried.
-        # Marking the second intersection too was tried as well: loop 1's lands
-        # beside P5 and reads as a ninth pin, and its legend entry costs the
-        # fixed-height panel a row.
+        # Thin strokes only; h runs nearly parallel to a bar and heavier marks merge with it.
         ax.plot(*np.array([c1, c2]).T, color=colour, lw=0.5, alpha=0.9,
                 ls=(0, (3, 1.5)), zorder=2)
         ax.plot(*np.array([foot, pin]).T, "-", color="0.05", lw=0.9, zorder=6.5,
                 solid_capstyle="butt")
 
-        # The best spot is the one whose nearest obstacle is farthest away,
-        # searched on rings around the segment's midpoint.  A closer ring wins
-        # ties, since a short leader reads as belonging to its segment.
+        # Search rings around the midpoint for the spot farthest from obstacles
+        # (slight preference for short leaders).
         mid = (foot + pin) / 2
         obstacles = np.array(avoid + placed)
         best, best_score = None, -np.inf
-        # Rings start past a label's own width at this scale (~1 cm for 6 pt at
-        # half the text width), since anything nearer sits on the pin labels.
+        # Radii start beyond the pin labels (~1 cm)
         for r in (2.2, 2.8, 3.4, 4.0):
             for ang in np.radians(np.arange(0, 360, 15)):
                 q = mid + r * np.array([np.cos(ang), np.sin(ang)])
@@ -831,11 +680,10 @@ def _draw_loops(ax, P, scale, chain=CHAIN, avoid=()):
                 score = np.min(np.linalg.norm(obstacles - q, axis=1)) - 0.08 * r
                 if score > best_score:
                     best, best_score = q, score
-        if best is None:                    # boxed in: fall back beside the segment
+        if best is None:                    # fallback: beside the segment
             best = mid + u * 2.2
         placed.append(best)
-        # The leader is a plain segment stopped short of the label, not an
-        # annotate arrow: those did not reach the PDF here at all.
+        # Leader as a plain line (annotate arrows did not render in the PDF)
         v = best - mid
         end = best - v / np.linalg.norm(v) * 0.6
         ax.plot(*np.array([mid, end]).T, "-", color=FRAME, lw=0.6, zorder=7,
@@ -847,19 +695,10 @@ def _draw_loops(ax, P, scale, chain=CHAIN, avoid=()):
 
 def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
               circles=False):
-    """Paint one leg as a kinematic stick figure; lengths in cm.
+    """Draw one leg as a kinematic diagram in cm; returns legend handles.
 
-    This is the mechanism the viewer's first window draws as STL outlines,
-    reduced to what a thesis figure is actually making a claim about: the bars,
-    the eight pins, which two of them are driven, and where the foot is.  The
-    meshes carry no kinematic information the pins do not, and at half the text
-    width their triangles close up into a grey smear.
-
-    Colour carries one thing only, which chain a link belongs to; the joints,
-    the ground and the foot are roles rather than identities and stay in
-    ``FRAME`` grey, told apart by marker instead.  ``cloud`` is the reachable
-    foot-tip set to stipple behind it, optional and in metres as ``Leg.solve``
-    returns it.
+    Colour marks the chain; ground, joints and foot are grey with distinct
+    markers. ``cloud`` (optional, metres) is the reachable foot-tip set.
     """
     from matplotlib.lines import Line2D
 
@@ -867,8 +706,7 @@ def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
     P[TIP] = np.asarray(sol["tip"]) * 100.0
 
     if cloud is not None and len(cloud):
-        # A swept grid is a point cloud, not a polygon; rasterised so the PDF
-        # does not carry one vector dot per sample.
+        # Rasterised to keep the PDF small
         ax.plot(cloud[:, 0] * 100, cloud[:, 1] * 100, ".", ms=0.7, color="0.88",
                 rasterized=True, zorder=0)
 
@@ -916,8 +754,6 @@ def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
         Line2D([], [], color=FRAME, marker="D", ls="", ms=4.0, label="foot"),
     ]
     if circles:
-        # Grey, because these two entries name a role: the circles themselves
-        # take their loop's chain colour, which the legend already explains.
         handles += [
             Line2D([], [], color="0.45", ls=":", lw=0.9, label="loop circles"),
             Line2D([], [], color="0.05", lw=0.9, label=r"half-chord $h_i$"),
@@ -925,9 +761,10 @@ def paint_leg(ax, sol, cloud=None, scale=1.0, chain=CHAIN, labels=True,
     return handles
 
 
-# ---------------------------------------------------------------- viewer
+# --- Interactive viewer ---
 
 def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
+    """Slider viewer of one leg plus its coordinate map (if stage1 is importable)."""
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.lines import Line2D
@@ -940,11 +777,7 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
     grid = np.linspace(-np.pi, np.pi, 181)
     Q1, Q2 = np.meshgrid(grid, grid)
 
-    # Optional box constraint on the hips, the viewer's twin of bounding theta
-    # in the OCP -- under --spec-limits it is that bound itself.  The mask is
-    # quantised to the grid, so the reachable set and the tip cloud snap to the
-    # nearest 2 deg cell while the drawn box is exact.  It follows the radio
-    # buttons, because the sides mount mirrored and their boxes negate.
+    # Optional hip box (per leg); the reachable set uses the 2 deg grid.
     box_of = _box_of(limits, spec_limits)
 
     theta, period = (None, None) if trajectory is None else _trajectory(trajectory)
@@ -980,7 +813,7 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
     radio = RadioButtons(fig.add_axes([0.02, 0.80, 0.12, 0.16]), LEGS, active=LEGS.index(leg))
     state = {"leg": leg, "box": box, "inbox": _inbox(Q1, Q2, box)}
 
-    # second window: the same leg in the coordinates stage1 optimises through
+    # Second window: coordinate map
     opt = _optimiser_margin()
     mapax = None
     if opt is not None:
@@ -1000,6 +833,7 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
                       f"({verdict} the stage1 bound of {hmin_mm:g} mm)")
 
     def workspace(leg):
+        """Reachable mask and tips for the current box."""
         return _reachable(leg, Q1, Q2, grid, state["inbox"])
 
     def draw_map(name, reach):
@@ -1037,6 +871,7 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
             loc="upper right", fontsize=8, framealpha=0.9)
 
     def draw(_=None):
+        """Redraw the leg and readouts for the current slider values."""
         leg = legs[state["leg"]]
         if mapax is not None:
             h = float(margin_of(leg.name, np.radians(s1.val), np.radians(s2.val)))
@@ -1080,14 +915,14 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
                 s.set_val(min(max(s.val, lo), hi))       # fires draw()
 
     def pick(label):
+        """Switch to another leg."""
         state["leg"] = label
         state["box"] = box_of(label)
         state["inbox"] = _inbox(Q1, Q2, state["box"])
         reach, w = workspace(legs[label])
         if mapax is not None:
             draw_map(label, reach)
-        # After draw_map, never before: clamping can fire draw(), which reads the
-        # marker that draw_map is what creates.
+        # After draw_map: clamp() may call draw(), which needs the map marker.
         clamp(state["box"])
         cloud.set_data(w[:, 0], w[:, 1])
         xs, zs = w[:, 0], w[:, 1]
@@ -1095,8 +930,7 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
             i = THETA_LEGS.index(label)
             tip = legs[label].solve(theta[2 * i], theta[2 * i + 1])["tip"]
             trace.set_data(tip[:, 0], tip[:, 1])
-            # a guess can leave the reachable set, and does so as nan: keep the
-            # frame around whatever of it did land somewhere.
+            # Unassemblable samples are NaN; frame the finite ones
             fin = np.isfinite(tip[:, 0])
             if fin.any():
                 xs = np.concatenate([xs, tip[fin, 0]])
@@ -1116,21 +950,14 @@ def main(limits=None, trajectory=None, leg="BR", spec_limits=False):
     plt.show()
 
 
-# ---------------------------------------------------------------- thesis export
+# --- Thesis export ---
 
-# stage3_visualization/common/thesis_style.py carries the style every figure in the
-# thesis is drawn in.  It is reached across the same way STAGE1 is above --
-# optionally, one way, and only to draw; a viewer run never imports it, and
-# nothing there imports this.
+# Location of thesis_style.py (imported only for --export)
 STAGE3 = PKG.parents[1] / "stage3_visualization" / "common"
 
 
 def _thesis_style():
-    """The shared thesis style, activated for a half-text-width figure.
-
-    Importing it switches matplotlib to the 'science' style with real LaTeX
-    text, so every label written from here on is TeX.
-    """
+    """Import and activate the thesis style (LaTeX text) for half-width figures."""
     import sys
 
     if str(STAGE3) not in sys.path:
@@ -1145,24 +972,15 @@ def _thesis_style():
 
 
 def _suffixed(path, name):
-    """``out.pdf`` -> ``out_leg.pdf``, so a row of panels shares one stem."""
+    """``out.pdf`` -> ``out_<name>.pdf``."""
     path = Path(path)
     return path.with_name(f"{path.stem}_{name}{path.suffix}")
 
 
 def _finish(fig, ax, handles):
-    """Put ``handles`` in a legend above the axes and lay the figure out.
+    """Legend above the axes, then a single tight_layout.
 
-    The canvas stays the one thesis_style hands out, legend and all: both of
-    these panels are bound by the width left over beside their labels rather
-    than by height, so the legend's band comes out of height nothing was using.
-    Neither thesis_style.legend_row nor a rect reserving the band belongs here
-    then -- matplotlib's own tight_layout already makes room for a legend
-    hanging off the axes, and both would reserve it twice.
-
-    tight_layout runs once and only once: a colorbar attached with ``ax=ax``
-    takes its space out of that axes, so a second pass takes it a second time
-    and the panel walks inwards.
+    Call tight_layout only once: with a colorbar each pass shrinks the axes again.
     """
     ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 1.01),
               ncol=2, framealpha=0.0, handlelength=1.6, columnspacing=1.2,
@@ -1173,23 +991,9 @@ def _finish(fig, ax, handles):
 def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
            spec_limits=False, pose=(0.0, 0.0), workspace=False,
            circles=False):
-    """Write the two thesis panels for one leg, as ``<path>_leg`` and ``_map``.
+    """Write ``<path>_leg`` (stick figure at ``pose``) and ``<path>_map`` (coordinate map).
 
-    Both are the viewer's two windows with the dressing changed: titles go (a
-    thesis figure is named by its caption), the pose marker and readout go
-    (there is no slider to move), each legend moves above its axes where it
-    cannot sit on the data, and the labels are TeX.  They are written to a
-    suffixed pair rather than to ``path`` itself so that a row of two shares one
-    stem, the way ``stage3_visualization/thrust/hind_workspace.py`` writes its pair.
-
-    The map goes through ``paint_map``, which also draws the viewer's, so the
-    set that reaches the page is the set that was checked on screen.  The leg
-    panel does not: the viewer draws STL outlines and this draws the kinematic
-    diagram, which is the claim a thesis figure is actually making, and at half
-    the text width the meshes close up into a grey smear anyway.
-
-    The sweep is finer than the viewer's 2 deg because a printed contour shows
-    the staircase that a screen at a third of the size hides.
+    The map uses the same painter as the viewer, at a finer default resolution.
     """
     style = _thesis_style()
     import matplotlib.pyplot as plt
@@ -1211,10 +1015,7 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     obj = Leg(leg)
     reach, cloud = _reachable(obj, Q1, Q2, grid, inbox)
 
-    # The trajectory is drawn on the map only.  In hip coordinates it is a path
-    # through the constraint the map is a picture of, which is a claim; over the
-    # stick figure it would only be a second curve in a panel whose subject is
-    # the mechanism at one pose.
+    # The trajectory goes on the map only.
     traj = None
     if trajectory is not None:
         theta, period = _trajectory(trajectory)
@@ -1226,45 +1027,28 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
         print(f"  {leg}: min loop half-chord {h:+8.2f} mm  "
               f"({verdict} the stage1 bound of {hmin_mm:g} mm)")
 
-    # ---- the leg, as a kinematic stick figure
+    # --- Stick figure ---
     sol = obj.solve(*np.radians(pose))
     if not sol["ok"]:
         raise SystemExit(f"--pose {pose[0]:g} {pose[1]:g}: leg {leg} cannot be "
                          f"assembled there, so there is no mechanism to draw")
-    # thesis_style.HALF's width, which is what has to match the LaTeX slot, but
-    # taller.  Both panels have an equal aspect with a legend above, so at
-    # HALF's own height they are height-bound and the spare width is blank
-    # margin; at this height the map fills its width.  The leg panel gets the
-    # same canvas so the two still sit in one row at one height.
+    # Half text width, a bit taller than HALF so the equal-aspect panels fill it
     canvas = (style.HALF[0], 2.55)
     legfig, legax = plt.subplots(figsize=canvas)
-    # Heavier than the map's 0.55: the mechanism is a small object next to the
-    # workspace it sweeps, so at the map's weights the bars that are the whole
-    # subject of the panel read as thinner than its grid.
-    # With --circles the pin labels go.  At half the text width P3 and P6 end up
-    # ~12 pt apart on the page, and that gap would have to hold both labels plus
-    # h1's segment and its callout.  No placement fits, and each attempt buried
-    # the half-chord, which is the point of the variant.  The plain leg figure
-    # carries the pin names.
+    # Heavier lines than the map; pin labels are omitted with --circles (no room).
     handles = paint_leg(legax, sol, cloud if workspace else None, scale=0.85,
                         labels=not circles, circles=circles)
     if workspace:
         handles.append(Line2D([], [], color="0.88", marker="s", ls="", ms=4,
                               label="workspace"))
 
-    # Framed on what the panel is about -- the bars -- and on the workspace only
-    # when it was asked for.  That cloud is a 13 cm disc once nothing bounds the
-    # hips, so framing to it by default would leave the mechanism at a seventh
-    # of the panel width, which is not a stick figure any more.  The map panel
-    # is where the reachable set is the claim being made; here it is background,
-    # and opt-in.
+    # Frame the mechanism (plus the workspace only if requested)
     pts = np.array([np.asarray(p) for p in sol["pins"].values()]
                    + [np.asarray(sol["tip"])]) * 100.0
     if workspace and len(cloud):
         pts = np.vstack([pts, cloud * 100.0])
     if circles:
-        # A construction circle reaches a full link length past its centre
-        # pin, so framing on the pins alone would crop both of them.
+        # Include the full construction circles
         Pc = {k: np.asarray(v) * 100.0 for k, v in sol["pins"].items()}
         span = []
         for a, b, x in LOOPS:
@@ -1283,7 +1067,7 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     legfig.savefig(leg_path, dpi=300)
     print(f"Saved → {leg_path}")
 
-    # ---- the optimiser's coordinate map
+    # --- Coordinate map ---
     fig, ax = plt.subplots(figsize=canvas)
     im = paint_map(ax, Q1, Q2, margin_of(leg, Q1, Q2), reach, inbox, box,
                    hmin_mm, traj, scale=0.55)
@@ -1292,15 +1076,12 @@ def export(path, leg="BR", limits=None, trajectory=None, resolution=361,
     cbar.ax.tick_params(length=2)
     ax.set_xlabel(r"$q_1$ [deg]")
     ax.set_ylabel(r"$q_2$ [deg]")
-    # The square comes out about 1.2 in wide, which is not enough for five
-    # labelled ticks: -180 and -90 touch.  The quadrant boundaries stay as
-    # minor ticks, so the axis still reads at 90 deg without the collision.
+    # Labelled ticks every 180 deg, minor ticks at +-90 (too narrow for more labels)
     for axis in (ax.xaxis, ax.yaxis):
         axis.set_ticks(range(-180, 181, 180))
         axis.set_ticks(range(-90, 91, 180), minor=True)
 
-    # Short labels on purpose: at half the text width a spelled-out legend is
-    # half the figure.  What each one means belongs in the caption.
+    # Short labels; details go in the caption.
     handles = [
         Patch(facecolor="none", edgecolor=UNREACH, hatch=UNREACH_HATCH, lw=0.5,
               label="not reachable"),

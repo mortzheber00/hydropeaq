@@ -1,3 +1,4 @@
+"""Rigid-body plus hydrodynamic model of the swimming robots (Pinocchio + CasADi)."""
 from . import hydro_params
 from .coordinate_map import CoordinateMap, IdentityMap
 from .dynamics import SymbolicDynamics, fn_name

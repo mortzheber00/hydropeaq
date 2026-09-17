@@ -1,37 +1,13 @@
 #!/usr/bin/env python3
-"""
-Validate the Gazebo fluid simulation against the OCP solution it was replayed
-from, and write the comparison as thesis-ready vector figures.
+"""Compare a Gazebo/SPH replay (rosbag) with the OCP solution it replayed.
 
-Reads joint states and base pose from a ROS1 .bag file, resamples them onto the
-OCP time grid, and produces three figures:
-
-  1. Joint tracking  — one panel per (leg, joint); OCP and simulation overlaid,
-     with the area between them shaded as the tracking error and the per-joint
-     RMSE quoted in the corner.
-  2. Base tracking   — the same comparison for base x/y/z and forward speed,
-     with an explicit error trace underneath.
-  3. RMSE summary    — every actuated joint on one axis, grouped and coloured by
-     leg, against the all-joint mean.
-
-The overlay is the comparison itself, so the error is drawn *between* the two
-curves rather than in a separate row: sign, timing and magnitude are then read
-off the same panel as the trajectories.  The RMSE bar chart used to be repeated
-once per leg with a different group highlighted; it is one figure now.
+Resamples joint states and base pose onto the OCP time grid, prints RMSEs and
+writes three figures: joint tracking, base tracking and a per-joint RMSE bar
+chart. The robot is taken from the solution file.
 
 Usage:
-    python3 validate_sim.py [--bag PATH] [--ocp PATH] [--start T] [--out DIR]
-                            [--format EXT] [--no-show]
-
-    --bag     path to .bag file            (default: /home/ws/sim_log.bag)
-    --ocp     path to OCP .npz file        (default: /home/ws/task3_solution.npz)
-    --start   sim time [s] for OCP t=0     (default: 0.0 = bag start)
-    --out     output directory             (default: .)
-    --format  figure format                (default: pdf — vector, for LaTeX)
-    --no-show skip the interactive viewer  (for headless figure generation)
-
-The robot is read from the solution file, so the same command works for either
-one; the bag has to be the run of that same solution.
+  python stage2_sim_validation/gazebo_replay/validate_sim.py --bag sim_log.bag --ocp task3_solution.npz --start 1.49
+  python stage2_sim_validation/gazebo_replay/validate_sim.py --out figs --no-show
 """
 from __future__ import annotations
 
@@ -50,14 +26,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "stage3_visualization" / "com
 from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
 from thesis_style import LEG_COLORS, PALETTE, tex  # noqa: E402  also activates the plot style
 
-# ── Canonical ordering, taken from the robot's spec ─────────────────────────
-# The plots below lay one column out per actuated joint of a leg, so this
-# module works for any robot whose legs share a joint count.
-#
-# Which robot that is comes from the solution file, which records it -- the
-# same source replay_trajectory.py reads.  It used to be a module constant
-# here, so validating BODY2 meant editing the file, and forgetting to edit it
-# back made the next amph run compare against the wrong joint names.
+# --- Joint naming, bound by use_robot() from the solution file ---
 SPEC = None
 LEG_NAMES = JOINT_TYPES = OCP_JOINT_NAMES = None
 N_PER_LEG = None
@@ -73,27 +42,21 @@ def use_robot(name: str) -> None:
     OCP_JOINT_NAMES = list(SPEC.actuated_joint_names)
 
 
-# The comparison is binary, so it gets the two ends of the shared palette:
-# reference solid, measurement dashed on top of it.
-C_OCP, C_SIM = PALETTE[0], PALETTE[2]
+C_OCP, C_SIM = PALETTE[0], PALETTE[2]  # model solid, simulation dashed
 
 DEG = r"$^\circ$"   # usetex has no degree glyph in the text font
 
 
-# ── Data loading ─────────────────────────────────────────────────────────────
+# --- Data loading ---
 
 def load_ocp(path: str):
-    """Return (q_joints, t_ocp, T).
+    """Return ``(q_joints, t_ocp, T, xyz_ocp, vx_ocp)`` and bind the module to the file's robot.
 
-    q_joints : (12, N+1)  joint angles in OCP canonical order [rad]
-    t_ocp    : (N+1,)     time vector [s]
-    T        : float      cycle period [s]
-
-    Also binds the module to the robot the file names, so everything below
-    reads the right joints out of the bag.
+    q_joints : (n_joints, N+1) joint angles [rad]
+    xyz_ocp  : (3, N+1) base position; vx_ocp: forward speed
     """
     d = np.load(path)
-    # v1 files predate the field; they are all amph, which is what they were.
+    # Files without a robot field are amph solutions.
     use_robot(str(d["robot"]) if "robot" in d.files else "amph")
     X = d["X"]
     T = float(d["T"])
@@ -102,23 +65,21 @@ def load_ocp(path: str):
     q_joints = X[7:nq, :]  # skip base [x,y,z, qx,qy,qz,qw]
     xyz_ocp = X[0:3, :]    # base position (world frame)
     t_ocp = np.linspace(0.0, T, N + 1)
-    # Forward speed: numerical derivative of x position (world frame)
     vx_ocp = np.gradient(X[0, :], t_ocp)
     return q_joints, t_ocp, T, xyz_ocp, vx_ocp
 
 
 def read_bag_joint_states(bag_path: str):
-    """Read the robot's joint_states topic from a ROS1 .bag file.
+    """Read ``/<robot>/joint_states``.
 
-    Returns:
-        times     : (M,)    timestamps [s] relative to first message
-        positions : (12, M) joint positions in OCP canonical order [rad]
+    Returns ``times`` (M,) relative to the first message and ``positions``
+    (n_joints, M) in OCP joint order [rad].
     """
     import rosbag
 
     times = []
     pos_list = []
-    ocp_indices = None  # mapping: bag column index → OCP canonical index
+    ocp_indices = None  # bag index for each OCP joint
 
     with rosbag.Bag(bag_path) as bag:
         for _, msg, t in bag.read_messages(topics=[f"/{SPEC.ros}/joint_states"]):
@@ -137,22 +98,20 @@ def read_bag_joint_states(bag_path: str):
             times.append(t.to_sec())
 
     times = np.array(times)
-    positions = np.stack(pos_list, axis=1)  # (12, M)
+    positions = np.stack(pos_list, axis=1)  # (n_joints, M)
     times -= times[0]
     return times, positions
 
 
 def read_bag_model_states(bag_path: str, model_name: str = None):
-    """``model_name`` defaults to the robot's Gazebo model name."""
+    """Read the robot's base pose from ``/gazebo/model_states``.
+
+    ``model_name`` defaults to the robot's Gazebo model name. Returns ``times``
+    (M,) relative to the first message, world-frame ``xyz`` (3, M) [m] and
+    forward velocity ``vx_lin`` (M,) [m/s].
+    """
     if model_name is None:
         model_name = SPEC.ros
-    """Read /gazebo/model_states from a ROS1 .bag file.
-
-    Returns:
-        times   : (M,)   timestamps [s] relative to first message
-        xyz     : (3, M) world-frame position [m]
-        vx_lin  : (M,)   world-frame forward (x) velocity [m/s]
-    """
     import rosbag
 
     times, xs, ys, zs, vxs = [], [], [], [], []
@@ -180,14 +139,10 @@ def read_bag_model_states(bag_path: str, model_name: str = None):
     return times, xyz, vx_lin
 
 
-# ── Alignment ────────────────────────────────────────────────────────────────
+# --- Alignment ---
 
 def align(q_ocp, t_ocp, q_sim, t_sim, start_time: float):
-    """Interpolate sim data to the OCP time grid.
-
-    start_time : sim timestamp [s] corresponding to OCP t=0.
-    Returns q_sim_aligned : (12, N+1) [rad]
-    """
+    """Resample sim joint data onto the OCP grid; ``start_time`` is the sim time of OCP t=0."""
     t_query = t_ocp + start_time
     if t_query[-1] > t_sim[-1]:
         print(
@@ -205,16 +160,8 @@ def align(q_ocp, t_ocp, q_sim, t_sim, start_time: float):
 
 
 def align_base(t_ocp, xyz_sim, vx_sim, t_sim, start_time: float):
-    """Interpolate base position and forward speed to the OCP time grid.
-
-    Returns:
-        xyz_aligned : (3, N+1) [m]
-        vx_aligned  : (N+1,)  [m/s]
-    """
+    """Resample base position (3, N+1) and forward speed (N+1,) onto the OCP grid."""
     t_query = t_ocp + start_time
-    # Three rows because xyz is a position, not because a leg has three joints.
-    # This loop ran over N_PER_LEG, which is 3 for amph by coincidence and 2 for
-    # BODY2 -- there it left the z row at zero.
     xyz_aligned = np.zeros((3, len(t_ocp)))
     for i in range(3):
         f = interp1d(
@@ -231,27 +178,22 @@ def align_base(t_ocp, xyz_sim, vx_sim, t_sim, start_time: float):
 
 
 def compute_rmse(q_ocp, q_sim):
-    """Per-joint RMSE. Returns (12,) [rad]."""
+    """Per-joint RMSE [rad]."""
     return np.sqrt(np.mean((q_ocp - q_sim) ** 2, axis=1))
 
 
 def compute_base_rmse(xyz_ocp, vx_ocp, xyz_sim, vx_sim):
-    """RMSE of the four base panels: (4,) = [Δx, Δy, Δz [m], v_x [m/s]].
-
-    Positions are referenced to t=0 first, exactly as the figure draws them:
-    the OCP frame and the Gazebo spawn pose share no origin, so only the
-    displacement is comparable.
-    """
+    """RMSE of [Δx, Δy, Δz, v_x]; positions relative to t=0 since the origins differ."""
     xyz_o = xyz_ocp - xyz_ocp[:, [0]]
     xyz_s = xyz_sim - xyz_sim[:, [0]]
     return np.array([np.sqrt(np.mean((o - s) ** 2))
                      for o, s in zip([*xyz_o, vx_ocp], [*xyz_s, vx_sim])])
 
 
-# ── Plotting ─────────────────────────────────────────────────────────────────
+# --- Plotting ---
 
 def _overlay(ax, t, y_ocp, y_sim):
-    """Reference / measurement overlay with the gap between them shaded."""
+    """Model and simulation curves with the gap shaded."""
     ax.fill_between(t, y_ocp, y_sim, color=C_SIM, alpha=0.16, lw=0, zorder=1)
     ax.plot(t, y_ocp, color=C_OCP, lw=1.3, zorder=3)
     ax.plot(t, y_sim, color=C_SIM, lw=1.1, ls=(0, (4, 1.6)), zorder=4)
@@ -260,17 +202,13 @@ def _overlay(ax, t, y_ocp, y_sim):
 
 
 def _headroom(ax, frac: float = 0.22):
-    """Open a band at the top of the panel for the RMSE badge to sit in.
-
-    Call once per set of shared axes: on a shared-y column every call would
-    expand the same limits again.
-    """
+    """Extend the y range to make room for the RMSE badge (once per shared axis)."""
     lo, hi = ax.get_ylim()
     ax.set_ylim(lo, hi + frac * (hi - lo))
 
 
 def _corner(ax, text):
-    """RMSE badge, top-right, clear of the curves."""
+    """RMSE badge in the top-right corner."""
     ax.annotate(text, xy=(0.975, 0.94), xycoords="axes fraction",
                 ha="right", va="top", fontsize=7,
                 bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.75",
@@ -284,17 +222,12 @@ def _overlay_legend(fig):
                label="SPH--Gazebo reference"),
         Patch(facecolor=C_SIM, alpha=0.16, label="tracking error"),
     ]
-    # "outside" placement is what constrained layout reserves room for, so the
-    # legend never has to be nudged by hand.
+    # "outside" lets constrained layout reserve space for the legend.
     fig.legend(handles=handles, loc="outside lower center", ncol=3, fontsize=8)
 
 
 def plot_joint_tracking(q_ocp, q_sim, t_ocp, rmse_all):
-    """Every actuated joint on one grid: legs down the rows, joints across.
-
-    Columns share a y axis, so the same joint type is directly comparable
-    between legs — the thing the figure is there to show.
-    """
+    """Grid of joint tracking panels: legs as rows, joints as columns (shared y per column)."""
     n_legs = len(LEG_NAMES)
     fig, axes = plt.subplots(
         n_legs, N_PER_LEG, sharex=True, sharey="col", squeeze=False,
@@ -315,7 +248,7 @@ def plot_joint_tracking(q_ocp, q_sim, t_ocp, rmse_all):
             if i == n_legs - 1:
                 ax.set_xlabel(r"time $t$ [s]")
 
-    for j in range(N_PER_LEG):   # columns share a y axis: expand each once
+    for j in range(N_PER_LEG):   # once per shared y axis
         _headroom(axes[0, j])
 
     _overlay_legend(fig)
@@ -323,13 +256,7 @@ def plot_joint_tracking(q_ocp, q_sim, t_ocp, rmse_all):
 
 
 def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp):
-    """Base position and forward speed: overlay on top, error trace below.
-
-    Position is drawn as displacement from ``t=0`` for both, so the panels
-    compare the motion the gait produces rather than where the model happened to
-    be spawned.  The base gets its own error row because its drift is the
-    headline result, and it is small enough to disappear inside the overlay.
-    """
+    """Base displacement and forward speed with an error row below each panel."""
     xyz_o = xyz_ocp - xyz_ocp[:, [0]]
     xyz_s = xyz_sim - xyz_sim[:, [0]]
 
@@ -371,8 +298,7 @@ def plot_base(xyz_ocp, vx_ocp, xyz_sim, vx_sim, t_ocp):
 def plot_rmse(rmse_all):
     """All actuated joints on one axis, grouped and coloured by leg."""
     rmse_deg = np.degrees(rmse_all)
-    # Gap of 0.8 bar widths between legs, so the groups read as groups without
-    # needing a separator line.
+    # 0.8 bar widths between leg groups
     x = np.array([i * (N_PER_LEG + 0.8) + j
                   for i in range(len(LEG_NAMES)) for j in range(N_PER_LEG)])
     colors = [LEG_COLORS[i % len(LEG_COLORS)]
@@ -407,7 +333,7 @@ def plot_rmse(rmse_all):
 
 
 def show_tabbed(figures: list, titles: list):
-    """Display a list of matplotlib figures as tabs in a single Tk window."""
+    """Show figures as tabs in one Tk window."""
     import tkinter as tk
     from tkinter import ttk
 
@@ -434,8 +360,6 @@ def show_tabbed(figures: list, titles: list):
 
     root.mainloop()
 
-
-# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -481,12 +405,8 @@ def main():
         print(f"  {name:<38} {rmse[i]:.4f} rad   {np.degrees(rmse[i]):.3f}°")
     print(f"\n  Overall mean RMSE: {np.degrees(rmse.mean()):.3f}°")
 
-    # The four base panels' RMSE, on the scale of the motion that produced it:
-    # the distance the simulation covers in one cycle.  SPH is the reference, so
-    # it is the denominator -- the same convention the relative errors used.
-    # That makes the errors comparable across the panels and between runs of
-    # different stroke sizes.  Speed is normalised by the matching mean speed,
-    # d/T, so its ratio is on the same scale as the position ones.
+    # Normalise base RMSEs by the simulated (reference) cycle distance d, and
+    # the speed RMSE by d/T.
     rmse_base = compute_base_rmse(xyz_ocp, vx_ocp, xyz_sim_aligned, vx_sim_aligned)
     d_cycle = float(np.linalg.norm(xyz_sim_aligned[:, -1] - xyz_sim_aligned[:, 0]))
     d_model = float(np.linalg.norm(xyz_ocp[:, -1] - xyz_ocp[:, 0]))
@@ -511,7 +431,7 @@ def main():
     }
     for tag, fig in figs.items():
         path = out_dir / f"validation_{tag}.{args.format.lstrip('.')}"
-        # pad_inches above the default: the tight bbox under-measures usetex text.
+        # Extra padding: the tight bbox under-measures usetex text.
         fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.12)
         print(f"  Saved {path}")
 

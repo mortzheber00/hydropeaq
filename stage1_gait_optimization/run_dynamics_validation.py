@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""
-CasADi-symbolic dynamics validation.
+"""Check the CasADi dynamics against Pinocchio and print sample evaluations.
 
-This script:
-  1. Builds the Pinocchio model and cylinder geometry.
-  2. Constructs CasADi symbolic functions for all dynamics terms.
-  3. Verifies the symbolic functions against Pinocchio numeric results.
-  4. Demonstrates forward and inverse dynamics with hydrodynamic forces.
+Compares mass matrix, gravity and foot FK at a test pose, then prints forward/
+inverse dynamics and the hydrodynamic terms. Robot is set by ``ROBOT``.
+
+Usage:
+  python stage1_gait_optimization/run_dynamics_validation.py
 """
 
 import numpy as np
@@ -17,31 +16,27 @@ ROBOT = "body2"   # registered robot name; see hydro_model/robots/
 
 
 def main():
-    # ── 1. Build robot + cylinders ─────────────────────────────────────
-    # load_robot already runs FK at the neutral configuration and builds the
-    # cylinders.  Do not redo it with np.zeros(nq): that is not a valid
-    # configuration for a robot with continuous joints, whose entries are
-    # (cos, sin) pairs, and rebuilding from it yields degenerate cylinders.
+    # --- Robot and cylinders ---
+    # load_robot already builds the cylinders at the neutral pose; np.zeros(nq)
+    # would be invalid for continuous joints.
     robot = load_robot(ROBOT)
     print(robot)
     print()
 
-    # ── 2. Build symbolic dynamics ─────────────────────────────────────
+    # --- Symbolic dynamics ---
     print("Building CasADi symbolic dynamics...")
     dyn = SymbolicDynamics(robot)
     dyn.print_summary()
     print()
 
-    # ── 2. Trim state ──────────────────────────────────────────────────
+    # --- Trim state ---
     print("\nFinding trim state...")
     q_trim = dyn.find_trim_state()
     print(f"\nq_trim = {q_trim}")
     print()
 
-    # ── 3. Verify against Pinocchio numeric ────────────────────────────
-    # A pose off the home configuration, written in the robot's actuated
-    # coordinates and expanded onto the tree.  The perturbation is kept small
-    # so a closed-chain robot stays inside its assemblable set.
+    # --- Compare with Pinocchio ---
+    # Small offset from home so a closed-chain robot stays assemblable.
     spec = robot.spec
     theta_home = (np.zeros(robot.n_actuated) if spec.theta_home is None
                   else np.asarray(spec.theta_home, dtype=float))
@@ -75,7 +70,7 @@ def main():
         print(f"  Foot {leg} FK error: {err:.2e}")
     print()
 
-    # ── 4. Evaluate dynamics ───────────────────────────────────────────
+    # --- Forward and inverse dynamics ---
     tau_zero = np.zeros(robot.nv)
 
     a_free = dyn.eval_forward_dynamics(q_test, v_test, tau_zero)
@@ -91,7 +86,7 @@ def main():
     print(f"  tau = {tau_hold}")
     print()
 
-    # ── 5. Hydrodynamic contributions ──────────────────────────────────
+    # --- Hydrodynamic terms ---
     tau_buoy = np.array(dyn.f_tau_buoyancy(q_test)).flatten()
     tau_drag = np.array(dyn.f_tau_drag(q_test, v_test)).flatten()
     M_added = np.array(dyn.f_M_added(q_test))
@@ -103,7 +98,7 @@ def main():
     print(f"  M_added / M_rb ratio (diag): {np.diag(M_added) / np.diag(M_sym)}")
     print()
 
-    # ── 6. State-space ODE ─────────────────────────────────────────────
+    # --- State-space ODE ---
     x0 = np.concatenate([q_test, v_test])
     xdot = np.array(dyn.f_xdot(x0, tau_zero)).flatten()
     print("State-space ODE (x = [q, v]):")

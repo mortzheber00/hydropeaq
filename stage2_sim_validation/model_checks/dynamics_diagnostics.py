@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""
-Decompose forces/inertias acting on the robot through a saved OCP trajectory.
+"""Print a force and inertia breakdown along a saved OCP trajectory.
 
-Per-step breakdown of:
-  - M_rb vs M_added (sizes, off-diagonal coupling base↔joints)
-  - tau_drag (per-link, axial vs transverse, x/y/z)
-  - tau_buoyancy, gravity
-  - Forward (world-x) base acceleration sources
-  - Sanity check: midpoint-only vs integrated drag on a rotating link
+Covers link cylinders, rigid-body vs added mass, per-link drag, base forces
+and accelerations, and a midpoint-vs-integrated drag estimate for a rotating link.
 
-Run:  python stage2_sim_validation/model_checks/dynamics_diagnostics.py [PATH]
+Usage:
+  python stage2_sim_validation/model_checks/dynamics_diagnostics.py [task3_solution.npz]
 """
 
 import sys
@@ -33,7 +29,7 @@ from stage1_gait_optimization.hydro_model.trajectory import (
 
 
 def build_per_link_diagnostics(robot, dyn):
-    """For each link, build a ca.Function returning (F_drag, v_link, alpha)."""
+    """Per-link CasADi functions ``(q, v) -> (F_drag, v_link, alpha)``."""
     q = ca.SX.sym("q", dyn.nq)
     v = ca.SX.sym("v", dyn.nv)
     cmodel, cdata = dyn.cmodel, dyn.cdata
@@ -79,7 +75,7 @@ def build_per_link_diagnostics(robot, dyn):
 
 
 def quat_to_R_x_row(q4):
-    """Return world-x row of rotation matrix from quaternion (qx,qy,qz,qw)."""
+    """First row of the rotation matrix of quaternion (qx, qy, qz, qw)."""
     qx, qy, qz, qw = q4
     return np.array([
         1 - 2*(qy**2 + qz**2),
@@ -100,10 +96,7 @@ def main():
     dyn = SymbolicDynamics(robot)
     nv = dyn.nv
 
-    # Two views of the same trajectory: the per-link hydrodynamic terms are
-    # tree-space quantities, while the equations of motion are integrated in
-    # the robot's own (possibly reduced) coordinates.  They coincide for a
-    # serial robot.
+    # Hydro terms need tree coordinates; forward dynamics uses reduced ones.
     X_r, nq_r = X, nq
     X, nq = expand_to_tree(robot, X, nq), robot.nq
 
@@ -111,7 +104,7 @@ def main():
     link_names = list(per_link.keys())
     n_links = len(link_names)
 
-    # ── Static info ─────────────────────────────────────────────────────────
+    # --- Cylinders ---
     print("\n" + "─" * 88)
     print("Per-link cylinder primitives:")
     print(f"  {'link':30s} {'L[m]':>7} {'D[m]':>7} {'V[L]':>8} "
@@ -123,7 +116,7 @@ def main():
               f"{cyl.cross_section_axial*1e4:10.2f} "
               f"{cyl.cross_section_transverse*1e4:10.2f}")
 
-    # ── Static mass matrix comparison ──────────────────────────────────────
+    # --- Mass matrices at t=0 ---
     q0 = X[:nq, 0]
     M_rb_0 = np.array(dyn.f_M_rb(q0))
     M_A_0  = np.array(dyn.f_M_added(q0))
@@ -139,7 +132,7 @@ def main():
     print(f"  ‖M_A base↔joint coupling‖_F     = {np.linalg.norm(M_A_0[:6,6:],'fro'):.4f}")
     print(f"  ‖M_rb base↔joint coupling‖_F    = {np.linalg.norm(M_rb_0[:6,6:],'fro'):.4f}")
 
-    # ── Walk the trajectory ────────────────────────────────────────────────
+    # --- Evaluate along the trajectory ---
     F_drag_x  = np.zeros((n_links, N+1))
     v_link_x  = np.zeros((n_links, N+1))
     alpha_    = np.zeros((n_links, N+1))
@@ -173,7 +166,7 @@ def main():
             v_link_x[i, k] = float(v_l[0])
             alpha_[i, k]   = float(al)
 
-    # ── Drag breakdown ─────────────────────────────────────────────────────
+    # --- Drag ---
     print("\n" + "─" * 88)
     print("Total drag force in world-x summed over links (N):")
     tot = F_drag_x.sum(axis=0)
@@ -193,7 +186,7 @@ def main():
         print(f"  {name:30s} {mean_f:+10.4f} {peak_f:+10.4f} "
               f"{mean_v:10.4f} {mean_a:8.3f}")
 
-    # ── Base-DOF forces ────────────────────────────────────────────────────
+    # --- Base forces ---
     print("\n" + "─" * 88)
     print("Generalized base forces (means, body frame): [surge, sway, heave, roll, pitch, yaw]")
     print(f"  drag      = {np.array2string(tau_drag[:6,:].mean(axis=1), precision=4)}")
@@ -209,7 +202,7 @@ def main():
     print(f"World-x base vel:   {vx_world[0]:+.4f} → {vx_world[-1]:+.4f} m/s "
           f"(periodic in OCP if Δ≈0)")
 
-    # ── Sanity check: midpoint vs integrated drag on rotating leg ─────────
+    # --- Midpoint vs integrated drag on a rotating link ---
     print("\n" + "─" * 88)
     print("Midpoint-only vs integrated drag on a leg rotating at ω about its base:")
     print("  For transverse (perpendicular-to-axis) motion:")

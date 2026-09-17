@@ -1,67 +1,21 @@
 #!/usr/bin/env python3
-"""Whole-robot forward-force budget over one optimised swim cycle.
+"""Whole-robot forward-force budget over one cycle, split into the EoM terms.
 
-Every other thrust figure here is quasi-steady *drag* on one leg:
-``thrust_heatmap.py`` maps drag-thrust capability per pose, and
-``gait_diagnostics.py`` evaluates the same drag model along the solution for the
-three links of a single leg.  Neither includes added mass, neither covers the
-whole robot, and neither closes a force balance.  This figure is the budget
-those two are slices of.  The decomposition itself, and the frame it is taken
-in, are ``force_budget.py``; where it is sampled and how it is averaged are
-``collocation.py``.
+``*_traces``  world-frame forward force of each term over two cycles
+``*_means``   cycle mean of each term
 
-Two figures, both on the full text-width canvas so they go in unscaled:
+Buoyancy and gravity vanish in the world frame, which serves as a sanity check.
 
-  ``*_traces``  The world-frame forward force on the whole robot over the cycle,
-      split into the terms of the equation of motion.  Drawn twice, because the
-      solution is periodic and the repeat is what makes that visible.
-
-  ``*_means``   The cycle mean of each term.  This is where the result reads:
-      which mechanism actually carries the forward force, and by how much.
-
-Buoyancy and gravity collapsing to zero (1e-17) in the world frame is not
-decoration: a vertical force cannot push the robot forward, so it is a free
-correctness check on the whole pipeline, and it is drawn.
-
-**Why the external forces do not sum to zero, and why the cycle-mean drag
-should not be read as net resistance.**
-
-Over a periodic cycle the state returns to itself, so the momentum does too, so
-the net external force *must* average to zero.  It does not here: the
-cycle-mean drag is -0.107 N.  That number is not a measurement of resistance.
-It is the exact mirror of a momentum defect in the added-mass model, and the
-equation of motion has no choice but to balance one against the other:
-
-    mean(M_rb a + C_rb v)  =  -2e-4 N     <- rigid body conserves momentum
-                                             (quadrature error; the exact
-                                              statement is p_x(T) - p_x(0))
-    mean(M_A  a + C_A  v)  =  -0.107 N    <- added mass does not
-    mean(drag)             =  -0.107 N    <- forced equal to their sum
-
-The cause is the submersion ratio.  ``dynamics.py`` builds ``C_A v`` as the
-per-link Kirchhoff force at zero acceleration rather than from the Christoffel
-symbols of ``M_A(q)``, which drops the d(alpha)/dq Coriolis contribution — its
-own comment says so.  That was verified here rather than taken on trust:
-rebuilding the identical model with ``z_surface`` far above the robot, so
-alpha == 1 and d(alpha)/dq == 0, moves the added-mass mean from **-0.1067 N to
-+0.0055 N** — a factor of twenty, down to quadrature noise.  Everything else is
-unchanged, so the defect is the free-surface term and nothing else.
-
-This robot swims at the surface: the hull averages 13% submerged and the front
-legs leave the water every cycle, so alpha swings hard and the dropped term is
-large.  Consistently, ``plot_thrust_attribution.py`` finds the hull — the link
-with the most extreme alpha variation — carries -0.086 of the -0.107.
-
-For the thesis this means the *shape* of the budget over the cycle is sound,
-and so is the per-link attribution of who thrusts and who resists; but the
-cycle-mean net force is dominated by a modelling artifact of the same size, and
-should not be quoted as a physical result until ``C_A`` carries the d(alpha)/dq
-term.  The console prints the defect on its own line so the figure cannot be
-read without it.
+Caveat: over a periodic cycle the net external force should average to zero,
+but the mean drag balances a momentum defect of the added-mass model instead.
+``C_A v`` omits the d(alpha)/dq term, which matters because the robot swims at
+the surface (with alpha == 1 the defect disappears). The per-cycle shape and
+the per-link attribution are valid; the cycle-mean drag is not a physical
+resistance. The defect is printed.
 
 Usage:
-  python plot_thrust_budget.py
-  python plot_thrust_budget.py --solution ../task3_solution.npz --save budget.pdf
+  python stage3_visualization/thrust/plot_thrust_budget.py
+  python stage3_visualization/thrust/plot_thrust_budget.py --solution task3_solution.npz --save budget.pdf
 """
 
 from __future__ import annotations
@@ -95,11 +49,9 @@ full_width()
 
 
 def plot_traces(terms, phase):
-    """Figure 1: every term of the forward-force balance over the cycle."""
+    """All forward-force terms over two cycles."""
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 2.9))
 
-    # Collocation points are unevenly spaced inside each interval, so the phase
-    # axis comes from the Radau roots rather than a linspace.
     two = np.concatenate([phase, 1 + phase])
     rep = lambda a: np.concatenate([a, a])                 # noqa: E731
 
@@ -108,12 +60,7 @@ def plot_traces(terms, phase):
 
     n_flat = 0
     for key, (label, colour, external) in TERMS.items():
-        # Buoyancy and gravity are flat on zero here, which is the point: they
-        # are drawn thick and dashed so a reader sees two lines on the axis
-        # rather than wondering where they went.  Both lie on exactly the same
-        # pixels, so the dash phases are staggered — otherwise whichever is
-        # drawn second hides the other completely and the check reads as one
-        # term, not two.
+        # Zero terms (buoyancy, gravity): thick dashes with staggered phase so both stay visible
         flat = np.allclose(terms[key], 0.0, atol=1e-12)
         if flat:
             style = dict(lw=1.8, ls=(4 * n_flat, (4, 4)), zorder=2)
@@ -138,10 +85,9 @@ def plot_traces(terms, phase):
 
 
 def plot_means(terms, N):
-    """Figure 2: the cycle mean of each term, which is what nets out."""
+    """Cycle mean of each term, largest first."""
     keys = list(TERMS)
     means = np.array([cycle_mean(terms[k], N) for k in keys])
-    # Largest first, so the mechanism that carries the force is at the top.
     order = np.argsort(-np.abs(means))
 
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 2.4))
@@ -155,12 +101,10 @@ def plot_means(terms, N):
     ax.set_xlabel(r"cycle-mean forward force $\bar F_x^{\mathrm{world}}$ [N]")
     ax.grid(axis="x", alpha=0.3)
 
-    # Value at the end of each bar: the two static terms are zero to 1e-17 and
-    # a bar of that length is invisible, so the number has to carry them.
+    # Value labels (zero-length bars would otherwise be invisible)
     span = max(np.abs(means).max(), 1e-12)
     for i, m in enumerate(means[order]):
-        # The static terms land at ~1e-17.  "-0.000" reads as a rounded-away
-        # small number; they are zero to machine precision, so say so.
+        # Print machine-zero as "0" rather than "-0.000"
         txt = "0" if abs(m) < 1e-9 else f"{m:+.3f}"
         ax.annotate(txt, xy=(m, i), fontsize=6.5,
                     xytext=(3 if m >= 0 else -3, 0), textcoords="offset points",
@@ -171,20 +115,11 @@ def plot_means(terms, N):
 
 
 def report(terms, resid, T, N, inertia, v_mean):
-    """The numbers a caption needs, printed rather than drawn.
+    """Print term statistics and the momentum closure.
 
-    The two closure lines at the end are the ones worth reading.  ``rigid-body
-    momentum`` is the scale to read the next line against: ``M_rb a + C_rb v``
-    is a true momentum derivative and the state is periodic, so its cycle mean
-    is nothing but the quadrature's own truncation error (order 1e-3 N; the
-    exact statement is checked in ``main`` on the momentum itself).
-    ``added-mass momentum defect`` is the amount by which the added-mass terms
-    fail the same test, and it is two orders larger.  It is the reason the external forces do not sum to zero,
-    and it comes from the dropped d(alpha)/dq term — see the module docstring for
-    the free-surface test that pins it down.  Because the equation of motion has
-    to balance, the cycle-mean drag is forced equal to this defect: the two lines
-    should print as near-equal numbers, and when they do, the mean drag is
-    reporting the artifact rather than any resistance the robot actually feels.
+    The rigid-body mean is only quadrature error and sets the scale; the
+    added-mass defect is the artifact that the mean drag balances (see module
+    docstring).
     """
     print(f"  {'term':<34s}{'mean [N]':>11s}{'pk-pk [N]':>11s}")
     for key, (label, _, _) in TERMS.items():
@@ -200,11 +135,7 @@ def report(terms, resid, T, N, inertia, v_mean):
     print(f"  max |EoM identity residual|     {np.abs(resid).max():>11.3e} N")
     print(f"  cycle period T                  {float(T):>11.4f} s")
     if abs(ext) > EXT_FORCE_TOL:
-        # Steady swimming means zero mean force, not positive: the robot holds
-        # its speed rather than accelerating.  Quoting what this force *would*
-        # do makes the claim falsifiable instead of a bare assertion -- the
-        # trajectory is periodic, so a deceleration this large plainly is not
-        # happening, which is what proves the number is bookkeeping.
+        # Speed loss this force would cause, which a periodic solution cannot have
         lost = ext / inertia * float(T)
         print(f"\n  NOTE: the net external force should average to zero over a "
               f"periodic\n  cycle and does not.  It sits within "
@@ -238,15 +169,13 @@ def main():
     print(f"{args.solution.name}:")
     print(f"  (sampled at {N * D_COLLOC} collocation points; "
           f"Xc reconstruction error {xc_err:.1e})")
-    # Effective surge inertia and mean speed, for the diagnostic note.
+    # Surge inertia and mean speed for the note in report()
     inertia = float(pin.computeTotalMass(robot.model)
                     + np.array(dyn.f_M_added(X[:nq, 0]))[0, 0])
     v_mean = float(X[0, -1] - X[0, 0]) / float(T)
     report(terms, resid, T, N, inertia, v_mean)
 
-    # Two different checks.  The first is an identity and only catches frame or
-    # sign slips; the second has physical content — the rigid body conserves
-    # momentum, so a cycle that does not give it back is not a periodic solve.
+    # EoM identity (catches frame/sign errors) and momentum periodicity
     worst = np.abs(resid).max()
     if worst > EOM_TOL:
         raise SystemExit(

@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
-"""Convert URDF collision STL meshes to OBJ files for the SPlisHSPlasH boundary simulator.
+"""Convert a robot's collision STLs to the OBJ files the SPH boundary plugin loads.
 
-The Gazebo fluid plugin (FluidSimulator) exports collision meshes via Gazebo's
-MeshManager, but that export silently fails when the mesh isn't cached under
-the expected key.  This script pre-generates the OBJ files the plugin expects
-so that GazeboBoundarySimulator::initBoundaryData() can load them directly.
+The Gazebo fluid plugin's own mesh export fails silently, so the files are
+written to /home/ws/sph_boundaries/<model>_<collision>.obj beforehand. Run once
+before roslaunch; the argument is a registered robot name.
 
-Naming convention the plugin uses:
-    <output_dir>/<model_name>_<collision_name>.obj
-
-Run once before roslaunch (it has to finish before Gazebo loads the world, so
-it is deliberately not a launch node).  The argument is a registered robot
-name; see hydro_model/robots/:
-
-    rosrun sph_replay generate_boundary_obj.py amph
-    rosrun sph_replay generate_boundary_obj.py body2
+Usage:
+  rosrun sph_replay generate_boundary_obj.py amph
+  rosrun sph_replay generate_boundary_obj.py body2
 """
 
 import struct
@@ -28,10 +21,9 @@ from stage1_gait_optimization.hydro_model import get_spec  # noqa: E402
 
 OUTPUT_DIR = "/home/ws/sph_boundaries"
 
-# Collision names that cannot be read off the URDF, because a fixed joint lumps
-# its child into the parent under a mangled name.  Keyed by registered robot
-# name; values are STL basenames under <package_dir>/meshes.  A robot with no
-# fixed joints needs no entry here -- see collisions_from_urdf().
+# Explicit collision -> STL maps for robots with fixed joints, whose children
+# are lumped into the parent under a mangled name. Other robots are read from
+# the URDF (collisions_from_urdf).
 AMPH_COLLISION_TO_STL = {
     "base_link_collision":                                                          "base_link.STL",
     "Front_Left_Side_link_collision":                                               "Front_Left_Side_link.STL",
@@ -56,14 +48,7 @@ LUMPED_COLLISIONS = {"amph": AMPH_COLLISION_TO_STL}
 
 
 def collisions_from_urdf(urdf_path):
-    """Collision name -> STL basename, read straight off the URDF.
-
-    urdf_to_sdf names each collision ``<link>_collision`` and lumps
-    fixed-joint children into their parent under a mangled name -- which is
-    what the amph map above spells out by hand.  A URDF with no fixed joints
-    has no lumping, so the mapping is one plain entry per link; anything else
-    needs its names listed explicitly.
-    """
+    """``{<link>_collision: STL basename}`` from a URDF without fixed joints."""
     root = ET.parse(urdf_path).getroot()
     fixed = [j.get("name") for j in root.findall("joint") if j.get("type") == "fixed"]
     if fixed:
@@ -83,22 +68,14 @@ def collisions_from_urdf(urdf_path):
 
 
 def robot_config(name):
-    """Return (Gazebo model name, mesh dir, collision -> STL) for one robot.
-
-    Everything comes from the robot's registry entry, so adding a robot to
-    hydro_model/robots is enough unless its URDF has fixed joints.
-    """
+    """``(Gazebo model name, mesh dir, {collision: STL})`` for a registered robot."""
     spec = get_spec(name)
     collisions = LUMPED_COLLISIONS.get(spec.name) or collisions_from_urdf(spec.urdf_path)
     return spec.ros, os.path.join(str(spec.package_dir), "meshes"), collisions
 
 
 def read_stl(path):
-    """Return (vertices, faces) from a binary or ASCII STL file.
-
-    vertices : list of (x, y, z) float tuples  (deduplicated, shared)
-    faces    : list of (i, j, k) int tuples     (0-based indices)
-    """
+    """Read a binary or ASCII STL as deduplicated vertices and 0-based faces."""
     with open(path, "rb") as f:
         header = f.read(80)
 
@@ -117,7 +94,7 @@ def _read_stl_binary(path):
         f.read(80)  # header
         (num_triangles,) = struct.unpack("<I", f.read(4))
         for _ in range(num_triangles):
-            f.read(12)  # normal — ignored; let the OBJ loader recompute
+            f.read(12)  # normal (unused)
             tri = []
             for _ in range(3):
                 v = struct.unpack("<fff", f.read(12))

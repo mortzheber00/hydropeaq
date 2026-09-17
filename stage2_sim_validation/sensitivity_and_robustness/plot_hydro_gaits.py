@@ -1,31 +1,13 @@
 #!/usr/bin/env python3
-"""
-Foot-path comparison across the hydrodynamic perturbations.
+"""Foot paths of the hydro sensitivity sweep, one panel per coefficient.
 
-The tornado says how much each coefficient costs; this says whether it changes
-what the robot actually does.  One panel per coefficient, in the tornado's
-order, each showing the sagittal hip-relative foot path for the nominal solve
-and its +-25% pair.
-
-Small multiples rather than one overlay on purpose: six of the eight
-perturbations sit within 4% of nominal, so a single axis would pile them into
-one thick line while the two Cd_t curves stuck out.  Split by coefficient, the
-contrast between panels is the result — Cd_t visibly separates, Cd_a shows three
-curves you cannot tell apart.
-
-Markers at every eighth of the cycle recover what a closed loop hides: two
-strokes at different speeds tracing the same path look identical without them,
-so shape changes show as loop displacement and timing changes as marker spacing.
-
-Caveat the caption has to carry: ``enforce_symmetry`` is off in these solves, so
-the four legs are not mirror copies and no single one is representative.  The
-panels show one leg for legibility; the console prints the deviation for all
-four, and they differ a lot — under Cd_t -25% the shown leg moves 41.8 mm while
-Front_Right moves 16.2 mm.  Quote the range, not the panel.
+Each panel shows the nominal hip-relative foot path and the +-25 % solutions,
+with markers every 1/8 cycle to expose timing changes. Symmetry is off in these
+solves, so the legs differ; the console prints the deviation of every leg.
 
 Usage:
-  python plot_hydro_gaits.py --sweep 20260828_081024
-  python plot_hydro_gaits.py --sweep TAG --leg Hind_Left --save ../docs/figures/gaits.pdf
+  python stage2_sim_validation/sensitivity_and_robustness/plot_hydro_gaits.py --sweep 20260828_081024
+  python stage2_sim_validation/sensitivity_and_robustness/plot_hydro_gaits.py --sweep TAG --leg Hind_Left --save gaits.pdf
 """
 from __future__ import annotations
 
@@ -45,7 +27,7 @@ from hydro_model import load_robot                                # noqa: E402
 from initial_guess.paper import _leg_foot_xz                      # noqa: E402
 from plot_hydro_sensitivity import COLOR_DOWN, COLOR_UP, LABELS, fetch  # noqa: E402
 
-PHASE_MARKS = 8          # markers per cycle, to expose timing
+PHASE_MARKS = 8          # markers per cycle
 COLOR_NOMINAL = "0.25"
 
 
@@ -60,19 +42,12 @@ def foot_path(sol, robot, leg: str) -> np.ndarray:
 
 
 def path_rmse(path: np.ndarray, nominal: np.ndarray) -> float:
-    """RMS foot-position deviation from the nominal stroke [m].
-
-    Compared phase point by phase point, so it captures a stroke that is
-    displaced, reshaped or retimed alike — which is what the panel shows.  The
-    peak deviation is roughly twice this on every case here (Cd_t -25%: 19.4 mm
-    rms, 41.8 mm peak), so the two rank the perturbations identically and the
-    rms is the steadier number to quote.
-    """
+    """RMS foot-position deviation from nominal at matching phases [m]."""
     return float(np.sqrt((np.linalg.norm(path - nominal, axis=1) ** 2).mean()))
 
 
 def _corner(ax, text):
-    """Deviation badge, top-right — the house style from validate_sim.py."""
+    """Badge in the top-right corner (same style as validate_sim.py)."""
     ax.annotate(text, xy=(0.975, 0.94), xycoords="axes fraction",
                 ha="right", va="top", fontsize=7,
                 bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.75",
@@ -80,18 +55,14 @@ def _corner(ax, text):
 
 
 def build_figure(paths, order, leg):
-    # Height matched to the data's ~1.8:1 aspect under equal-axis scaling;
-    # a taller figure just adds whitespace between the rows.
-    fig, axes = plt.subplots(2, 2, figsize=(7.4, 5.3))
+    fig, axes = plt.subplots(2, 2, figsize=(7.4, 5.3))  # sized for the ~1.8:1 data aspect
     every = max(1, (len(paths[(order[0], -0.25)]) - 1) // PHASE_MARKS)
 
-    # Shared limits: the panels are only comparable if a millimetre is the same
-    # length in each of them.
+    # Shared limits so the panels have the same scale
     allpts = np.vstack([p for p in paths.values()] + [paths["nominal"]]) * 100
     pad = 0.08 * max(np.ptp(allpts[:, 0]), np.ptp(allpts[:, 1]))
     xlim = (allpts[:, 0].min() - pad, allpts[:, 0].max() + pad)
-    # Headroom at the top for the badge to sit clear of the stroke, which
-    # reaches within a whisker of the top-right corner otherwise.
+    # Extra headroom for the badge
     ylim = (allpts[:, 1].min() - pad,
             allpts[:, 1].max() + pad + 0.30 * np.ptp(allpts[:, 1]))
 
@@ -105,11 +76,7 @@ def build_figure(paths, order, leg):
             ax.plot(p[:, 0], p[:, 1], "-", lw=1.3, color=colour, zorder=3)
             ax.plot(p[::every, 0], p[::every, 1], ".", ms=4.5, color=colour,
                     zorder=4)
-        # Deviation goes in a corner badge rather than the title, matching
-        # validate_sim.py, and split by direction so which number belongs to
-        # which curve is not left to the reader.  COT stays out entirely: it is
-        # the tornado's job, and repeating it here would invite reading this
-        # figure as a second cost comparison.
+        # Path deviation per direction (COT is shown in the tornado instead)
         e_lo = 1000 * path_rmse(paths[(coef, -0.25)], paths["nominal"])
         e_hi = 1000 * path_rmse(paths[(coef, 0.25)], paths["nominal"])
         ax.set_title(LABELS.get(coef, coef), fontsize=10)
@@ -130,8 +97,6 @@ def build_figure(paths, order, leg):
         plt.Line2D([], [], color=COLOR_NOMINAL, lw=1.6, label="nominal"),
         plt.Line2D([], [], color=COLOR_DOWN, lw=1.3, label=r"$-25\%$"),
         plt.Line2D([], [], color=COLOR_UP, lw=1.3, label=r"$+25\%$"),
-        # Pinned, not "best": the badge owns the top-right corner in every
-        # panel, and "best" walks the legend straight into it.
     ], loc="upper left", fontsize=7.5, framealpha=0.92, handlelength=1.4)
     fig.tight_layout()
     return fig
@@ -203,7 +168,7 @@ def main():
 
     fig = build_figure(paths, order, args.leg)
     if args.save:
-        # pad_inches above the default: the tight bbox under-measures usetex.
+        # Extra padding: the tight bbox under-measures usetex text.
         fig.savefig(args.save, dpi=300, bbox_inches="tight", pad_inches=0.15)
         print(f"\nSaved → {args.save}")
         if args.save.suffix == ".pdf":

@@ -1,71 +1,23 @@
 #!/usr/bin/env python3
-"""
-Fluid slices through amph's legs over a SPlisHSPlasH run: side or top view.
+"""Flow slices through amph's legs from a SPlisHSPlasH VTK export.
 
-Reads the VTK export of the Gazebo fluid plugin (``ParticleData_fluid_<k>.vtk``
-and ``rb_data_<body>_<k>.vtk``) and shows an animation of slice planes that
-move with the robot (base rotation recovered by fitting its vertices against
-frame 1):
+Particle velocities are SPH-interpolated onto a plane that moves with the robot
+and drawn as in-plane speed or normal vorticity with streamlines and the leg
+cross-sections on top.
 
-``--view side`` (default), two panels: the left side (Front Left + Hind Left)
-and the right side (Front Right + Hind Right). The plane is the base link's
-sagittal plane shifted to pass through the area-weighted surface centroid of
-that side's two legs; front and hind leg of a side move in that plane, so it
-stays through their middle while the robot rolls, pitches and turns. Axes are
-relative to that centroid: vertical = world up projected into the plane (so the
-free surface stays roughly level), horizontal = forward.
+  --view side  one panel per body side, in the sagittal plane through that
+               side's two legs
+  --view top   one horizontal body-frame plane per --depths value
 
-``--view top``, one panel per ``--depths`` value: a plane parallel to the base's
-forward/lateral axes at that body-frame height below the base centre, seen from
-above with the heading pointing up (robot's left on the left). It shows the
-vortices shed by the sides of the foot paddles and whether the wake spreads or
-drifts sideways; the dashed lines mark the two side-view planes. The default
--125 mm is mid power stroke for all four calves (they sweep between about -140
-and -105 mm then and rise to about -50 mm during recovery). The plane is fixed
-in the body rather than following the feet, so shed vortices stay in it.
-
-For every frame and panel:
-  - the particle velocities are interpolated onto a regular grid (``--res``) in
-    that plane with VTK's SPH interpolator (quintic kernel; support
-    ``--kernel-support``, default 3x the particle spacing measured from frame 1).
-    Grid points whose kernel sum is below half the bulk-water value are treated
-    as air or robot and left blank, which draws the free surface and the legs'
-    footprint;
-  - the colour is either the in-plane speed or the out-of-plane vorticity
-    (PyVista ``compute_derivative``), with evenly spaced streamlines of the
-    in-plane velocity on top (``--stream-spacing`` apart, independent of ``--res``);
-  - the legs' and base's cross-sections with the plane are drawn in black/grey.
-
-Vorticity is the component normal to the plane, positive counter-clockwise as
-seen in the plot (in the top view: seen from above). Colour scales are fixed
-over all loaded frames (99th percentile) and printed, so they can be passed back
-with ``--speed-max`` / ``--vorticity-max`` to give stills of single frames the
-same scale as the video.
-
-Outputs (in ``--out-dir``, ``<name>`` = ``leg_flow`` or ``leg_flow_top``):
-``<name>_<field>.mp4`` (needs ffmpeg), or with ``--save-frames`` one still per
-frame, ``<name>_<field>_frame<k>.<format>``, or with ``--cycle START END`` one
-gait cycle as 8 snapshots at t = 0, T/8, ..., 7T/8 (T = END - START, times in
-simulation time like ``validate_sim.py --start``) in a 2x4 figure,
-``<name>_<field>_cycle[_<side>].<format>``. Each snapshot uses the export
-nearest to its phase; exports are 40 ms apart, so the printed table shows how
-far each one is off.
-
-Body indices follow the plugin's export order for ``amph/worlds/swimming_pool.world``:
-0-4 pool, 5 base, then Side/Thigh/Calf/Foot for FL (6-9), FR (10-13),
-HL (14-17), HR (18-21). The Foot bodies duplicate part of the calf and are not
-used. Frames are exported at 25 fps of simulation time.
+Output is an mp4 (needs ffmpeg), single stills (--save-frames), or one gait
+cycle as 8 snapshots (--cycle). Colour limits default to the 99th percentile
+over all loaded frames and are printed so stills can reuse the video's scale.
 
 Usage:
-  python stage3_visualization/sph/leg_flow_slices.py --show   # slider, prev/next, play/pause, field toggle
-  python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --field vorticity          # video
-  python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --save-frames 55 61 67 \\
-      --format pdf --speed-max 0.57 --vorticity-max 25                                      # thesis stills
-  python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --field vorticity --cycle 1.49 2.49 \\
-      --side Right                                                                          # one gait cycle, 2x4
-  python stage3_visualization/sph/leg_flow_slices.py --view top --field vorticity --show
-  python stage3_visualization/sph/leg_flow_slices.py --view top --depths -0.105 -0.125 -0.145 \\
-      --res 0.002 --save-frames 61 --field vorticity                                        # depth stack
+  python stage3_visualization/sph/leg_flow_slices.py --show
+  python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --field vorticity
+  python stage3_visualization/sph/leg_flow_slices.py --res 0.002 --field vorticity --cycle 1.49 2.49 --side Right
+  python stage3_visualization/sph/leg_flow_slices.py --view top --depths -0.105 -0.125 -0.145 --save-frames 61
 """
 from __future__ import annotations
 
@@ -94,18 +46,19 @@ from stage3_visualization.common.thesis_style import TEXT_WIDTH_IN, full_width  
 
 full_width()
 
+# Body indices follow the plugin's export order for amph/worlds/swimming_pool.world:
+# 0-4 pool, 5 base, then Side/Thigh/Calf/Foot per leg (FL, FR, HL, HR).
 BASE_BODY = 5
-# Side/Thigh/Calf per leg; the Foot bodies (9, 13, 17, 21) duplicate the calf and are skipped.
+# The Foot bodies (9, 13, 17, 21) duplicate part of the calf and are skipped.
 SIDE_BODIES = {
     "Left": [*range(6, 9), *range(14, 17)],    # Front Left, Hind Left
     "Right": [*range(10, 13), *range(18, 21)],  # Front Right, Hind Right
 }
 LEG_BODIES = sorted(b for bodies in SIDE_BODIES.values() for b in bodies)
-# Side (hip) link of each leg, used to place the leg's label.
+# Hip link of each leg; anchors the leg label.
 LEG_LABELS = {6: "FL", 10: "FR", 14: "HL", 18: "HR"}
-EXPORT_FPS = 25.0
-# Region that is entirely bulk water in the first frame (pool 2 x 1 m, filled to z = 0.25 m,
-# robot still above the surface); used for the particle spacing and the kernel-sum reference.
+EXPORT_FPS = 25.0  # of simulation time
+# Box that is pure bulk water in the first frame; reference for particle spacing and kernel sum.
 BULK_BOX = ((-0.5, 0.5), (-0.3, 0.3), (0.05, 0.2))
 FIELDS = {
     "speed": dict(cmap="viridis", label="in-plane speed [m/s]", stream="white"),
@@ -165,17 +118,14 @@ def sph_interpolate(pos: np.ndarray, vel: np.ndarray, probe_pts: np.ndarray, h: 
 
 
 def streamlines(grid: pv.ImageData, fluid_pt: np.ndarray, spacing: float):
-    """Evenly spaced in-plane streamlines (VTK) as polylines, plus one arrow per line.
+    """Evenly spaced in-plane streamlines as ``(lines, (xy, dxy))``, one arrow per line.
 
     ``grid`` holds the in-plane velocity with air/robot zeroed, so lines stop at
-    the free surface and the legs. ``spacing`` is the distance between lines [m].
-    Returns ``(lines, (xy, dxy))``.
+    the free surface and the legs. ``spacing`` is the line distance [m].
 
-    VTK 9.3's ``vtkEvenlySpacedStreamlines2D`` segfaults on some inputs (it
-    depends on the exact field and spacing, and no filter setting avoids it). So
-    each attempt runs in a forked child: a crash costs only a retry with a
-    slightly different separating-distance ratio, then a slightly different
-    spacing (at most 10 %), instead of the whole run.
+    VTK 9.3's ``vtkEvenlySpacedStreamlines2D`` segfaults on some inputs, so each
+    attempt runs in a forked child and a crash is retried with slightly
+    perturbed parameters.
     """
     empty = [], (np.empty((0, 2)), np.empty((0, 2)))
     if not fluid_pt.any():
@@ -193,10 +143,10 @@ def _in_child(fn, *args):
     """``fn(*args)`` in a forked process; ``None`` if the child crashed."""
     read_fd, write_fd = os.pipe()
     pid = os.fork()
-    if pid == 0:  # child: never return into the caller's code
+    if pid == 0:  # child must never return into the caller's code
         status = 1
         try:
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # a crash here is expected: no core dump
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # crashes are expected; skip core dumps
             with os.fdopen(write_fd, "wb") as f:
                 pickle.dump(fn(*args), f)
             status = 0
@@ -212,16 +162,14 @@ def _in_child(fn, *args):
 
 
 def _trace_streamlines(grid: pv.ImageData, fluid_pt: np.ndarray, spacing: float, ratio: float):
-    # VTK grows every further line next to an existing one from a single seed, so
-    # it cannot pass gaps narrower than the line spacing (e.g. under a foot), and a
-    # seed next to air or a leg ends at once. So seed repeatedly at the water point
-    # deepest inside the water and furthest from the lines so far, until no water
-    # is left more than ~one line spacing from a line. For each extra pass the velocity
-    # near existing lines is zeroed, so new lines stop there instead of crossing.
+    # VTK grows all lines from a single seed, so it cannot cross gaps narrower than
+    # the line spacing (e.g. under a foot). Reseed repeatedly at the water point
+    # farthest from both the boundary and existing lines until the water is covered;
+    # zeroing the velocity near existing lines keeps new lines from crossing them.
     MAX_PASSES = 20
     nx, nz = grid.dimensions[:2]
     (ox, oy, _), res = grid.origin, grid.spacing[0]
-    # In grid cells. VTK's separating distance is in cell diagonals (res * sqrt 2).
+    # Distances in grid cells; VTK's separating distance is in cell diagonals.
     sep_diag = spacing / (res * np.sqrt(2))
     gap, stop, min_depth = spacing / res, 0.35 * spacing / res, max(2.0, 0.5 * spacing / res)
     fluid = fluid_pt.reshape(nz, nx)
@@ -265,11 +213,10 @@ def near(pos: np.ndarray, c, axes_halfsizes) -> np.ndarray:
 
 
 def kernel_setup(vtk_dir: Path, support: float | None) -> tuple[float, float, float]:
-    """``(h, support, w_bulk)`` from the first exported frame.
+    """Smoothing length, kernel support and bulk-water kernel sum from the first frame.
 
-    The particle spacing comes from the bulk density and sets the default support
-    (3x spacing); ``w_bulk`` is the kernel sum in bulk water, and grid points below
-    half of it are treated as air or robot.
+    The default support is 3x the particle spacing. Grid points with a kernel sum
+    below half of ``w_bulk`` are treated as air or robot.
     """
     first = frame_numbers(vtk_dir)[0]
     pos0 = np.asarray(pv.read(vtk_dir / f"ParticleData_fluid_{first}.vtk").points)
@@ -289,13 +236,15 @@ def panel_names(view: str, depths: list[float]) -> list[str]:
 
 def slice_planes(view: str, rot: np.ndarray, base_centre: np.ndarray, meshes: dict,
                  depths: list[float]) -> list[dict]:
-    """One plane per panel: origin, in-plane axes ``e1`` (plot right) and ``e2`` (plot up),
-    normal ``n = e1 x e2``, the leg bodies to outline, and (top view) the plot-x
-    positions of the side-view planes."""
+    """One plane per panel.
+
+    Each plane has an origin, in-plane axes ``e1`` (plot right) and ``e2`` (plot
+    up), normal ``n``, the bodies to outline and, for the top view, the plot-x
+    positions of the side-view planes.
+    """
     if view == "side":
-        # Normal = the base's lateral axis, so the plane rolls/pitches/yaws with the
-        # body and stays in the legs' plane of motion. Screen-up is world up projected
-        # into that plane, so the free surface reads roughly level.
+        # Normal is the base's lateral axis so the plane follows the legs' plane of
+        # motion; plot-up is world up projected into it so the free surface stays level.
         lat = rot[:, 1]
         up = np.array([0.0, 0.0, 1.0]) - lat[2] * lat
         up /= np.linalg.norm(up)
@@ -303,7 +252,7 @@ def slice_planes(view: str, rot: np.ndarray, base_centre: np.ndarray, meshes: di
         return [dict(origin=surface_centroid([meshes[b] for b in bodies]), e1=fwd, e2=up,
                      n=-lat, bodies=bodies, guides=[])
                 for bodies in SIDE_BODIES.values()]
-    # Top view: seen from above with the heading up, so plot right = robot's right.
+    # Top view: seen from above, heading up.
     e1, e2, n = -rot[:, 1], rot[:, 0], rot[:, 2]
     guides = [float((surface_centroid([meshes[b] for b in bodies]) - base_centre) @ e1)
               for bodies in SIDE_BODIES.values()]
@@ -314,13 +263,12 @@ def slice_planes(view: str, rot: np.ndarray, base_centre: np.ndarray, meshes: di
 def collect(vtk_dir: Path, frames: list[int], view: str, depths: list[float],
             extent: tuple[float, float, float, float], res: float,
             support: float | None, stream_spacing: float) -> tuple:
-    """Per panel, per frame: interpolated speed, vorticity, streamlines and outlines.
+    """Interpolated fields, streamlines and outlines per panel and frame.
 
-    ``extent = (x0, x1, y0, y1)`` of each panel in plot coordinates relative to
-    the plane origin. Returns ``(data, support)``; ``support`` defaults to 3x the
-    particle spacing.
+    ``extent = (x0, x1, y0, y1)`` is relative to the plane origin. Returns
+    ``(data, support)``.
     """
-    first = frame_numbers(vtk_dir)[0]  # references must come from the first export, not frames[0]
+    first = frame_numbers(vtk_dir)[0]  # reference pose is the first export, not frames[0]
     base0 = pv.read(vtk_dir / f"rb_data_{BASE_BODY}_{first}.vtk").points[::20]
     h, cut, w_bulk = kernel_setup(vtk_dir, support)
 
@@ -360,7 +308,7 @@ def collect(vtk_dir: Path, frames: list[int], view: str, depths: list[float],
             uw = uw.reshape(nz, nx, 2)
             uw[blank] = np.nan
             vort = vort.reshape(nz, nx)
-            # The derivative next to blank cells differences against the zeroed air/robot.
+            # Derivatives next to blank cells difference against zeros; drop them.
             vort[binary_dilation(blank)] = np.nan
 
             data[name].append({
@@ -381,17 +329,15 @@ def collect(vtk_dir: Path, frames: list[int], view: str, depths: list[float],
 
 def animate(data: dict, frames: list[int], view_name: str, extent: tuple, limits: dict, field: str,
             scale: float = 1.0):
-    """Figure plus ``update(i)`` to draw frame i and ``set_field(name)`` to switch the colour.
+    """Build the animation figure; returns ``(fig, update, set_field, view)``.
 
-    The canvas is the thesis text width; ``scale`` enlarges it (not the type) for
-    the interactive player.
+    ``scale`` enlarges the canvas (not the fonts) for the interactive player.
     """
     names = list(data)
     nz, nx = data[names[0]][0]["speed"].shape
     aspect = (extent[3] - extent[2]) / (extent[1] - extent[0])  # panel height / width
     if view_name == "side":
-        # Axes take about 4.9 in of the width next to the colour bar; ~0.55 in per
-        # panel for its title and the shared x label.
+        # ~4.9 in axes width next to the colour bar, ~0.55 in per panel for title and label.
         height = len(names) * (4.9 * aspect + 0.55)
         fig, axes = plt.subplots(len(names), 1, figsize=(scale * TEXT_WIDTH_IN, scale * height),
                                  sharex=True, constrained_layout=True, squeeze=False)
@@ -401,8 +347,8 @@ def animate(data: dict, frames: list[int], view_name: str, extent: tuple, limits
         for ax in axes:
             ax.set_ylabel("up [m]")
     else:
-        panel_w = (TEXT_WIDTH_IN - 1.4) / len(names)  # width left by the colour bar and y label
-        height = min(panel_w * aspect, 6.0) + 1.0     # + title, x label and time line
+        panel_w = (TEXT_WIDTH_IN - 1.4) / len(names)  # minus colour bar and y label
+        height = min(panel_w * aspect, 6.0) + 1.0     # plus title and x label
         fig, axes = plt.subplots(1, len(names), figsize=(scale * TEXT_WIDTH_IN, scale * height),
                                  sharey=True, constrained_layout=True, squeeze=False)
         axes = axes[0]
@@ -423,13 +369,13 @@ def animate(data: dict, frames: list[int], view_name: str, extent: tuple, limits
         legs_lc = LineCollection([], colors="k", linewidths=1.1, zorder=3)
         for lc in (stream_lc, base_lc, legs_lc):
             ax.add_collection(lc)
-        # Top view: where the side-view planes cut this plane.
+        # Top view only: traces of the side-view planes.
         guides = [ax.axvline(0.0, color="0.3", lw=0.8, ls="--", zorder=1, visible=False)
                   for _ in SIDE_BODIES]
         artists.append((im, stream_lc, base_lc, legs_lc, guides))
     cbar = fig.colorbar(artists[0][0], ax=axes, shrink=0.8)
     title = fig.suptitle("")
-    heads = [None] * len(names)  # arrow count changes per frame, so the quivers are redrawn
+    heads = [None] * len(names)  # quivers are recreated each frame since the arrow count varies
     view = {"field": field, "i": 0}
 
     def update(i):
@@ -450,7 +396,7 @@ def animate(data: dict, frames: list[int], view_name: str, extent: tuple, limits
                 heads[j].remove()
             xy, dxy = d["arrows"]
             dxy = dxy / np.maximum(np.linalg.norm(dxy, axis=1, keepdims=True), 1e-12)
-            # Short unit arrows at each streamline's midpoint: only the head is visible.
+            # Tiny unit arrows at each line's midpoint, so only the head shows.
             heads[j] = ax.quiver(xy[:, 0], xy[:, 1], dxy[:, 0], dxy[:, 1], color=color, zorder=2,
                                  pivot="tip", angles="xy", scale=90, width=0.002,
                                  headwidth=4, headlength=5, headaxislength=4.5)
@@ -471,7 +417,7 @@ def animate(data: dict, frames: list[int], view_name: str, extent: tuple, limits
 
 
 def cycle_frames(start: float, end: float, available: list[int]) -> list[tuple[Fraction, int]]:
-    """``(phase, frame)`` for 8 phases k/8 of the cycle [start, end), each at the nearest export."""
+    """Nearest exported frame for each phase k/8 of the cycle ``[start, end)``."""
     period = end - start
     picks = []
     print(f"cycle T = {period:.3f} s, one picture every T/8 = {period / 8 * 1e3:.0f} ms "
@@ -502,8 +448,8 @@ def cycle_figure(panels: list[dict], phases: list[Fraction], view_name: str, ext
                  limits: dict, field: str):
     """One gait cycle as a 2 x 4 grid of snapshots sharing axes and one colour bar."""
     aspect = (extent[3] - extent[2]) / (extent[1] - extent[0])
-    panel_w = (TEXT_WIDTH_IN - 0.7) / 4  # width left by the y labels
-    # "compressed" packs fixed-aspect panels without the gaps constrained layout leaves.
+    panel_w = (TEXT_WIDTH_IN - 0.7) / 4  # minus y labels
+    # "compressed" avoids the gaps constrained layout leaves around fixed-aspect axes.
     fig, axes = plt.subplots(2, 4, figsize=(TEXT_WIDTH_IN, 2 * panel_w * aspect + 1.25),
                              sharex=True, sharey=True, layout="compressed")
     spec = FIELDS[field]
@@ -522,9 +468,9 @@ def cycle_figure(panels: list[dict], phases: list[Fraction], view_name: str, ext
         for x in d["guides"]:
             ax.axvline(x, color="0.3", lw=0.5, ls="--", zorder=1)
         for text, (x, y) in d["labels"]:
-            if view_name == "side":  # above the leg, along the top edge
+            if view_name == "side":  # along the top edge, above the leg
                 ax.text(x, label_y, text, ha="center", va="top", fontsize=7, zorder=4)
-            else:  # the top view has the hips inside the frame
+            else:  # at the hip, which lies inside the top-view frame
                 ax.text(x, y, text, ha="center", va="center", fontsize=7, zorder=4,
                         bbox=dict(facecolor="white", edgecolor="none", pad=0.5, alpha=0.8))
         ax.text(0.97, 0.04, phase_label(phase), transform=ax.transAxes, ha="right", va="bottom",
@@ -547,11 +493,11 @@ def cycle_figure(panels: list[dict], phases: list[Fraction], view_name: str, ext
 
 def show_player(fig, update, set_field, view, frames: list[int], fps: float):
     """Interactive window: frame slider, previous/next, play/pause and a field toggle."""
-    fig.get_layout_engine().set(rect=(0, 0.1, 1, 0.9))  # free a strip at the bottom
+    fig.get_layout_engine().set(rect=(0, 0.1, 1, 0.9))  # leave room for the controls
     slider = Slider(fig.add_axes([0.1, 0.04, 0.45, 0.03]), "frame", 0, len(frames) - 1,
                     valinit=0, valstep=1)
     slider.valtext.set_text(str(frames[0]))
-    # Plain labels: under usetex "<" and ">" typeset as inverted punctuation.
+    # Word labels: usetex renders "<" and ">" as inverted punctuation.
     b_prev = Button(fig.add_axes([0.60, 0.025, 0.07, 0.05]), "prev")
     b_play = Button(fig.add_axes([0.68, 0.025, 0.08, 0.05]), "play")
     b_next = Button(fig.add_axes([0.77, 0.025, 0.07, 0.05]), "next")
@@ -559,7 +505,7 @@ def show_player(fig, update, set_field, view, frames: list[int], fps: float):
 
     def on_slide(val):
         i = int(val)
-        slider.valtext.set_text(str(frames[i]))  # show the exported frame number
+        slider.valtext.set_text(str(frames[i]))  # show the export number, not the index
         update(i)
         fig.canvas.draw_idle()
 
@@ -588,7 +534,7 @@ def show_player(fig, update, set_field, view, frames: list[int], fps: float):
     b_next.on_clicked(lambda _e: step(1))
     b_play.on_clicked(toggle)
     b_field.on_clicked(switch_field)
-    # Keep the widgets referenced while the window is open, or they stop responding.
+    # Widgets stop responding once garbage-collected.
     fig._player = (slider, b_prev, b_play, b_next, b_field, timer)
     plt.show()
 
@@ -651,7 +597,7 @@ def main():
     if args.stream_spacing is None:
         args.stream_spacing = 0.03 if args.cycle is not None else 0.017
     if not args.show:
-        plt.switch_backend("Agg")  # no Qt window needed (avoids Qt's XDG_RUNTIME_DIR warning)
+        plt.switch_backend("Agg")  # headless; also silences Qt's XDG_RUNTIME_DIR warning
         if args.save_frames is None and args.cycle is None and not writers.is_available("ffmpeg"):
             ap.error("saving the video needs ffmpeg on PATH (installed by the dev container; "
                      "otherwise `sudo apt install ffmpeg`)")
@@ -677,7 +623,7 @@ def main():
         extent = (-half_lat, half_lat, back, front)
     data, support = collect(args.vtk_dir, frames, args.view, args.depths, extent, args.res,
                             args.kernel_support, args.stream_spacing)
-    if args.cycle is not None:  # only the shown panel sets the colour limits
+    if args.cycle is not None:  # colour limits from the shown panel only
         data = {key: panels for key, panels in data.items()
                 if key == (args.side if args.view == "side" else next(iter(data)))}
 
@@ -717,8 +663,7 @@ def main():
     else:
         anim = FuncAnimation(fig, update, frames=len(frames), interval=1000 / args.fps, blit=False)
         out = args.out_dir / f"{name}_{args.field}.mp4"
-        # H.264 at near-lossless quality; yuv420p keeps it playable everywhere. It needs
-        # even pixel sizes, which the text-width canvas does not give at every dpi.
+        # yuv420p for broad player support; it needs even frame sizes, hence the pad.
         writer = FFMpegWriter(fps=args.fps, codec="libx264",
                               extra_args=["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=white",
                                           "-pix_fmt", "yuv420p", "-crf", "18"])

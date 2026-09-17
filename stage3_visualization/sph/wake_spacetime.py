@@ -1,38 +1,14 @@
 #!/usr/bin/env python3
-"""
-Space-time diagram of the wake between amph's front and hind legs (SPH run).
+"""Space-time diagram of the wake between amph's front and hind legs (SPH run).
 
-For each side (Left: Front Left + Hind Left, Right: Front Right + Hind Right) the
-flow is sampled every frame along a line in the robot's body frame that runs
-through both legs: in the side's leg plane (the same plane as
-``leg_flow_slices.py``), along the body's forward axis, at a fixed body-frame
-depth. Stacking the frames gives one image per side:
+For each body side, the flow is sampled every frame along a body-frame line
+through both legs (in the side's leg plane, at a fixed depth) and averaged over
+a thin band. x = position along the body, y = time, colour = backward flow
+-u_x or vorticity. Black lines are the front and hind calf positions, thick
+during the power stroke. Streaks running from the front track towards the hind
+track show the wake travelling back. Blank cells are air or robot.
 
-  - horizontal = position along the body (front leg on the right, hind leg on
-    the left), vertical = time;
-  - colour = the flow on that line, averaged over a thin band (``--band``)
-    around it: ``backward`` flow -u_x (positive = water moving backwards along
-    the body) or out-of-plane ``vorticity`` (counter-clockwise +, seen with
-    forward to the right);
-  - lines = the front and hind calf centroid (the calf includes the foot paddle)
-    along the body over time, thick during the power stroke (calf moving
-    backwards in the body frame faster than 0.05 m/s) and thin otherwise.
-
-How to read it: time runs upwards, so water pushed back by the front leg shows
-up as streaks leaving the front calf's track and running up and to the left
-towards the hind track. Their slope (dx/dt) is the speed at which the wake
-travels back along the body; whether they reach the hind track during its thick
-(power-stroke) segments shows whether the hind leg strokes into the front leg's
-wake. Blank cells are out of the water or inside the robot (e.g. a resting
-leg crossing the band).
-
-Flow is in the pool frame by default, so undisturbed water is zero. With
-``--relative`` the base's translational velocity along the body is subtracted,
-i.e. the flow as seen from the robot (undisturbed water then reads as +U).
-
-The velocities are interpolated from the particles with the same SPH kernel as
-``leg_flow_slices.py``; band cells that are air or robot are left out, and
-columns that are entirely out of the water are blank.
+Flow is in the pool frame unless --relative (flow seen from the robot).
 
 Usage:
   python stage3_visualization/sph/wake_spacetime.py
@@ -70,16 +46,15 @@ from stage3_visualization.common.thesis_style import TEXT_WIDTH_IN, full_width  
 
 full_width()
 
-# Calf bodies (they include the foot paddle) of the (front, hind) leg per side.
+# Calf bodies (including the foot paddle) of the (front, hind) leg per side
 CALVES = {"Left": (8, 16), "Right": (12, 20)}
 FIELDS = {
     "backward": "backward flow $-u_x$ [m/s]",
     "vorticity": "vorticity (counter-clockwise +) [1/s]",
 }
-# Front and hind tracks differ by dash, not colour: the thesis leg colours are blue
-# and red, which would vanish in the red/blue maps.
+# Distinguish tracks by dash; red/blue leg colours would vanish in the colormap.
 TRACK_STYLES = {"front": "-", "hind": (0, (3, 1.5))}
-POWER_SPEED = 0.05  # [m/s] minimum backward calf speed in the body frame to count as power stroke
+POWER_SPEED = 0.05  # [m/s] backward calf speed (body frame) that counts as power stroke
 
 
 def body_tracks(vtk_dir: Path, frames: list[int], times: np.ndarray) -> dict:
@@ -110,11 +85,7 @@ def body_tracks(vtk_dir: Path, frames: list[int], times: np.ndarray) -> dict:
 
 
 def power_stroke_depth(calf: np.ndarray, times: np.ndarray) -> float:
-    """Median body-frame height of a side's calves while they are in the power stroke.
-
-    That is where the paddles shed their vortices; the median over all frames
-    would sit higher, because the recovery lifts the calves.
-    """
+    """Median body-frame calf height during the power stroke (where vortices are shed)."""
     z, vx = calf[:, :, 2], np.gradient(calf[:, :, 0], times, axis=0)
     power = vx < -POWER_SPEED
     return float(np.median(z[power] if power.any() else z))
@@ -151,7 +122,7 @@ def sample(vtk_dir: Path, frames: list[int], tracks: dict, xs: np.ndarray, depth
                                                       vorticity=True)["vorticity"])[:, 2]
             dry = ~wet.reshape(gz.shape)
             vort = vort.reshape(gz.shape)
-            vort[binary_dilation(dry)] = np.nan  # derivative there differences against zeroed cells
+            vort[binary_dilation(dry)] = np.nan  # invalid derivatives next to dry cells
             backward = -(u.reshape(gz.shape) - (tracks["vx"][i] if relative else 0.0))
             backward[dry] = np.nan
 
@@ -165,6 +136,7 @@ def sample(vtk_dir: Path, frames: list[int], tracks: dict, xs: np.ndarray, depth
 
 def plot(out: dict, tracks: dict, times: np.ndarray, xs: np.ndarray, field: str, vmax: float,
          depth: dict, band: float, relative: bool):
+    """One space-time panel per side with calf tracks."""
     fig, axes = plt.subplots(1, 2, figsize=(TEXT_WIDTH_IN, 4.8), sharey=True, constrained_layout=True)
     dx, dt = xs[1] - xs[0], (times[1] - times[0]) if len(times) > 1 else 1 / EXPORT_FPS
     for ax, side in zip(axes, SIDE_BODIES):
@@ -174,8 +146,7 @@ def plot(out: dict, tracks: dict, times: np.ndarray, xs: np.ndarray, field: str,
         for j, leg in enumerate(TRACK_STYLES):
             x = tracks["calf"][side][:, j, 0]
             pts = np.column_stack([x, times])
-            # Calf moving backwards in the body frame; the threshold keeps jitter of a
-            # resting leg from reading as a stroke.
+            # Threshold ignores jitter of a resting leg
             power = np.diff(x) / np.diff(times) < -POWER_SPEED
             ax.add_collection(LineCollection(np.stack([pts[:-1], pts[1:]], axis=1), colors="black",
                                              linestyles=TRACK_STYLES[leg],

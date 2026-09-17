@@ -1,28 +1,12 @@
 #!/usr/bin/env python3
-"""
-Multi-start distance matrix: one initial guess, one local optimum.
+"""Pairwise RMS joint-difference matrix of a guess_multistart.py sweep.
 
-Every solve behind this figure is the *same* NLP — same robot, same N, same
-pinned cycle period, same speed floor, same weights, same hydrodynamic
-coefficients.  Only the initial guess differs, so every difference between the
-converged solutions is the optimiser's rather than the model's.
-
-The figure is the pairwise RMS joint difference between the solutions.  It was
-chosen over drawing the gaits themselves because the thesis shows plenty of leg
-trajectories elsewhere: what is needed here is not another stroke, it is the
-evidence that no two starts reached the same one.  A matrix states that in a
-form a reader checks in one glance, and the numbers are in the cells for anyone
-who wants them.
-
-The colour scale is anchored at zero — "identical solutions" — rather than
-stretched across the observed range.  Stretched, the smallest entry would render
-as pale and read as "these two are similar" when 35 deg is larger than the
-trajectory's own amplitude (29.5 deg here, printed to the console for the
-caption).
+The colour scale starts at zero (identical solutions). The console also prints
+COT per start and the trajectory amplitude for reference.
 
 Usage:
-  python plot_multistart.py --sweep 20260828_105014
-  python plot_multistart.py --sweep TAG --save ../docs/figures/multistart.pdf
+  python stage2_sim_validation/sensitivity_and_robustness/plot_multistart.py --sweep 20260828_105014
+  python stage2_sim_validation/sensitivity_and_robustness/plot_multistart.py --sweep TAG --save multistart.pdf
 """
 from __future__ import annotations
 
@@ -68,7 +52,7 @@ def fetch(tag: str):
         out[p["start_from"]] = (
             load_solution(Path(r.info.artifact_uri) / art[0]),
             m["cot"], p.get("solver_status"))
-    # Thesis gait order, not MLflow's return order, so the legend is stable.
+    # Stable thesis gait order
     return {g: out[g] for g in GAIT_ORDER if g in out}
 
 
@@ -78,9 +62,7 @@ def build_figure(gaits, dist):
     M = np.array([[dist[(a, b)] for b in gaits] for a in gaits])
     fig, ax = plt.subplots(figsize=(4.9, 4.0))
 
-    # viridis, the house sequential map (thrust_heatmap.py, the co-design Pareto
-    # plot).  Anchored at 0 with headroom above the largest entry, so the
-    # brightest cell is not the end of the ramp.
+    # Anchored at 0, with headroom above the largest entry
     vmax = M.max() * 1.12
     im = ax.imshow(M, cmap="viridis", vmin=0.0, vmax=vmax)
 
@@ -88,8 +70,7 @@ def build_figure(gaits, dist):
     for i in range(n):
         for j in range(n):
             v = M[i, j]
-            # Text colour follows the cell's luminance, not the value: viridis
-            # runs dark-to-light, so a fixed choice would vanish at one end.
+            # Text colour from the cell luminance
             r, g, b, _ = cmap(v / vmax)
             lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
             ax.text(j, i, "—" if i == j else f"{v:.0f}",
@@ -106,7 +87,7 @@ def build_figure(gaits, dist):
     ax.tick_params(length=0)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    # Hairline separators, drawn on the cell boundaries.
+    # White lines between cells
     ax.set_xticks(np.arange(-0.5, n, 1), minor=True)
     ax.set_yticks(np.arange(-0.5, n, 1), minor=True)
     ax.grid(which="minor", color="white", lw=1.5)
@@ -147,8 +128,7 @@ def main():
     dist = {(a, b): float(np.sqrt(((q[a] - q[b]) ** 2).mean()))
             for a in gaits for b in gaits}
     off = {k: v for k, v in dist.items() if k[0] != k[1]}
-    # One amplitude for the set, so the colour-bar reference is not tied to
-    # whichever solution happens to swing widest.
+    # Mean trajectory amplitude over all starts, for reference
     amp = float(np.mean([np.sqrt(((q[g] - q[g].mean(axis=1, keepdims=True)) ** 2).mean())
                          for g in gaits]))
 
@@ -165,7 +145,7 @@ def main():
 
     fig = build_figure(gaits, dist)
     if args.save:
-        # pad_inches above the default: the tight bbox under-measures usetex.
+        # Extra padding: the tight bbox under-measures usetex text.
         fig.savefig(args.save, dpi=300, bbox_inches="tight", pad_inches=0.15)
         print(f"\nSaved → {args.save}")
         if args.save.suffix == ".pdf":

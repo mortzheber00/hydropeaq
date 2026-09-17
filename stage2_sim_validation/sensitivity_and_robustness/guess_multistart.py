@@ -1,32 +1,14 @@
 #!/usr/bin/env python3
-"""
-Multi-start study: how far apart do different initial guesses land?
+"""Multi-start study: solve the same OCP cold from each initial guess.
 
-Throwaway analysis script — not part of the pipeline.  Everything is held fixed
-except the initial guess: same N, same d, same pinned cycle period, same speed
-floor, same weights, same hydrodynamic coefficients.  Only the starting point
-moves, so any spread in the converged solutions is the optimiser's, not the
-model's.
+Only the initial guess changes, so the spread in COT and joint trajectories
+shows how much the local optimum depends on the starting point. Existing
+solutions at the same N can be added with --include.
 
-This is the one study where cold-starting is *correct*.  Everywhere else in this
-folder the solves are warm-started to keep the sweep on a single solution branch;
-here the question is precisely whether the branch depends on where you begin, so
-each guess gets a cold solve.
-
-Motivation from the ladders: continuation up from N=16 and down from N=96 — same
-NLP, same coefficients, same grid at the end — reached optima 45 deg apart in
-joint angle and 33% apart in COT.  Two samples is not a distribution, and it is
-currently the weakest-supported number in the analysis.  This turns it into a
-measured spread.
-
-The two ladder solutions at the same N are additional samples of the same
-question and are folded into the comparison with ``--include``, so nothing
-already computed is wasted.
-
-Run:
-    python guess_multistart.py
-    python guess_multistart.py --gaits LSPG25 TLPG50 --n 32
-    python guess_multistart.py --include sweep_results/<tag>_N48_solution.npz
+Usage:
+  python stage2_sim_validation/sensitivity_and_robustness/guess_multistart.py
+  python stage2_sim_validation/sensitivity_and_robustness/guess_multistart.py --gaits LSPG25 TLPG50 --n 32
+  python stage2_sim_validation/sensitivity_and_robustness/guess_multistart.py --include sweep_results/<tag>_N48_solution.npz
 """
 from __future__ import annotations
 
@@ -77,6 +59,7 @@ def cold_guess(dyn, gait: str, n: int, t_init: float, tau_max: float):
 
 
 def cot_of(X, U, Xc, T, robot, B, d) -> float:
+    """Cost of transport with energy integrated on the collocation points."""
     n = U.shape[1]
     dt = T / n
     vc = Xc[slice(12 + robot.n_actuated, 2 * robot.nv_reduced), :]
@@ -89,7 +72,7 @@ def cot_of(X, U, Xc, T, robot, B, d) -> float:
 
 
 def joint_angles(X, n_act, samples=PHASE_SAMPLES) -> np.ndarray:
-    """Joint angles on a common cycle-phase grid, so two N can be compared."""
+    """Joint angles resampled on a common phase grid (comparable across N)."""
     n = X.shape[1] - 1
     ph = np.arange(n + 1) / n
     g = np.arange(samples) / samples
@@ -97,7 +80,7 @@ def joint_angles(X, n_act, samples=PHASE_SAMPLES) -> np.ndarray:
 
 
 def solve_from(robot, cfg, n, gait, robot_name, tag, B, dyn):
-    """One cold solve from ``gait``'s guess, logged as its own MLflow run."""
+    """Cold solve from ``gait``'s initial guess, logged as one MLflow run."""
     nq = robot.nq_reduced
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"\n{'=' * 70}\n  cold start from {gait}, N={n}\n{'=' * 70}")
@@ -226,8 +209,7 @@ def main():
 
     print("\npairwise RMS joint difference [deg] — the clustering is the result")
     w = max(len(l) for l in labels) + 2
-    # Included solutions carry file-stem labels, which are long; give the
-    # columns room rather than truncating them into ambiguity.
+    # Wider columns for the long file-stem labels of included solutions
     cw = max(13, min(20, max(len(l) for l in labels) + 2))
     print(" " * w + "".join(f"{l[:cw - 2]:>{cw}s}" for l in labels))
     for a in labels:

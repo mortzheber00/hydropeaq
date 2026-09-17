@@ -1,40 +1,20 @@
 #!/usr/bin/env python3
-"""Every number \\cref{sec:results-nominal} of the thesis quotes, recomputed.
+"""Recompute all numbers reported for the nominal gait (thesis, results-nominal).
 
-The subsection reports a nominal gait as a table of scalars, a paragraph of
-constraint residuals and a paragraph of limit activity, and then generalises the
-limit finding across the sweep.  All of that is measured here rather than read
-off an MLflow dashboard, so the thesis and the stored solution cannot drift
-apart: the run's own logged ``energy`` and ``cot`` are reproduced as a check on
-the state layout, and the script exits non-zero if they disagree.
+Prints scalars, constraint residuals, left/right phase, stroke structure,
+harmonics and limit activity for one solution, plus sweep-wide limit usage.
+Exits non-zero if the recomputed energy/COT do not match the logged values,
+which would mean the state layout is read incorrectly.
 
-**The state layout, and why the energy check certifies it.**  ``X`` is the
-legacy layout ``[p(3), quat(4), q(n_theta); v(3), w(3), qdot(n_theta)]`` — note
-the 7/6 split, so joint angles are rows ``7:nq`` but joint rates are rows
-``nq+6:``.  ``Xc`` is stored in *tangent* coordinates about a reference
-quaternion the file does not record, so it is passed through
-``collocation.collocation_states`` first, which recovers it and checks the
-recovery against the grid nodes it shares.  Getting either wrong gives a
-mechanical work that misses the logged value by a wide margin, so reproducing
-``energy`` to five figures is what says the rows below are the right ones.
-
-**Where the bounds are enforced.**  At the grid nodes and at the interior
-collocation points, which together are exactly the columns of ``Xc`` — see the
-long note in ``plot_limit_activity.py``.  Activity shares are therefore taken
-over ``Xc``, never over ``X``, which would miss two of every three enforced
-states.  ``ACTIVE_TOL`` and the normalisation are imported from that script so
-the percentages here and the appendix figure cannot disagree.
-
-**Per-joint dwell shares are reported over the grid nodes** (``X``), not over
-``Xc``: a share like "this thigh sits at its lower stop for 20.8 % of the cycle"
-is a statement about time, and only the grid nodes are equally spaced in time.
-The aggregate "some joint is on some bound" shares use ``Xc``, matching the
-appendix figure.  The two are labelled distinctly in the report.
+X layout: [p(3), quat(4), q; v(3), w(3), qdot], i.e. joint angles at rows 7:nq
+and joint rates at nq+6:. Active shares use Xc (all enforced points); dwell
+shares use the equally spaced grid nodes. Tolerances come from
+plot_limit_activity.py.
 
 Usage:
-  python nominal_metrics.py                       # the thesis nominal
-  python nominal_metrics.py --solution <npz> --results <sweep artifacts dir>
-  python nominal_metrics.py --no-sweep            # nominal only, no sweep pass
+  python stage3_visualization/metrics/nominal_metrics.py
+  python stage3_visualization/metrics/nominal_metrics.py --solution <npz> --results <sweep dir>
+  python stage3_visualization/metrics/nominal_metrics.py --no-sweep
 """
 from __future__ import annotations
 
@@ -64,54 +44,32 @@ from stage1_gait_optimization.ocp_common import (  # noqa: E402
     limits_for,
 )
 
-# The thesis nominal: the v = 0.18 point of the cold co-design front.
+# Thesis nominal: the v = 0.18 m/s point of the co-design front
 _DEFAULT_RESULTS = (_ROOT / "experiment_results" / "mlruns" / "2" /
                     "69943d2cffc94ca5b78271a7df24c546" / "artifacts")
 _DEFAULT_SOLUTION = _DEFAULT_RESULTS / "TLPG50_v0p180_T1p400.npz"
 
 GRAVITY = 9.81
-# The logged metrics must come back to this many significant figures, or the
-# rows this script reads are not the rows the solver wrote.
+# Relative tolerance for reproducing the logged energy and COT
 ENERGY_RTOL = 1e-4
 
-# Two tolerances, because they answer two different questions and conflating
-# them is how the thesis draft ended up with two sets of percentages.  Both are
-# imported from ``plot_limit_activity``, where they are defined and explained:
-# ACTIVE_TOL (1e-3) asks "is this bound ACTIVE at the solution?", DWELL_FRAC
-# (1e-2 of the quantity's span) asks "how long does the joint SIT on its stop?".
-# DWELL_FRAC is the band the thesis's metric section defines and this prose
-# quotes; ACTIVE_TOL is what the trace figure draws.
-
-# How far a competing left/right alignment must sit from the best one before it
-# counts as a genuinely different delay, in cycles.  See circular_shift_phase.
+# Minimum distance [cycles] of an alternative left/right alignment from the best one
 RIVAL_GAP = 0.15
 
-# Backward-sweep windows shorter than this share of the cycle are not counted:
-# a single collocation sample either side of zero is a sign flip in the trace,
-# not a stroke.  Every window that survives here is at least three samples long,
-# so the counts are not sensitive to the exact value.
+# Backward sweeps shorter than this share of the cycle are ignored (sign noise).
 MIN_SWEEP = 0.02
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# --- Helpers ---
 
 def circular_shift_phase(a: np.ndarray, b: np.ndarray,
                          upsample: int = 64) -> tuple[float, float]:
-    """Cycle fraction by which ``b`` lags ``a``, and the residual it leaves.
+    """Phase [cycles] by which ``b`` lags ``a``, found by Fourier-domain shifting.
 
-    Both are ``(n_joints, N)`` over one period.  A whole-node search quantises
-    the phase at ``1/N``, which on this grid is 0.021 cycles — enough to leave a
-    several-degree residual on a pair that mirrors exactly, and the thesis draft
-    once read that residual as a constraint violation.  So the search is run on
-    a band-limited resample: both signals are shifted in the Fourier domain,
-    which is exact for the 8-harmonic shapes the symmetry constraint
-    parametrises, and the phase comes back at ``1/(N*upsample)``.
-
-    Preferred over ``argmax`` alignment: a thigh rests against its stop for a
-    fifth of the cycle, so its maximum is a plateau and ``argmax`` picks an
-    arbitrary point of it.
-
-    Returns ``(phase, residual, rival_phase, rival_residual)``.
+    ``a`` and ``b`` are ``(n_joints, N)`` over one period. Sub-node resolution
+    (``1/(N*upsample)``) avoids residuals from phase quantisation. Returns
+    ``(phase, residual, rival_phase, rival_residual)``, where the rival is the
+    best alignment at least RIVAL_GAP away.
     """
     N = a.shape[1]
     fb = np.fft.rfft(b, axis=1)
@@ -122,13 +80,7 @@ def circular_shift_phase(a: np.ndarray, b: np.ndarray,
         scan.append((float(np.sqrt(np.mean((shifted - a) ** 2))), s / N))
     scan.sort()
     err, phase = scan[0]
-    # The best rival delay, at least RIVAL_GAP cycles away.  A trajectory with a
-    # strong second harmonic is nearly its own half-cycle shift, and then a
-    # measured half-cycle delay is an artifact rather than a finding -- so the
-    # margin to the nearest genuinely different alignment comes back with it,
-    # and the thesis quotes that margin instead of asking the reader to trust
-    # the fit.  Here the margin is three orders of magnitude, so the delay is
-    # real; the legs are simply not self-similar under a half-cycle shift.
+    # A close rival (e.g. with strong second harmonics) makes the phase ambiguous.
     rival = next(((e, ph) for e, ph in scan
                   if min(abs(ph - phase), 1.0 - abs(ph - phase)) > RIVAL_GAP),
                  (float("nan"), float("nan")))
@@ -136,12 +88,7 @@ def circular_shift_phase(a: np.ndarray, b: np.ndarray,
 
 
 def cyclic_runs(mask: np.ndarray) -> list[float]:
-    """Lengths, as shares of the cycle, of the contiguous True runs in ``mask``.
-
-    Cyclic: a run spanning the wrap-around is one run, not two.  Used to count
-    how many times per cycle a foot sweeps backwards, which is the measurement
-    that shows the stroke is not a single sweep.
-    """
+    """Lengths (cycle shares) of the True runs in a cyclic ``mask``."""
     n = len(mask)
     if not mask.any() or mask.all():
         return []
@@ -155,20 +102,10 @@ def cyclic_runs(mask: np.ndarray) -> list[float]:
 
 
 def stroke_structure(robot, Xc, nq) -> dict:
-    """How many times per cycle each foot sweeps backwards, per leg.
+    """Backward foot sweeps per cycle for each leg (lengths as cycle shares).
 
-    The draft described this gait as an antiphase left--right pattern and let
-    the reader infer one stroke per leg per cycle.  It is not: the calf carries
-    its largest Fourier component at TWICE the stride frequency and each foot
-    reverses its fore-aft direction several times per cycle.  The left/right
-    delay is a relation between the two legs of a pair and says nothing about
-    the shape of the stroke, so both are measured and reported together.
-
-    ``v_foot_x`` is the foot velocity relative to the HULL, from
-    ``gait_diagnostics.compute_traces`` -- the kinematic quantity, with the base
-    twist zeroed.  No drag law is involved, so this stays inside what
-    \cref{sec:results-nominal} is allowed to report; which of these sweeps
-    actually produces thrust belongs to \cref{sec:results-structure}.
+    Uses the hull-relative foot velocity from ``gait_diagnostics.compute_traces``
+    (kinematics only, no drag model).
     """
     sweeps = {}
     for leg in ("Front_Left", "Front_Right", "Hind_Left", "Hind_Right"):
@@ -185,7 +122,7 @@ def dominant_harmonic(trace: np.ndarray, n_harmonics: int = 6):
 
 
 def joint_kinds(names: list[str]) -> list[str]:
-    """'Side' / 'Thigh' / 'Calf' per actuated joint, from its URDF name."""
+    """Joint type ('Side', 'Thigh', 'Calf' or 'Other') from each URDF name."""
     out = []
     for n in names:
         low = n.lower()
@@ -195,10 +132,10 @@ def joint_kinds(names: list[str]) -> list[str]:
     return out
 
 
-# ── the nominal point ────────────────────────────────────────────────────────
+# --- Nominal solution ---
 
 def measure_solution(path: Path, robot) -> dict:
-    """Every scalar, residual and activity share for one stored solve."""
+    """All reported scalars, residuals and activity shares of one solution."""
     meta = load_solution(path)
     T, N, nq = meta["T"], meta["N"], meta["nq"]
     X, U = meta["X"], meta["U"]
@@ -216,32 +153,26 @@ def measure_solution(path: Path, robot) -> dict:
     names = list(robot.model.names)[1:][-n_theta:]
     kinds = joint_kinds(names)
 
-    # ── scalars ──
+    # Scalars
     forward = float(X[0, -1] - X[0, 0])
     speed = forward / T
     energy = cycle_energy(U, qdc, B, d, N, T)
     cot = cost_of_transport(energy, robot, forward)
 
-    # Work split by sign of the instantaneous joint power, on the same Radau
-    # quadrature the energy uses — so the two halves sum to the |·| total only
-    # up to the sign changes inside an interval, which is why both are printed.
+    # Positive/negative work on the same quadrature (may differ slightly from
+    # the |.| total where the sign changes within an interval)
     dt = T / N
     p = U[:, :, None] * qdc.reshape(n_theta, N, d)
     w = np.asarray(B, dtype=float)[None, None, :] * dt
     w_pos = float(np.sum(np.where(p > 0, p, 0.0) * w))
     w_neg = float(np.sum(np.where(p < 0, p, 0.0) * w))
 
-    # ── base motion ──
-    # Through plot_base_motion.base_pose, not off the raw rows: X's velocity
-    # block is the BODY-frame twist, and with the hull pitching by 27 deg over
-    # the cycle, reading its x row as a world-frame forward speed is wrong by
-    # more than a tenth of the peak.  Sharing the function also guarantees these
-    # numbers are the ones fig:results-base-motion draws.
+    # Base motion; base_pose rotates the body-frame twist into the world frame.
     pos, rpy, vel_world = base_pose(X, nq)
     v_fwd = vel_world[0]
     heave = pos[2]
 
-    # ── constraint residuals ──
+    # Constraint residuals
     res = {
         "speed": abs(speed - round(speed, 6)),
         "q_periodic": float(np.max(np.abs(q[:, -1] - q[:, 0]))),
@@ -250,9 +181,7 @@ def measure_solution(path: Path, robot) -> dict:
         "quat_periodic": float(np.max(np.abs(X[3:7, -1] - X[3:7, 0]))),
     }
 
-    # ── left/right phase of each symmetric pair ──
-    # Thigh and calf only: the side joints are pinned to zero by the pose
-    # constraints, so they carry no phase and would drag the fit to zero.
+    # Left/right phase per pair (thigh and calf; side joints are pinned)
     pairs = {}
     for label, l_key, r_key in (("front", "Front_Left", "Front_Right"),
                                 ("hind", "Hind_Left", "Hind_Right")):
@@ -265,10 +194,7 @@ def measure_solution(path: Path, robot) -> dict:
                                                            q[ri, :-1])
             pairs[label] = (phase, np.degrees(resid), rph, np.degrees(rres))
 
-    # ── stroke structure and the harmonics of the base motion ──
-    # Both exist to keep the prose honest about the SHAPE of the cycle: a
-    # half-cycle left/right delay does not imply one sweep per leg, and this is
-    # what says so.
+    # Stroke structure and dominant harmonics
     sweeps = stroke_structure(robot, Xc, nq)
     harmonics = {
         "v_x": dominant_harmonic(v_fwd[:-1]),
@@ -280,16 +206,12 @@ def measure_solution(path: Path, robot) -> dict:
         if kinds[i] != "Side":
             harmonics[n] = dominant_harmonic(np.degrees(q[i, :-1]))
 
-    # ── limit activity ──
-    # Over the enforced samples and at the solver's own tolerance: this is the
-    # share the appendix figure draws, and the number that says whether a bound
-    # is part of the solution at all.
+    # Active shares over the enforced samples (as in the appendix figure)
     norm, alpha = normalised(robot, Xc, U, nq, N, T, d)
     agg = {k: float((np.abs(v) >= 1.0 - ACTIVE_TOL).any(axis=0).mean())
            for k, v in norm.items()}
 
-    # Per-joint dwell, from the shared masks so that the per-joint shares here
-    # and the sweep-wide panel of \cref{fig:results-pareto} are one definition.
+    # Dwell shares, same definition as the sweep-wide activity figure
     masks = dwell_masks(robot, X, U, nq)
     any_share = activity(masks)
     dwell = {
@@ -325,6 +247,7 @@ def measure_solution(path: Path, robot) -> dict:
 
 
 def report_nominal(m: dict, row: dict | None) -> None:
+    """Print the nominal-solution report (``row`` = logged summary row, if found)."""
     names, kinds = m["names"], m["kinds"]
     thigh = [i for i, k in enumerate(kinds) if k == "Thigh"]
     calf = [i for i, k in enumerate(kinds) if k == "Calf"]
@@ -404,15 +327,10 @@ def report_nominal(m: dict, row: dict | None) -> None:
     print(f"    joints touching the rate bound: {n_rate} of {len(names)}")
 
 
-# ── the sweep-wide claim ─────────────────────────────────────────────────────
+# --- Sweep ---
 
 def report_sweep(results: Path, robot) -> None:
-    """Is 'kinematically limited, not torque limited' one gait or the platform?
-
-    Reported over every feasible solve and again over the Pareto front alone,
-    because the thesis makes the claim about the platform and the front is the
-    part of it the rest of the chapter argues from.
-    """
+    """Torque/rate utilisation and thigh range over all feasible solves and the Pareto front."""
     rows = [r for r in sweep_io.load_rows(results)
             if r["feasible"] and np.isfinite(r["cot"])]
     print(f"\n=== sweep: {len(rows)} feasible solves in {results.name} ===")
@@ -428,13 +346,10 @@ def report_sweep(results: Path, robot) -> None:
             "row": row, "speed": row["speed"], "front": bool(row.get("pareto")),
             "tau_util": m["tau_util"], "rate_util": m["rate_util"],
             "tau_peak": m["tau_peak"], "rate_peak": m["rate_peak"],
-            # The DWELL share, not the ACTIVE_TOL one: this is the series
-            # \cref{sec:results-tradeoff} quotes and the activity panel draws.
+            # Dwell shares, as in the activity figure
             "rate_share": m["dwell"]["any_rate"],
             "angle_share": m["dwell"]["any_angle"],
-            # Both ends of the thigh spread: the claim "the thighs traverse
-            # their box" is only as strong as its weakest thigh, so the minimum
-            # is what the sweep-wide sentence has to be written from.
+            # Widest and narrowest thigh range
             "thigh_sweep": float(m["amplitude"][thigh].max()),
             "thigh_sweep_min": float(m["amplitude"][thigh].min()),
             "tag": sweep_io.tag_of(row),

@@ -1,42 +1,17 @@
 #!/usr/bin/env python3
-"""Which links actually push: per-link attribution of the forward-force budget.
+"""Per-link attribution of the world-frame forward force (drag and added mass).
 
-``plot_thrust_budget.py`` says *what* carries the forward force — drag against
-added mass.  This says *where* on the robot it comes from, and it is built so
-the parts sum to that total exactly rather than approximately.
+``*_traces``      forward force per segment type (summed over legs) vs phase
+``*_means``       cycle-mean drag and added-mass force per link
+``*_submersion``  submersion ratio of each link over the cycle
 
-Two figures, both on the full text-width canvas:
-
-  ``*_traces``  Forward force per segment class (hull, side, thigh, calf, foot),
-      summed over the four legs, against cycle phase.  Answers when in the
-      stroke each part of the leg pushes.
-
-  ``*_means``   Cycle-mean forward force per (leg, segment), split into its drag
-      and added-mass parts.  Answers which link nets thrust over a whole cycle,
-      and which is pure resistance.
-
-Why this does not reuse ``dynamics_diagnostics.build_per_link_diagnostics``.
-That helper builds each link's force from ``drag_force``, the single-midpoint
-form, while the model the OCP actually solves builds ``f_tau_drag`` from
-``drag_wrench``, which integrates the transverse drag over ``_DRAG_N_STRIPS``
-midpoint strips along the cylinder (a single midpoint sample underestimates the
-rotational drag moment by 50%, per ``hydrodynamics.py``).  Attributing a 5-strip total with single-strip
-parts leaves the bars summing to -0.35 N against a true total of -0.08 N — the
-figure would misattribute a resistance that is four times too large.  So the
-per-link terms here are assembled the same way ``SymbolicHydrodynamicModel.build``
-assembles the total, ``J^T`` projection included, and ``main`` asserts the sum.
-
-Both hydrodynamic mechanisms are attributed, not just drag: ``added_mass_force``
-is a per-link Kirchhoff force in the same loop, so the added-mass share
-(``M_A a + C_A v``) splits per link exactly as drag does.
-
-Forces are the base *forward* rows of each link's generalized-force
-contribution, rotated into the world frame — the same quantity, frame and sign
-convention as ``plot_thrust_budget.py``, so the two figures can be read together.
+Per-link terms are built exactly like ``SymbolicHydrodynamicModel.build``
+(strip-integrated drag, J^T projection), so they sum to the whole-robot totals
+of plot_thrust_budget.py; this is checked.
 
 Usage:
-  python plot_thrust_attribution.py
-  python plot_thrust_attribution.py --solution ../task3_solution.npz --save attr.pdf
+  python stage3_visualization/thrust/plot_thrust_attribution.py
+  python stage3_visualization/thrust/plot_thrust_attribution.py --solution task3_solution.npz --save attr.pdf
 """
 
 from __future__ import annotations
@@ -54,8 +29,6 @@ import pinocchio.casadi as cpin
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "stage1_gait_optimization"))
-# Same sampling and quadrature as the whole-robot budget this figure attributes,
-# so the per-link sum can be checked against it.
 from stage3_visualization.common.collocation import D_COLLOC, cycle_mean, solution_states  # noqa: E402
 from stage3_visualization.common.thesis_style import (  # noqa: E402
     PALETTE,
@@ -70,29 +43,23 @@ from stage1_gait_optimization.hydro_model.hydrodynamics import (  # noqa: E402
 )
 from stage1_gait_optimization.hydro_model.trajectory import load_solution  # noqa: E402
 
-# The per-link parts must reproduce the whole-robot total this closely.  They
-# are the same expressions summed in a different order, so the only difference
-# admissible is floating-point.
+# Allowed mismatch between summed per-link forces and the totals (round-off only)
 SUM_TOL = 1e-9
 
 full_width()
 
-# Segment classes in kinematic order, hull first.  A leg's links are named
-# "<Leg>_<Segment>_link", which is what splits them out.
+# Segment types in kinematic order; links are named "<Leg>_<Segment>_link".
 SEGMENTS = ("Side", "Thigh", "Calf", "Foot")
 SEG_C = dict(zip(SEGMENTS, (PALETTE[3], PALETTE[4], PALETTE[1], PALETTE[0])))
-# "calfs"/"foots" is what appending an s gives, and it is what a reader notices.
 SEG_PLURAL = {"Side": "sides", "Thigh": "thighs", "Calf": "calves",
               "Foot": "feet"}
 HULL_C = PALETTE[2]
 
 
 def build_per_link_forces(robot, dyn):
-    """``{link: ca.Function(q, v, a) -> [tau_drag_i; tau_added_i]}`` (nv each).
+    """``{link: ca.Function(q, v, a) -> ([tau_drag, tau_added], alpha)}``.
 
-    Mirrors the assembly loop in ``SymbolicHydrodynamicModel.build`` term for
-    term, but keeps each link's contribution instead of accumulating it, so the
-    parts are guaranteed to sum to the model's own totals.
+    Same terms as ``SymbolicHydrodynamicModel.build``, kept per link.
     """
     q, v, a = dyn.q, dyn.v, dyn.a
     hyd = SymbolicHydrodynamicModel(
@@ -133,17 +100,10 @@ def build_per_link_forces(robot, dyn):
 
 
 def evaluate(dyn, per_link, Xc_leg, U, N, nq, d=D_COLLOC):
-    """World-frame forward force per link, per collocation point, per mechanism.
+    """World-x force per link and collocation point: ``(drag, added, alpha, totals)``.
 
-    Returns ``(drag, added, alpha, totals)``.  The first three map link name to
-    an ``N*d`` array — newtons for the forces, and for ``alpha`` the submersion
-    ratio in [0, 1], which is what says whether a link is in the water at all.
-    ``totals`` holds the whole-robot arrays the parts must add up to.
-
-    Sampled at the collocation points for the reason ``plot_thrust_budget``
-    documents: Radau never enforces the dynamics at tau=0, so the acceleration
-    the model returns at a grid node is not the trajectory's own, and the
-    added-mass columns here depend on it.
+    ``drag``, ``added`` and ``alpha`` map link name to ``(N*d,)`` arrays;
+    ``totals`` holds the whole-robot drag and added-mass forces.
     """
     n_col = N * d
     names = list(per_link)
@@ -184,7 +144,7 @@ def _split(name, base_link):
 
 
 def plot_traces(drag, added, robot, phase):
-    """Figure 1: forward force by segment class over the cycle."""
+    """Forward force per segment type over the cycle."""
     base = robot.spec.base_link
     total = {n: drag[n] + added[n] for n in drag}
 
@@ -195,10 +155,7 @@ def plot_traces(drag, added, robot, phase):
             by_seg[seg] += arr
 
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 2.7))
-    # Collocation points are unevenly spaced within each interval, and the first
-    # sits inside interval 0 rather than at phase 0.  The last one is exactly at
-    # phase 1, which on a periodic cycle *is* the phase-0 value, so prepending it
-    # fills the gap the axis would otherwise open on the left.
+    # The last sample (phase 1) equals phase 0; prepend it to close the gap.
     ph = np.concatenate([[0.0], phase])
     wrap = lambda a: np.concatenate([a[-1:], a])           # noqa: E731
 
@@ -224,9 +181,7 @@ def plot_traces(drag, added, robot, phase):
 
 
 def plot_means(drag, added, robot, N):
-    """Figure 2: cycle-mean force per link, drag and added mass side by side."""
-    # Same rows in the same order as the submersion figure, so the two can be
-    # read against each other line for line.
+    """Cycle-mean drag and added-mass force per link (same rows as the submersion figure)."""
     rows = _row_order(robot, drag)
 
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 4.4))
@@ -245,8 +200,7 @@ def plot_means(drag, added, robot, N):
          for _, seg, lg in rows], fontsize=7)
     ax.invert_yaxis()
     ax.axvline(0.0, color="0.4", lw=0.7, zorder=4)
-    # Separator under the hull row: it is the only row that is not a leg link,
-    # and without it the eye groups it with the side joints below.
+    # Separate the hull row from the leg links
     ax.axhline(0.5, color="0.6", lw=0.6, zorder=4)
     ax.set_xlabel(r"cycle-mean forward force $\bar F_x^{\mathrm{world}}$ [N]")
     ax.grid(axis="x", alpha=0.3)
@@ -268,17 +222,10 @@ def _row_order(robot, present):
 
 
 def plot_submersion(alpha, robot):
-    """Figure 3: which links are actually in the water, and when.
+    """Submersion ratio per link over the cycle.
 
-    The attribution is unreadable without this.  The robot swims at the surface
-    rather than fully submerged, so a link that never gets wet cannot generate
-    thrust however hard it is swung, and the ranking in the means figure is as
-    much a map of who is submerged as of who is moving fast.
-
-    Columns are the collocation points in order.  They are not evenly spaced in
-    phase, but the cells are drawn equal-width: this panel is read for which
-    links are wet and roughly when, and the Radau spacing is a distortion of at
-    most a third of an interval at this N.
+    Needed to read the attribution, since the robot swims at the surface.
+    Collocation points are drawn as equal-width cells (small phase distortion).
     """
     rows = _row_order(robot, alpha)
     M = np.array([alpha[n] for n, _, _ in rows])
@@ -302,14 +249,9 @@ def plot_submersion(alpha, robot):
 
 
 def report(drag, added, alpha, totals, robot, T, N):
+    """Print per-link means and RMS, the sum check and gross thrust/resistance."""
     base = robot.spec.base_link
-    # RMS alongside the mean, because the two say opposite things about added
-    # mass and only the pair is honest.  Added mass is *not* small — it is 21%
-    # of drag in RMS on the calves and 140% on the hull — but it is reactive:
-    # it very nearly is d/dt of the added-mass momentum, which is periodic, so
-    # it stores and returns momentum within the cycle and averages away.  Drag
-    # is dissipative and keeps a mean.  Reading only the mean column makes the
-    # added-mass column look negligible when instantaneously it dominates.
+    # RMS as well as mean: added mass is large but reactive, so it averages out.
     print(f"  {'link':<26s}{'drag mean':>10s}{'drag rms':>10s}{'added mean':>11s}"
           f"{'added rms':>10s}{'net [N]':>9s}{'mean alpha':>11s}")
     rms = lambda a: float(np.sqrt((a ** 2).mean()))        # noqa: E731
@@ -327,9 +269,7 @@ def report(drag, added, alpha, totals, robot, T, N):
     print(f"  {'whole-robot total':<26s}{cycle_mean(totals['drag'], N):>10.4f}"
           f"{cycle_mean(totals['added'], N):>11.4f}"
           f"{cycle_mean(totals['drag'], N) + cycle_mean(totals['added'], N):>10.4f}")
-    # Thrust and resistance are each an order of magnitude larger than the net
-    # they leave behind, so quoting anything as a share *of the net* gives
-    # numbers like 284% that mean nothing.  Split the two directions instead.
+    # Report gross thrust and resistance separately; shares of the small net are meaningless.
     nets = {n: cycle_mean(drag[n] + added[n], N) for n in drag}
     thrust = sum(x for x in nets.values() if x > 0)
     resist = sum(x for x in nets.values() if x < 0)
@@ -360,7 +300,7 @@ def main():
     print(f"  (sampled at {N * D_COLLOC} collocation points, Radau weights)")
     report(drag, added, alpha, totals, robot, T, N)
 
-    # The attribution is only an attribution if the parts are the whole.
+    # Per-link parts must sum to the totals.
     for tag, parts in (("drag", drag), ("added", added)):
         err = np.abs(sum(parts.values()) - totals[tag]).max()
         if err > SUM_TOL:

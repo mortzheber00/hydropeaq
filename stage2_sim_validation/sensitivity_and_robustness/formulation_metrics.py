@@ -1,45 +1,18 @@
 #!/usr/bin/env python3
-"""How large are the two approximations the OCP formulation makes?
+"""Size the two OCP modelling approximations on a solved gait (thesis ch. 8.3, L4).
 
-Recomputes, on the stored thesis nominal, the numbers chapter 8.3 (limitation L4,
-points ii and iii) quotes.  Both approximations exist to keep the NLP small, and
-both are only defensible if what they drop is small next to what they keep.
-
-**[1] Frozen submersion ratio in the added-mass force (L4 ii).**
-``SymbolicHydrodynamicModel.added_mass_force`` writes the added-mass force per
-link as Kirchhoff's equations with a constant body-frame added mass scaled by the
-submersion ratio alpha.  That is exact for a fully submerged link, but the true
-joint-space added mass is ``M_A(q) = sum_i alpha_i(q) A_i(q)``, and differentiating
-it (the Christoffel/Coriolis term) also produces a term in ``d alpha / dq`` that
-the code neglects:
-
-    h_alpha = sum_i (g_i . v) A_i v - 1/2 g_i (v^T A_i v),   g_i = d alpha_i / dq
-
-Section [1a] first checks that this expression really is the whole difference:
-the full Christoffel Coriolis of ``M_A(q)``, minus the code's ``C_A(v) v``, should
-equal ``h_alpha``.  It does to machine precision in the joint rows.  The floating
-base rows do not close, because the Christoffel formula treats ``v`` as the time
-derivative of the coordinates, which the base angular velocity is not; the
-residual there is a property of the check, not of ``h_alpha``.  Section [1b] then
-sizes ``h_alpha`` against the retained added-mass force, the drag, and the
-applied joint torques.
-
-**[2] Tangent-rate approximation (L4 iii).**  The collocation states carry the
-base orientation as a tangent vector phi about a reference quaternion, and the
-dynamics use ``phi_dot = omega_b``.  The exact kinematics are
-``phi_dot = Jr^-1(phi) omega_b``; the deviation grows with |phi|, so it is
-reported together with the largest |phi| the gait reaches.
-
-Conventions.  ``X`` is the legacy node layout ``[q(nq); v(nv)]`` with a
-quaternion base, 49 nodes.  ``Xc`` is ``[phi-tangent q(nv); v(nv)]`` at the
-collocation points, so the base rotation is rows 3:6 and the base angular
-velocity rows nv+3:nv+6.  Section [1] is evaluated on the nodes, with the
-accelerations for the retained ``tau_A`` taken by central differences; section
-[2] on the collocation points, where the approximation is actually imposed.
+[1] Frozen submersion ratio in the added-mass force. The neglected term is
+        h_alpha = sum_i (g_i . v) A_i v - 1/2 g_i (v^T A_i v),  g_i = d alpha_i / dq
+    [1a] checks that this is exactly the difference to the full Christoffel
+    Coriolis term (joint rows only; the base rows do not close because v_base
+    is not a coordinate derivative). [1b] compares its size with the retained
+    added mass, drag and joint torques (evaluated at the nodes).
+[2] Tangent-rate approximation phi_dot = omega_b instead of Jr^-1(phi) omega_b,
+    evaluated at the collocation points.
 
 Usage:
-  python formulation_metrics.py                     # the thesis nominal
-  python formulation_metrics.py --solution <npz>
+  python stage2_sim_validation/sensitivity_and_robustness/formulation_metrics.py
+  python stage2_sim_validation/sensitivity_and_robustness/formulation_metrics.py --solution <npz>
 """
 from __future__ import annotations
 
@@ -58,18 +31,17 @@ sys.path.insert(0, str(REPO_ROOT / "stage1_gait_optimization"))
 from hydro_model import load_robot                                     # noqa: E402
 from hydro_model.hydrodynamics import SymbolicHydrodynamicModel, _skew  # noqa: E402
 
-# The thesis nominal: the v = 0.18 point of the cold co-design front.
+# Thesis nominal: the v = 0.18 m/s point of the co-design front
 DEFAULT_SOLUTION = (REPO_ROOT / "experiment_results" / "mlruns" / "2" /
                     "69943d2cffc94ca5b78271a7df24c546" / "artifacts" /
                     "TLPG50_v0p180_T1p400.npz")
 
 
 def build_functions(robot):
-    """CasADi functions for the neglected term and everything it is compared to.
+    """CasADi functions for h_alpha and the terms it is compared with.
 
-    ``h_alpha`` and the full Christoffel Coriolis are differentiated with respect
-    to a tangent perturbation ``dq`` of ``q0`` and evaluated at ``dq = 0``, which
-    is how a derivative on the free-flyer configuration space is taken.
+    Derivatives w.r.t. q are taken via a tangent perturbation ``dq`` of ``q0``,
+    evaluated at ``dq = 0``.
     """
     cmodel = cpin.Model(robot.model)
     cdata = cmodel.createData()
@@ -118,7 +90,7 @@ def build_functions(robot):
 
 
 def rms_norm(M):
-    """Peak and rms of the per-node vector norm, rows = nodes."""
+    """Peak and RMS of the per-row vector norm (rows = nodes)."""
     n = np.linalg.norm(M, axis=1)
     return n.max(), np.sqrt((n ** 2).mean())
 
@@ -128,6 +100,7 @@ def rms(M):
 
 
 def frozen_alpha(robot, d):
+    """Section [1]; accelerations for tau_A by central differences."""
     nq, nv = robot.model.nq, robot.model.nv
     f = build_functions(robot)
     X, U, T, N = d["X"], d["U"], float(d["T"]), int(d["N"])
@@ -178,6 +151,7 @@ def frozen_alpha(robot, d):
 
 
 def tangent_rate(robot, d):
+    """Section [2]; Xc rows 3:6 hold phi, rows nv+3:nv+6 the base angular velocity."""
     nv = robot.model.nv
     Xc = d["Xc"]
     phi, om = Xc[3:6, :], Xc[nv + 3:nv + 6, :]

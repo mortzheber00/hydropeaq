@@ -1,32 +1,17 @@
 #!/usr/bin/env python3
-"""
-Interactive 3D viewer of the pool scene over a SPlisHSPlasH run.
+"""Interactive 3D viewer of a SPlisHSPlasH run: pool, robot and particles coloured by speed.
 
-Reads the same VTK export as ``leg_flow_slices.py`` (``ParticleData_fluid_<k>.vtk``
-and ``rb_data_<body>_<k>.vtk``) and shows the pool (floor opaque, walls
-translucent), amph's base and legs, and the fluid particles coloured by speed.
-Frames are read on demand, so memory stays at one frame (~1.7 M particles).
+Reads the same VTK export as leg_flow_slices.py, one frame at a time.
 
 Controls:
-  slider              pick an exported frame
-  Left / Right        previous / next frame
-  space               play / pause (``--fps``)
-  x                   save the current view as ``<out-dir>/pool_view_frame<k>.pdf``
-  c                   print the current camera as ``--camera ...`` (also printed on save)
-  mouse               rotate / pan / zoom (standard VTK)
+  slider / Left, Right  select frame
+  space                 play / pause
+  x                     save the view as <out-dir>/pool_view_frame<k>.pdf
+  c                     print the camera as --camera arguments
+  mouse                 rotate / pan / zoom
 
-``--stride n`` draws every n-th particle for a faster display; ``--cut`` hides
-the particles on the camera's side of the robot (y below the base centre) so the
-legs under water are visible.
-
-``--save-frame K`` writes the same PDF for frame K without opening a window, with
-``--camera`` or else the default view of the whole pool, so a view set up in the
-viewer can be reproduced for any frame. PDFs hold a raster image (``--scale`` x
-the window size, cropped to the scene, without the time label) at the thesis
-text width, with the colour bar drawn below it by matplotlib.
-
-``--save-video mp4|gif`` renders the frames (``--every``, optionally ``--range``)
-the same way, with the time next to the colour bar, at ``--fps``.
+--cut hides particles in front of the robot; --stride thins them out.
+--save-frame and --save-video render without a window (use --camera from 'c').
 
 Usage:
   python stage3_visualization/sph/pool_viewer.py
@@ -63,12 +48,13 @@ from stage3_visualization.sph.leg_flow_slices import (  # noqa: E402
 POOL_FLOOR = 0
 POOL_WALLS = [1, 2, 3, 4]
 ROBOT_BODIES = [BASE_BODY, *LEG_BODIES]
-# Whole pool from the -y side and above: position, focal point, view up.
+# Whole pool from -y and above: position, focal point, view up
 DEFAULT_CAMERA = [(0.0, -2.2, 2.6), (0.0, 0.0, 0.1), (0.0, 0.0, 1.0)]
-COLORBAR_STRIP_IN = 0.75  # PDF height below the image for the colour bar, its ticks and label
+COLORBAR_STRIP_IN = 0.75  # height below the image for the colour bar
 
 
 def read_fluid(vtk_dir: Path, k: int, stride: int, cut: bool, base_y: float) -> pv.PolyData:
+    """Particles of frame ``k`` with their speed; ``cut`` keeps only y > ``base_y``."""
     fluid = pv.read(vtk_dir / f"ParticleData_fluid_{k}.vtk")
     pos = np.asarray(fluid.points)[::stride]
     speed = np.linalg.norm(np.asarray(fluid["velocity"])[::stride], axis=1)
@@ -81,10 +67,9 @@ def read_fluid(vtk_dir: Path, k: int, stride: int, cut: bool, base_y: float) -> 
 
 
 def capture(pl: pv.Plotter, scale: int, label) -> np.ndarray:
-    """Screenshot at ``scale`` x the window size without the time ``label`` and scalar bar.
+    """Screenshot at ``scale`` x window size, without the time label and scalar bar.
 
-    Both are drawn by matplotlib in ``compose`` instead: in a scaled screenshot
-    VTK renders tiles at window size, and the scalar bar's labels overlap there.
+    Those are drawn by matplotlib in ``compose`` (VTK garbles them when scaled).
     """
     overlays = [label, *pl.scalar_bars.values()]
     for actor in overlays:
@@ -97,18 +82,16 @@ def capture(pl: pv.Plotter, scale: int, label) -> np.ndarray:
 
 
 def crop_box(img: np.ndarray, pad: int):
-    """Slices that crop the background around the scene, keeping ``pad`` pixels."""
+    """Crop slices around the non-background area, with ``pad`` pixels margin."""
     rows, cols = np.nonzero(np.any(img != img[0, 0], axis=2))
     return (slice(max(rows.min() - pad, 0), rows.max() + pad + 1),
             slice(max(cols.min() - pad, 0), cols.max() + pad + 1))
 
 
 def compose(img: np.ndarray, speed_max: float):
-    """Text-width figure with ``img`` on top and the colour bar below.
+    """Text-width figure with ``img`` above a colour bar: ``(fig, im, time_text)``.
 
-    Returns ``(fig, im, time_text)``; the time text sits left of the colour bar
-    and is empty until set. Save at ``dpi = img width / TEXT_WIDTH_IN`` so the
-    image is not resampled.
+    Save with ``dpi = img width / TEXT_WIDTH_IN`` to avoid resampling.
     """
     h, w = img.shape[:2]
     img_h = TEXT_WIDTH_IN * h / w
@@ -117,7 +100,7 @@ def compose(img: np.ndarray, speed_max: float):
     ax = fig.add_axes([0, COLORBAR_STRIP_IN / fig_h, 1, img_h / fig_h])
     im = ax.imshow(img, interpolation="none")
     ax.set_axis_off()
-    # Bar 0.12 in high near the top of the strip; ticks and label go below it.
+    # 0.12 in bar at the top of the strip, labels below
     bar_y = (COLORBAR_STRIP_IN - 0.2) / fig_h
     cax = fig.add_axes([0.2, bar_y, 0.6, 0.12 / fig_h])
     fig.colorbar(ScalarMappable(Normalize(0.0, speed_max), cmap="viridis"), cax=cax,
@@ -127,10 +110,9 @@ def compose(img: np.ndarray, speed_max: float):
 
 
 def save_pdf(pl: pv.Plotter, out: Path, scale: int, label, speed_max: float):
-    """The current view as a raster image in a text-width PDF, cropped to the scene.
+    """Save the current view as a cropped raster image in a text-width PDF.
 
-    Not ``save_graphic``: its vector export (GL2PS) draws the particles as plain
-    squares and would hold ~1.7 M of them.
+    Not ``save_graphic``: a vector export of ~1.7 M particles is impractical.
     """
     img = capture(pl, scale, label)
     img = img[crop_box(img, 5 * scale)]
@@ -143,17 +125,16 @@ def save_pdf(pl: pv.Plotter, out: Path, scale: int, label, speed_max: float):
 
 def save_video(pl: pv.Plotter, show, frames: list[int], out: Path, scale: int, label,
                speed_max: float, fps: float):
-    """All ``frames`` composed like ``save_pdf``, with the time, as mp4 or gif (by suffix).
+    """Render ``frames`` like ``save_pdf`` into an mp4 or gif (by suffix).
 
-    The crop is taken from the first frame and kept, so every video frame has the
-    same size; splashes above the first frame's scene may be cut.
+    The crop of the first frame is used for all frames, so later splashes may be cut.
     """
     show(0)
     img = capture(pl, scale, label)
     box = crop_box(img, 5 * scale)
     fig, im, time_text = compose(img[box], speed_max)
     if out.suffix == ".mp4":
-        # As in leg_flow_slices.py: yuv420p needs even pixel sizes, hence the padding.
+        # yuv420p needs even frame sizes, hence the pad.
         writer = FFMpegWriter(fps=fps, codec="libx264",
                               extra_args=["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=white",
                                           "-pix_fmt", "yuv420p", "-crf", "18"])
@@ -230,8 +211,7 @@ def main():
                          f"(available: {all_frames[0]}-{all_frames[-1]})")
 
     def rb(b, k):
-        # PolyData, so add_mesh draws this object itself (for an UnstructuredGrid it
-        # draws a surface copy, and in-place updates would not show).
+        # PolyData so add_mesh uses the object itself and in-place updates show.
         return pv.read(args.vtk_dir / f"rb_data_{b}_{k}.vtk").extract_surface()
 
     k0 = frames[0]
@@ -241,18 +221,17 @@ def main():
     pl = pv.Plotter(title="amph pool",
                     off_screen=args.save_frame is not None or args.save_video is not None)
     pl.add_mesh(rb(POOL_FLOOR, k0), color="lightgrey")
-    for b in POOL_WALLS:  # the pool does not move, so it is read once
+    for b in POOL_WALLS:  # static, read once
         pl.add_mesh(rb(b, k0), color="lightblue", opacity=0.15)
     for b, mesh in robot.items():
-        # No smooth_shading: its normals would also make add_mesh draw a copy.
+        # No smooth_shading: it would also make add_mesh draw a copy.
         pl.add_mesh(mesh, color="dimgrey" if b == BASE_BODY else "orange")
     fluid_actor = pl.add_mesh(fluid, scalars="speed [m/s]", cmap="viridis",
                               clim=(0.0, args.speed_max), render_points_as_spheres=True)
 
     def keep_radius(_obj, _event):
-        # Point sizes are in pixels, so before every render set the one that shows
-        # --particle-radius at the focal distance (nearer/farther particles are not
-        # scaled). A scaled screenshot narrows the view angle, which enlarges it too.
+        # Point size is in pixels: set it before each render so particles show
+        # --particle-radius at the focal distance.
         cam = pl.camera
         px_per_m = pl.renderer.GetSize()[1] / (
             2 * cam.GetDistance() * np.tan(np.radians(cam.GetViewAngle()) / 2))
@@ -309,7 +288,7 @@ def main():
         state["playing"] = not state["playing"]
 
     def export():
-        slider.Off()  # keep the controls out of the image
+        slider.Off()  # hide controls in the export
         pl.hide_axes()
         save_pdf(pl, args.out_dir / f"pool_view_frame{frames[state['i']]}.pdf", args.scale, label,
                  args.speed_max)
@@ -319,14 +298,12 @@ def main():
     pl.add_key_event("Right", lambda: step(1))
     pl.add_key_event("Left", lambda: step(-1))
     pl.add_key_event("space", toggle)
-    # Not "p": VTK's default key handler also picks the mesh under the mouse on "p"
-    # and outlines it in red.
+    # Not "p", which VTK already uses for picking.
     pl.add_key_event("x", export)
     pl.add_key_event("c", lambda: print_camera(pl))
     pl.add_axes()
     aim_camera()
-    # Not pl.add_timer_event: PyVista 0.44 runs all its max_steps inside the first
-    # timer event, which blocks the window. One step per tick instead.
+    # Not pl.add_timer_event: in PyVista 0.44 it blocks the window.
     pl.iren.add_observer("TimerEvent", tick)
     pl.iren.create_timer(int(1000 / args.fps), repeating=True)
     pl.show()

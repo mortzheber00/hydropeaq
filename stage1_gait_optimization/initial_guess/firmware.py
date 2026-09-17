@@ -1,27 +1,10 @@
-"""Robot firmware IK swim gait — mirrors ``Robot_Swim_Task_IK``.
+"""Firmware IK swim gait, a port of ``Robot_Swim_Task_IK``.
 
-The firmware drives each leg through a 4-phase state machine:
-    recovery (forward swing, foot near surface)
-    strike   (descend to power depth)
-    power    (backward sweep at depth)
-    lift     (ascend back to surface)
-
-This module mirrors the C firmware's waypoints and phase semantics.  The
-*only* deliberate departure is the in-phase interpolation: the C code uses
-linear interpolation (piecewise-constant foot velocity, discontinuous at
-phase boundaries — pathological for inverse dynamics), while here we use
-a quintic smootherstep ``6p⁵ − 15p⁴ + 10p³`` (C² at both endpoints).  The
-waypoints — and therefore the gait shape — are unchanged.
-
-Lateral ``target_y``: the C code sets ``±side_w`` explicitly; here it is
-inherited from the trim FK (URDF symmetry ⇒ trim foot y equals firmware
-``side_w`` to within URDF tolerance).
-
-The gait itself is a foot *Cartesian* path, so it is not tied to any particular
-leg mechanism and retargets onto a closed-chain robot unchanged.  Only two
-things are: the joint solve, which goes through ``foot_ik`` for a robot with a
-coordinate map because such a robot has no tree joints to solve for; and the
-stroke dimensions, which are in metres and therefore live in ``RobotSpec``.
+Each foot follows a 4-phase Cartesian path: recovery (forward swing near the
+surface), strike (descend), power (backward sweep at depth), lift (ascend).
+The waypoints match the firmware, but phases are interpolated with a quintic
+smootherstep instead of linearly, so foot accelerations stay finite for inverse
+dynamics. Foot y is taken from the trim pose.
 """
 
 from __future__ import annotations
@@ -33,8 +16,7 @@ from hydro_model.coordinate_map import IdentityMap
 from .assemble import assemble_guess
 from .foot_ik import solve_leg_theta
 
-# Stroke shape as calibrated on amph, in metres of foot travel.  A robot whose
-# legs are a different size overrides these through ``RobotSpec.firmware_gait``.
+# Stroke shape for amph [m]; other robots override via RobotSpec.firmware_gait.
 _DEFAULT_GAIT = {
     "ratio_recovery": 0.55,
     "ratio_strike": 0.1,
@@ -48,18 +30,12 @@ _DEFAULT_GAIT = {
     "center_x_rear": -0.02,
 }
 
-# Foot-tracking error above which the requested stroke is reported as not
-# reachable.  Well below the smallest stroke worth running (BODY2's usable box
-# is +-20 mm), so it separates "off the workspace" from IK round-off.
+# Foot-tracking error above which the stroke counts as unreachable.
 _TRACK_TOL = 1e-3  # [m]
 
 
 def _smootherstep(p: float) -> float:
-    """Quintic C² smoothstep on [0, 1]: ``6p⁵ − 15p⁴ + 10p³``.
-
-    smootherstep(0) = 0, smootherstep(1) = 1, with first and second
-    derivatives vanishing at both endpoints.
-    """
+    """Quintic smoothstep ``6p⁵ − 15p⁴ + 10p³`` on [0, 1] (zero 1st/2nd derivative at the ends)."""
     return p * p * p * (p * (6.0 * p - 15.0) + 10.0)
 
 
@@ -74,13 +50,7 @@ def _firmware_foot_target(
     dz_surface: float,
     dz_deep: float,
 ) -> tuple[float, float]:
-    """Compute (Δx, Δz) foot offsets from trim at time t_in_cycle ∈ [0, T_c).
-
-    z convention: positive = higher in world frame (= less deep in water).
-    Phases: recovery (forward swing) → strike (descend) → power (backward) → lift (ascend).
-    Within each phase, ``progress`` is run through a quintic smootherstep so
-    foot velocity and acceleration are continuous at every phase boundary.
-    """
+    """Foot offset ``(dx, dz)`` from trim at ``t_in_cycle`` in ``[0, T_c)``; z is up."""
     t_r = r_rec * T_c
     t_s = r_str * T_c
     t_p = r_pow * T_c
@@ -109,14 +79,10 @@ def _solve_leg_ik(
     n_per_leg: int = 3,
     leg_names: list[str] | None = None,
 ) -> np.ndarray:
-    """Find the 3 joint angles (side, thigh, calf) that place the foot at foot_target.
+    """Serial-leg IK for (side, thigh, calf) placing the foot at ``foot_target``.
 
-    Uses Levenberg-Marquardt (least_squares) and picks the IK branch closest
-    to the previous timestep's joint configuration — both the primary
-    warm-start and the q_trim warm-start are always tried, and the candidate
-    that achieves the IK tolerance with the smallest joint-space jump from
-    the warm-start is kept.  This suppresses elbow-up/elbow-down branch flips
-    that would otherwise inject step jumps into q_joints.
+    Solves from both the previous and the trim configuration and keeps the
+    converged solution closest to the previous one, avoiding branch flips.
     """
     from scipy.optimize import least_squares
 
@@ -157,49 +123,28 @@ def build_robot_ik_initial_guess(
     diagonal_phase_offset: float | None = None,
     **gait: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build (X_guess, U_guess) from the robot firmware IK-based swim gait.
+    """Build ``(X_guess, U_guess)`` from the firmware swim gait.
 
-    Mirrors Robot_Swim_Task_IK from the embedded C firmware.  The gait is a
-    4-phase state machine (recovery → strike → power → lift) timed by the
-    four ratio_* parameters (which must sum to 1).  Foot Cartesian targets are
-    converted to actuated coordinates by IK at each shooting node.
-
-    The stroke-shape parameters below are resolved in order: an explicit
-    keyword argument, then ``RobotSpec.firmware_gait``, then the amph-calibrated
-    default.  They are absolute foot travel in metres, which is why a robot of
-    a different size must override them -- amph's 50 mm stroke and 60 mm depth
-    swing are several times BODY2's whole reachable box.
-
-    Gait phasing: FL and HR start at the beginning of recovery; FR and HL
-    lag by ``ratio_recovery / 2`` cycles — matching the firmware's
-    ``swim_timer[FR/HL] = -t_recovery / 2`` diagonal phase offset (negative
-    ``diagonal_phase_offset`` ⇒ FR/HL lag).
+    Gait parameters come from keyword arguments, then
+    ``RobotSpec.firmware_gait``, then the amph defaults.
 
     Parameters
     ----------
     ratio_recovery / ratio_strike / ratio_power / ratio_lift : float
-        Fraction of the cycle period spent in each phase.  Must sum to 1.
+        Fraction of the cycle spent in each phase; must sum to 1.
     stroke_len : float
-        Half-stroke length in the forward (x) direction [m].
+        Half-stroke length along x [m].
     stand_h : float
-        Nominal foot depth below the hip at rest [m].
-        Equivalent to the C firmware's ``stand_h`` (14 cm → 0.14 m).
-    depth_surface : float
-        Foot depth during the recovery / surface phase [m].
-        Use ``≈ stand_h`` to keep the foot at nominal height during swing.
-    depth_deep : float
-        Foot depth during the power stroke [m].  Must be ≥ stand_h; larger
-        values push the foot deeper and increase hydrodynamic thrust.
+        Nominal foot depth below the hip [m].
+    depth_surface, depth_deep : float
+        Foot depth during recovery and during the power stroke [m].
     center_x_front / center_x_rear : float
-        Forward offset of the stroke x-centre from the trim foot position,
-        for front / rear legs [m].
+        Stroke centre offset from the trim foot position [m].
     n_cycles : float
-        Number of complete gait cycles contained in T_FIXED (default 1.0).
+        Gait cycles within ``T_FIXED``.
     diagonal_phase_offset : float, optional
-        Fractional cycle offset between the two diagonal pairs (FL+HR vs
-        FR+HL).  Negative ⇒ FR/HL lag FL/HR; positive ⇒ lead.  Defaults to
-        ``-ratio_recovery / 2`` — exactly the firmware's
-        ``swim_timer[FR/HL] = -t_recovery / 2`` diagonal phase offset.
+        Phase of FR/HL relative to FL/HR in cycles (negative = lag). Defaults
+        to the firmware's ``-ratio_recovery / 2``.
     """
     robot = dyn.robot
     n_act = robot.n_actuated
@@ -234,23 +179,18 @@ def build_robot_ik_initial_guess(
 
     T_c = T_FIXED / n_cycles
 
-    # Firmware diagonal offset: FR/HL lag FL/HR by half a recovery phase.
     if diagonal_phase_offset is None:
         diagonal_phase_offset = -ratio_recovery / 2.0
 
-    # FR (i=1) and HL (i=2) are offset by diagonal_phase_offset relative to FL/HR.
+    # Leg order FL, FR, HL, HR
     phase_offsets = [0.0, diagonal_phase_offset, diagonal_phase_offset, 0.0]
 
-    # Vertical deviation from trim foot z (world frame, z-up):
-    #   C code z is positive-downward so deeper → smaller world z → negative dz.
+    # Firmware depths are positive downward; world z is up.
     dz_surface = -(depth_surface - stand_h)
     dz_deep = -(depth_deep - stand_h)
 
-    # ── Solve IK for all legs at every shooting node ─────────────────────
-    # ``act`` carries the actuated coordinates, which for a serial robot are the
-    # tree joints and for a mapped one are theta.  The base is held at trim
-    # throughout: the stroke is defined relative to the trim foot positions, and
-    # letting the base move here would make the target chase itself.
+    # --- IK for all legs at every node ---
+    # The base is held at trim, since the targets are relative to the trim feet.
     q_joints = np.zeros((n_act, N + 1))
     act_ctx = q_trim[7:].copy() if serial else np.zeros(n_act)
     q_base_trim = q_trim[:7]
@@ -294,22 +234,17 @@ def build_robot_ik_initial_guess(
             f"{_TRACK_TOL * 1e3:.1f} mm — reduce stroke_len or the depth swing"
         )
 
-    # ── Velocities via central differences (periodic at the seam) ────────
-    # q_joints[:, 0] == q_joints[:, N] by construction (cyclic t_cyc), so
-    # the natural neighbours of the seam are q[:, 1] and q[:, N-1].
+    # --- Periodic finite differences (q[:, 0] == q[:, N]) ---
     v_joints = np.zeros((n_act, N + 1))
     v_joints[:, 1:-1] = (q_joints[:, 2:] - q_joints[:, :-2]) / (2.0 * dt_val)
     v_joints[:, 0] = (q_joints[:, 1] - q_joints[:, -2]) / (2.0 * dt_val)
     v_joints[:, -1] = v_joints[:, 0]
 
-    # a_joints needs N+1 columns for assemble_guess; the seam value is the
-    # periodic wrap, matching how v_joints is closed above.
     a_joints = np.zeros((n_act, N + 1))
     a_joints[:, :-2] = (v_joints[:, 1:-1] - v_joints[:, :-2]) / dt_val
     a_joints[:, -2] = (v_joints[:, 0] - v_joints[:, -2]) / dt_val
     a_joints[:, -1] = a_joints[:, 0]
 
-    # ── Base simulation, assembly and torques (shared with every builder) ─
     return assemble_guess(
         dyn, q_joints, v_joints, a_joints, T_FIXED, N, TAU_MAX,
         label="firmware IK trajectory",

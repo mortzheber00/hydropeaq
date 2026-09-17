@@ -1,28 +1,13 @@
 #!/usr/bin/env python3
-"""
-Sensitivity check on the six hydrodynamic coefficients: how much does the fit
-loss change when each one is moved across its plausible range?
+"""1-D loss profiles of the hydrodynamic fit.
 
-Each coefficient in turn is scanned over its search range from
-``sweep_hydro_params.BOUNDS`` while the other five are held at their fitted
-values, and the sweep's own loss J is recorded.  Plotted as J/J*, a curve that
-stays on 1 means the recorded trajectory cannot tell where in its range that
-coefficient sits -- so holding it at a literature value instead of fitting it
-costs the fit nothing, which is the argument for fixing it.
-
-The ranges differ per coefficient because their physical plausible values do;
-the x axis is scaled to each one's own range so the curves stay comparable.
+Scans each coefficient over its search range (sweep_hydro_params.BOUNDS) with
+the others held at the fitted values from hydro_params and plots J/J*. A flat
+profile means the data does not identify that coefficient.
 
 Usage:
-    python3 hydro_fit_sensitivity.py [--ocp PATH...] [--bag PATH...]
-                                     [--start T...] [--theta NAME=VALUE...]
-                                     [--fixed NAME...] [--n-profile INT]
-                                     [--out DIR] [--format EXT]
-
-    --theta   override a coefficient of the evaluation point; the default is
-              the fitted set in hydro_model/hydro_params.py
-    --fixed   coefficients held out of the fit, marked as such in the legend
-              (default: Cd_a Ca_t Ca_a)
+  python stage2_sim_validation/hydro_calibration/hydro_fit_sensitivity.py --ocp task3_solution.npz --bag sim_log.bag
+  python stage2_sim_validation/hydro_calibration/hydro_fit_sensitivity.py --theta Cd_t=3.0 --fixed Cd_a Ca_t Ca_a
 """
 from __future__ import annotations
 
@@ -49,14 +34,13 @@ from sweep_hydro_params import (  # noqa: E402
 from stage1_gait_optimization.hydro_model import hydro_params, load_robot  # noqa: E402
 from thesis_style import PALETTE  # noqa: E402  also activates the plot style
 
-# The fitted point the scan is centred on.
+# Centre of the scan
 THETA_FIT = np.array([
     hydro_params.CD_T, hydro_params.CD_A, hydro_params.CA_T,
     hydro_params.CA_A, hydro_params.CD_LIN_T, hydro_params.CD_LIN_A,
 ])
 
-# Colour by force type, line style by direction: three hues instead of six, and
-# the transverse/axial pairing is visible without reading the legend.
+# Colour = force type, line style = transverse (solid) / axial (dashed)
 FAMILY = {
     "Cd_t":     (PALETTE[0], "-"),
     "Cd_a":     (PALETTE[0], "--"),
@@ -65,7 +49,6 @@ FAMILY = {
     "Cd_lin_t": (PALETTE[2], "-"),
     "Cd_lin_a": (PALETTE[2], "--"),
 }
-# Transverse flow is perpendicular to the link axis, axial is parallel to it.
 LABEL = {
     "Cd_t": r"$C_{d,\perp}$", "Cd_a": r"$C_{d,\parallel}$",
     "Ca_t": r"$C_{a,\perp}$", "Ca_a": r"$C_{a,\parallel}$",
@@ -75,10 +58,7 @@ LABEL = {
 
 
 def loss_profiles(objective, theta, ranges, n):
-    """J(theta_j)/J* along each coefficient, the others held at theta*.
-
-    Returns (J*, grids, curves) with grids[j] the scanned values of j.
-    """
+    """``(J*, grids, curves)`` with ``curves[j] = J/J*`` along coefficient j."""
     J_star = objective(theta)
     grids, curves = [], []
     for j in range(len(theta)):
@@ -96,7 +76,7 @@ def loss_profiles(objective, theta, ranges, n):
 
 
 def plot_profiles(grids, curves, ranges, theta, fixed):
-    """One panel: the six profiles, with theta* marked on each."""
+    """All profiles in one panel with the evaluation point marked."""
     fig, ax = plt.subplots(figsize=(4.8, 3.3))
     ax.axhline(1.0, color="0.6", lw=0.6, zorder=1)
     for j, name in enumerate(PARAM_NAMES):
@@ -154,9 +134,7 @@ def main():
     if unknown:
         parser.error(f"--fixed: unknown coefficient(s) {sorted(unknown)}")
 
-    # The scan range is the search box, widened where theta* sits outside it --
-    # a coefficient fixed at a literature value need not lie in the box the
-    # sweep was allowed to search.
+    # Widen the search box where the evaluation point lies outside it.
     ranges = [(min(lo, t), max(hi, t)) for (lo, hi), t in zip(BOUNDS, theta)]
     for name, t, (lo, hi) in zip(PARAM_NAMES, theta, BOUNDS):
         if not lo <= t <= hi:

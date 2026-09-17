@@ -1,34 +1,16 @@
 #!/usr/bin/env python3
-"""
-IPOPT convergence of the collocation OCP, one curve per initial guess.
+"""IPOPT convergence (objective, primal and dual infeasibility) per initial guess.
 
-Reads the per-iteration solver trace that ``ocp_common._log_solver_stats``
-writes to MLflow (``convergence_obj``, ``inf_pr``, ``inf_du``, logged with
-``step`` = IPOPT iteration) and plots three stacked panels against the
-iteration counter:
-
-  1. Objective        f(x^k)
-  2. Primal infeasibility   ‖c(x^k)‖_inf   (constraint violation)
-  3. Dual infeasibility     ‖∇L(x^k)‖_inf  (stationarity residual)
-
-Runs are grouped by their ``GAIT`` parameter — the initial-guess family the
-solve was warm-started from (LSPG25 / LSPG33 / TLPG50 / Prototype) — so the
-figure answers "how does the initial guess change the
-convergence behaviour of the OCP?".
-
-Two caveats worth knowing when reading the figure:
-
-  - IPOPT's intermediate callback reports ``inf_pr`` *unscaled* and ``inf_du``
-    *scaled*, and it terminates on the scaled criterion.  The tolerance line is
-    therefore exact for panel 3 and indicative for panel 2.
-  - The objective panel only compares like with like: two runs whose W_* /
-    V_TARGET differ are minimising different functions.  The script checks the
-    logged params and warns when the selected runs disagree.
+Reads the per-iteration traces logged to MLflow by
+``ocp_common._log_solver_stats``; by default the newest run per gait. Note that
+IPOPT reports inf_pr unscaled and inf_du scaled, so the tolerance line is exact
+only for the dual panel. A warning is printed if the runs solved different
+problems (weights, N, ...).
 
 Usage:
-  python plot_convergence.py
-  python plot_convergence.py --robot amph --save ../../docs/figures/ocp_convergence.pdf
-  python plot_convergence.py --all-runs --gaits LSPG25 Prototype
+  python stage3_visualization/gait/plot_convergence.py
+  python stage3_visualization/gait/plot_convergence.py --robot amph --save ocp_convergence.pdf
+  python stage3_visualization/gait/plot_convergence.py --all-runs --gaits LSPG25 Prototype
 """
 from __future__ import annotations
 
@@ -50,7 +32,7 @@ DEFAULT_EXPERIMENT = "gait_ocp"
 # Per-iteration keys written by ocp_common._log_solver_stats.
 OBJ_KEY, PR_KEY, DU_KEY = "convergence_obj", "inf_pr", "inf_du"
 
-# Params that must agree for the objective panel to be a fair comparison.
+# Params that must match for the objectives to be comparable
 COMPARABLE_PARAMS = (
     "robot", "N", "D_COLLOC", "V_TARGET", "T_MIN", "T_MAX",
     "W_POWER", "W_DIST", "W_VEL_SMOOTH", "W_DRIFT",
@@ -58,11 +40,7 @@ COMPARABLE_PARAMS = (
 
 
 def _history(client: MlflowClient, run_id: str, key: str) -> np.ndarray:
-    """Metric history as a dense array indexed by IPOPT iteration.
-
-    MLflow does not promise ordering, and a re-logged step would appear twice;
-    keep the last value seen at each step and sort.
-    """
+    """``(steps, values)`` of a metric, sorted by step, last value per step."""
     by_step = {m.step: m.value for m in client.get_metric_history(run_id, key)}
     steps = sorted(by_step)
     return np.array(steps), np.array([by_step[s] for s in steps])
@@ -70,13 +48,7 @@ def _history(client: MlflowClient, run_id: str, key: str) -> np.ndarray:
 
 def fetch_traces(client: MlflowClient, experiment: str, *, robot=None,
                  gaits=None, run_ids=None, all_runs=False) -> list[dict]:
-    """Runs of ``experiment`` that carry a solver trace, newest first.
-
-    Without ``--all-runs`` only the most recent run per initial guess is kept:
-    the store holds several solves per guess from different stages of the
-    formulation, and overlaying them would read as one guess converging many
-    different ways.
-    """
+    """Runs with a solver trace, newest first (only the newest per gait unless ``all_runs``)."""
     exp = client.get_experiment_by_name(experiment)
     if exp is None:
         raise SystemExit(f"no MLflow experiment named {experiment!r}")
@@ -90,7 +62,7 @@ def fetch_traces(client: MlflowClient, experiment: str, *, robot=None,
             continue
         if run_ids and run.info.run_id not in run_ids:
             continue
-        # 'robot' predates its own param on the oldest runs, which are all amph.
+        # Old runs without a robot param are amph
         run_robot = p.get("robot", tags.get("robot", "amph"))
         if robot and run_robot != robot:
             continue
@@ -121,12 +93,7 @@ def fetch_traces(client: MlflowClient, experiment: str, *, robot=None,
 
 
 def warn_incomparable(traces: list[dict]) -> None:
-    """Report params that differ across the selected runs.
-
-    The objective is only comparable between runs that minimise the same thing;
-    a differing weight makes panel 1 a comparison of two problems, not two
-    guesses.  Panels 2-3 stay comparable regardless.
-    """
+    """Print the problem parameters that differ between the selected runs."""
     differing = {
         k: {t["params"].get(k, "-") for t in traces}
         for k in COMPARABLE_PARAMS
@@ -146,8 +113,7 @@ def _label(t: dict, repeated: set) -> str:
         bits.append(f"{t['wall_s']:.0f} s")
     if t["status"] != "optimal":
         bits.append(t["status"])
-    # Under --all-runs one guess can appear several times; name the run so the
-    # legend entries stay distinguishable.
+    # Add the run name if a gait appears more than once
     head = tex(t["gait"])
     if t["gait"] in repeated:
         head += f" [{tex(t['name'])}]"
@@ -164,26 +130,22 @@ def plot_convergence(traces: list[dict], *, tol: float, acceptable_tol: float,
     for t in traces:
         colour, marker = style_for(t["gait"])
         k = t["iter"]
-        # ~12 markers per curve: identity without burying the trace.
-        every = max(1, len(k) // 12)
+        every = max(1, len(k) // 12)  # ~12 markers per curve
         common = dict(color=colour, lw=1.4, marker=marker, markersize=4.0,
                       markevery=every, markerfacecolor="none", markeredgewidth=0.8)
         ax_obj.plot(k, t[OBJ_KEY], label=_label(t, repeated), **common)
         ax_pr.plot(k, t[PR_KEY], **common)
         ax_du.plot(k, t[DU_KEY], **common)
-        # Terminal iterate: filled if IPOPT declared optimality, open cross if
-        # the solve was stopped and the last iterate merely extracted.
+        # Final iterate: marker if optimal, cross if the solve failed
         end_style = (dict(marker=marker, markersize=6.0)
                      if t["status"] == "optimal"
                      else dict(marker="x", markersize=7.0, markeredgewidth=1.3))
         for ax, key in ((ax_obj, OBJ_KEY), (ax_pr, PR_KEY), (ax_du, DU_KEY)):
             ax.plot(k[-1], t[key][-1], color=colour, linestyle="none", **end_style)
 
-    # ── Panel 1: objective ──────────────────────────────────────────────
-    # The objective spans decades, so a linear axis hides the early descent.
-    # It can also go negative — the forward-distance reward is subtracted — and
-    # then only symlog works, with its linear window placed just below the
-    # smallest converged magnitude so the tail keeps its resolution.
+    # --- Objective ---
+    # Log scale; symlog if the objective turns negative (distance reward), with
+    # the linear window just below the smallest final magnitude.
     if obj_scale == "auto":
         finals = [abs(float(t[OBJ_KEY][-1])) for t in traces if t[OBJ_KEY][-1] != 0]
         if all((t[OBJ_KEY] > 0).all() for t in traces):
@@ -196,7 +158,7 @@ def plot_convergence(traces: list[dict], *, tol: float, acceptable_tol: float,
     ax_obj.legend(loc="best", title=r"initial guess", fontsize=8,
                   title_fontsize=8, frameon=True, framealpha=0.9)
 
-    # ── Panels 2-3: KKT residuals ───────────────────────────────────────
+    # --- Infeasibilities ---
     for ax, ylabel in (
         (ax_pr, r"primal infeas. $\|c(x^k)\|_\infty$"),
         (ax_du, r"dual infeas. $\|\nabla_x \mathcal{L}(x^k)\|_\infty$"),
@@ -222,9 +184,7 @@ def plot_convergence(traces: list[dict], *, tol: float, acceptable_tol: float,
                  f" ({tex(', '.join(robots))})")
     sup = fig.suptitle(title, y=0.995)
     fig.tight_layout()
-    # suptitle centres on the figure, but the axis label and tick labels inset
-    # the panels to the right of it, so it reads left of the plotting area.
-    # Re-centre on the panels once tight_layout has settled their positions.
+    # Centre the title over the axes rather than the figure.
     box = ax_obj.get_position()
     sup.set_x(0.5 * (box.x0 + box.x1))
     return fig

@@ -1,47 +1,18 @@
 #!/usr/bin/env python3
-"""Why the cost of transport rises with speed, mechanism by mechanism.
+"""Mechanism metrics vs speed along the Pareto front: why COT rises with speed.
 
-The Pareto front says COT climbs as the commanded speed climbs.  It does not say
-why, and there are three candidate answers with different signatures:
+Three panels, one point per solve:
+  - peak-to-peak forward force from drag and from added mass
+  - negative work as a share of the charged work
+  - stroke benefit (drag gain vs holding the leg at its mean pose), front and hind
 
-  1. the added-mass cost grows — a shorter cycle accelerates the entrained water
-     harder every stroke;
-  2. more of the cycle is spent being back-driven by the water, and the model
-     charges full price for that work (no regeneration);
-  3. nothing structural — drag thrust goes as v^2 and its power as v^3, so the
-     same mechanism simply costs more.
-
-Each of the per-cycle mechanism figures (``plot_thrust_budget``,
-``plot_power_flow``, ``plot_stroke_benefit``) already produces the numbers that
-tell these apart, for one solution.  This walks the whole Pareto front and puts
-them against speed — one point per solve, not a trace over the cycle.
-
-Three panels on one text-width canvas:
-
-  ``forces``   Peak-to-peak forward force carried by drag and by the added-mass
-      terms over the cycle.  Candidate 1 shows up as the added-mass amplitude
-      growing faster than the drag amplitude.
-  ``work``     Negative work as a share of the work the objective is charged
-      for.  Candidate 2 shows up as this rising.
-  ``benefit``  What each leg gains by stroking rather than being held at its
-      cycle-mean pose, front and hind averaged separately.  Says whether the
-      legs stay worth their motion as the speed rises.
-
-**Peak-to-peak, not the cycle mean, and that is deliberate.**
-``plot_thrust_budget`` establishes that the cycle-*mean* forward force is not
-quotable on this model: the added-mass terms carry a momentum defect from the
-dropped d(alpha)/dq term, the equation of motion has to balance, and the mean
-drag is therefore pinned to that artifact rather than to any resistance the
-robot feels.  What that figure says survives is "the per-cycle shape and the
-per-link attribution", so the amplitude over the cycle is what is drawn here.
-The stroke-benefit panel is immune for a different reason — both sides of its
-counterfactual are pure quasi-steady drag, so the defect cancels in the
-difference — which is why it can be quoted as a force.
+Force amplitudes are used instead of cycle means, which are not meaningful in
+this model (see plot_thrust_budget.py). The stroke benefit is a difference of
+two drag evaluations and is unaffected.
 
 Usage:
-  python plot_mechanism_vs_speed.py
-  python plot_mechanism_vs_speed.py --results /path/to/codesign_results
-  python plot_mechanism_vs_speed.py --save mechanism.pdf
+  python stage3_visualization/speed_sweep/plot_mechanism_vs_speed.py
+  python stage3_visualization/speed_sweep/plot_mechanism_vs_speed.py --results /path/to/codesign_results --save mechanism.pdf
 """
 from __future__ import annotations
 
@@ -77,15 +48,12 @@ full_width()
 
 
 def measure(robot, dyn, meta):
-    """The mechanism numbers for one solution."""
+    """Mechanism metrics of one solution (Xc presence is checked by sweep_io)."""
     X, U, T, N, nq = meta["X"], meta["U"], meta["T"], meta["N"], meta["nq"]
-    # sweep_io has already refused any solve without an Xc block.
     Xc_leg, _, _ = collocation_states(robot, X, meta["Xc"], nq, N)
 
     terms, resid = force_terms(robot, dyn, Xc_leg, U, N, nq)
-    # The rigid-body terms are a momentum derivative, so over a periodic cycle
-    # the momentum has to come back to where it started.  Without this a solve
-    # that never closed its periodicity constraints would just draw.
+    # Reject solutions that are not periodic in momentum.
     dp = momentum_residual(dyn, X, nq)
     if abs(dp) > MOMENTUM_TOL:
         raise SystemExit(
@@ -112,7 +80,7 @@ def measure(robot, dyn, meta):
 
 
 def plot_mechanism(points, band):
-    """The three mechanism panels against commanded speed."""
+    """Three mechanism panels vs speed."""
     fig, axes = plt.subplots(1, 3, figsize=(TEXT_WIDTH_IN, 2.3))
     v = np.array([p["speed"] for p in points])
     pinned = np.array([p["pinned"] for p in points])
@@ -173,8 +141,7 @@ def main():
     pairs = sweep_io.load_sweep(args.results, gaits=args.gaits)
     print(f"{len(pairs)} Pareto-front solves from {args.results}")
 
-    # One robot and one symbolic-dynamics build for the whole front: the build
-    # dominates the runtime and every solve here is the same robot.
+    # Build robot and dynamics once for the whole front
     robots = {m["robot"] for _, m in pairs}
     if len(robots) > 1:
         raise SystemExit(f"sweep mixes robots ({', '.join(sorted(robots))})")

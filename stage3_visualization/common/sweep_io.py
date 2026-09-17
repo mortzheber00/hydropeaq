@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
-"""Reading a finished co-design sweep: summary rows paired with their solutions.
+"""Load a finished co-design sweep: summary rows paired with their solution files.
 
-``codesign/run_codesign.py`` writes one ``codesign_summary.json`` holding a row
-per solve, plus one ``.npz`` per *feasible* solve named by the tag
-``{gait}_v{v_target:.2f}_T{t_center:.3f}`` with dots replaced by ``p`` — or, in a
-sweep whose rows carry an ``npz`` field, by whatever that field says.  Three
-figures walk that pairing — ``plot_limit_activity``, ``plot_structure_vs_speed``
-and ``plot_mechanism_vs_speed`` — so the tag convention, the exclusion rules and
-the ``Xc`` requirement are spelled out once here instead of three times.
-
-Every consumer here samples at the collocation points, so a sweep whose files
-predate the ``Xc`` export is refused with the tag of the first file missing it
-rather than silently measured at the grid nodes.  ``run_codesign`` builds the
-same tag inline and ``replot_pareto`` has its own copy; this is a third, kept
-separate because stage 3 importing the sweep driver would drag CasADi and
-MLflow into a plotting script.
+Solutions are named ``{gait}_v{v_target:.2f}_T{t_center:.3f}`` with dots
+replaced by ``p`` (or by the row's ``npz`` field). The tag is duplicated from
+run_codesign.py to avoid importing CasADi/MLflow here. Solutions without
+``Xc`` are rejected.
 """
 from __future__ import annotations
 
@@ -27,55 +17,37 @@ _ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RESULTS = (_ROOT / "stage1_gait_optimization" / "codesign" /
                    "codesign_results")
 
-# Tolerance on |T - t_center| for calling the free-T window active.
+# Tolerance on |T - t_center| for a period at the edge of its window
 BAND_TOL = 1e-3
 
 
 def tag_of(row: dict) -> str:
-    """The solve's npz basename — its unique name within a sweep."""
+    """Unique name of a solve within a sweep (npz basename)."""
     return (f"{row['gait']}_v{row['v_target']:.2f}_T{row['t_center']:.3f}"
             .replace(".", "p"))
 
 
 def npz_of(row: dict) -> str:
-    """The solve's file name, as recorded rather than re-derived when possible.
-
-    A sweep that writes its own file names into the summary is believed over
-    ``tag_of``: the tag rounds ``v_target`` to two decimals, and a sweep written
-    with three (``v0p110``, not ``v0p11``) then looks entirely absent.  Rows
-    without the field predate it and still have to be named by the tag.
-    """
+    """Solution file name: the row's ``npz`` field if present, else derived from the tag."""
     return row.get("npz") or f"{tag_of(row)}.npz"
 
 
 def detect_band(rows: list[dict]) -> float:
-    """Free-T half-window used by the sweep, read off the data.
+    """Free-T half-window of the sweep, estimated as the largest |T - t_center|.
 
-    ``FREE_T_BAND`` lives in run_codesign.py and is not written to the summary,
-    but every solve that hit the window sits exactly at ``t_center ± band``, so
-    the largest observed excursion is the band.
+    FREE_T_BAND is not stored in the summary.
     """
     devs = [abs(r["T"] - r["t_center"]) for r in rows if r["feasible"]]
     return max(devs) if devs else 0.0
 
 
 def is_pinned(row: dict, band: float) -> bool:
-    """Did T end up at an edge of its refine window?
-
-    Such a point's cadence is set by the window, not by an efficiency optimum,
-    so it is not a stationary point of anything and every figure that puts T (or
-    1/T) on an axis has to mark it.
-    """
+    """True if T ended at the edge of its window (so T is not optimal and should be marked)."""
     return abs(row["T"] - row["t_center"]) >= band - BAND_TOL
 
 
 def load_rows(results_dir: Path = DEFAULT_RESULTS) -> list[dict]:
-    """Every summary row, excluded solves dropped.
-
-    ``replot_pareto.py`` keeps a dropped solve in the summary flagged
-    ``excluded`` rather than deleting it, so the record survives; a figure wants
-    it gone.
-    """
+    """All summary rows except those marked ``excluded`` by replot_pareto.py."""
     summary = Path(results_dir) / "codesign_summary.json"
     if not summary.exists():
         raise SystemExit(f"no sweep summary at {summary}")
@@ -84,15 +56,12 @@ def load_rows(results_dir: Path = DEFAULT_RESULTS) -> list[dict]:
 
 def load_sweep(results_dir: Path = DEFAULT_RESULTS, *, pareto_only: bool = True,
                gaits=None) -> list[tuple[dict, dict]]:
-    """``[(row, meta), ...]`` for the solves worth plotting, sorted by speed.
+    """``[(row, meta), ...]`` of feasible solves sorted by speed.
 
-    ``row`` is the summary entry (speed, COT, T, gait, pareto flag) and ``meta``
-    the loaded solution file.  ``pareto_only`` keeps the front, which is what a
-    figure with speed on its x-axis wants: the other points sit at the same
-    speeds with worse COT and would draw as vertical scatter.
+    ``row`` is the summary entry, ``meta`` the loaded solution. By default only
+    Pareto-front points are returned.
     """
-    # Local, so importing this module from a script that only needs tag_of does
-    # not pay for pinocchio.
+    # Local import to avoid loading pinocchio for tag_of-only users
     from stage1_gait_optimization.hydro_model.trajectory import load_solution
 
     results_dir = Path(results_dir)
@@ -126,7 +95,7 @@ def load_sweep(results_dir: Path = DEFAULT_RESULTS, *, pareto_only: bool = True,
 
 
 def describe(pairs: list[tuple[dict, dict]], band: float) -> None:
-    """One stdout line per solve: what the figure is about to draw."""
+    """Print one line per solve."""
     print(f"{'tag':<28s}{'v [m/s]':>9s}{'T [s]':>8s}{'COT':>8s}  pinned")
     for row, _ in pairs:
         print(f"{tag_of(row):<28s}{row['speed']:>9.4f}{row['T']:>8.3f}"

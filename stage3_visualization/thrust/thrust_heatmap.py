@@ -1,39 +1,22 @@
 #!/usr/bin/env python3
-"""
-Thrust heatmap: best-case thrust capability + optimal sweep direction per pose.
+"""Best-case drag thrust and optimal sweep direction over a leg's workspace (amph).
 
-For each (q_thigh, q_calf) in the reachable workspace (side joint fixed at zero),
-sweeps the joint-velocity direction (v_thigh, v_calf) on the unit circle and
-finds the direction that maximises forward drag-thrust:
+For each (thigh, calf) pose, the joint-velocity direction on the unit circle
+that maximises forward drag is found:
 
-    thrust = max_{|v_joints|=1}  F_thrust_x(v_joints)    [N]
-    u_opt  = foot-velocity direction induced by that v_joints (du_x, du_z)
+    thrust = max_{|v_joints|=1} F_drag_x    [N at unit joint speed]
+    arrow  = foot-velocity direction of that optimum
 
-The constraint |v_joints|=1 makes the metric pose-only and bounded everywhere
-(unlike |v_foot|=1, which blows up at foot-singularities).  Heatmap colour
-shows max thrust capability — always ≥ 0 because drag is direction-symmetric,
-so red/green diverging doesn't apply, we use a sequential colormap.
-
-Reading the map:
-
-    power stroke aligned WITH arrows     → max forward thrust  (good)
-    recovery stroke aligned WITH arrows  → max anti-thrust     (bad)
-    stroke perpendicular to arrows       → neutral             (no drag impact)
-
-Outputs:
-  Top-left  — 2D contour map in foot (x, z) space, coloured by efficiency
-  Top-right — 3D topographic surface (valley = low thrust, peak = high thrust)
-  Bottom    — Leg stick figure (sagittal plane) with slider to scrub through the
-               OCP solution; red dot tracks current foot position on both top panels.
-
-``--save-map`` writes the top-left panel on its own instead, as a thesis
-figure: thesis style, no title, no timestep cursor.
+A power stroke along the arrows gives maximum thrust, a recovery stroke along
+them maximum anti-thrust. The interactive figure shows the 2D map, a 3D surface
+and, with --solution, the leg with a time slider. --save-map writes only the
+2D map as a thesis figure.
 
 Usage:
-  python thrust_heatmap.py
-  python thrust_heatmap.py --solution ../task3_solution.npz
-  python thrust_heatmap.py --leg Hind_Left --grid 80 --save heatmap.png
-  python thrust_heatmap.py --solution ../task3_solution.npz --save-map map.pdf
+  python stage3_visualization/thrust/thrust_heatmap.py
+  python stage3_visualization/thrust/thrust_heatmap.py --solution task3_solution.npz
+  python stage3_visualization/thrust/thrust_heatmap.py --leg Hind_Left --grid 80 --save heatmap.png
+  python stage3_visualization/thrust/thrust_heatmap.py --solution task3_solution.npz --save-map map.pdf --half
 """
 from __future__ import annotations
 
@@ -52,9 +35,6 @@ from matplotlib.widgets import Slider
 from scipy.interpolate import LinearNDInterpolator, griddata
 from scipy.spatial import cKDTree
 
-# resolve() first: run as "python thrust_heatmap.py" from this directory,
-# __file__ is relative and parents[1] does not exist — which is what the usage
-# line above asks for.
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "stage1_gait_optimization"))
@@ -64,23 +44,19 @@ from stage3_visualization.common.thesis_style import HALF, half_width  # noqa: E
 from stage1_gait_optimization.hydro_model import load_robot  # noqa: E402
 from stage1_gait_optimization.hydro_model.robot import QuadrupedRobot  # noqa: E402
 
-# Half-width canvas for --save-map: thesis_style.HALF's width, which is what has
-# to match the LaTeX slot, but taller.  With the colourbar under the map the
-# equal-aspect region is height-limited, so height is what sizes it — at HALF's
-# own 2.2 in the map measures 1.40 in^2 against 1.84 for a colourbar on the
-# right, and it only overtakes past ~2.4 in.  See plot_thrust_map.
+# Half-width but taller canvas for --save-map; the bottom colourbar makes the
+# map height-limited (see plot_thrust_map).
 HALF_MAP = (HALF[0], 3.0)
 
-# Link colors matching visualization.py
+# Same link colours as hydro_model/visualization.py
 _LEG_COLORS = {"side": "#E8A838", "thigh": "#5CB85C", "calf": "#D9534F"}
 
 
-# ---------------------------------------------------------------------------
-# Thrust heatmap computation
-# ---------------------------------------------------------------------------
+# --- Heatmap computation ---
 
 
 def _leg_nv_indices(robot: QuadrupedRobot, leg: str) -> tuple[int, int, int]:
+    """Velocity indices of a leg's side, thigh and calf joints."""
     base = robot.n_base_v
     names = robot.actuated_joint_names
     return (
@@ -91,6 +67,7 @@ def _leg_nv_indices(robot: QuadrupedRobot, leg: str) -> tuple[int, int, int]:
 
 
 def _leg_q_indices(robot: QuadrupedRobot, leg: str) -> tuple[int, int, int]:
+    """Configuration indices of a leg's side, thigh and calf joints."""
     base = robot.n_base_q
     names = robot.actuated_joint_names
     return (
@@ -103,13 +80,10 @@ def _leg_q_indices(robot: QuadrupedRobot, leg: str) -> tuple[int, int, int]:
 def compute_max_thrust(
     robot: QuadrupedRobot, q: np.ndarray, leg: str, n_angles: int = 72,
 ) -> tuple[float, np.ndarray]:
-    """Best F_drag_x at this pose, over unit-norm (v_thigh, v_calf) directions.
+    """Max forward drag over unit (v_thigh, v_calf) and the corresponding foot direction.
 
-    Sweeps the joint-velocity direction on the unit circle and returns:
-      thrust:  max F_drag_x [N at unit joint speed], pose-only and bounded
-      u_foot:  foot-velocity direction (du_x, du_z) induced by the optimal
-               joint velocity — the direction the foot must sweep through to
-               extract that max thrust.
+    Returns ``(thrust, u_foot)`` with ``u_foot`` the unit sagittal foot-velocity
+    direction. Call FK at ``q`` first.
     """
     _, thigh_nv, calf_nv = _leg_nv_indices(robot, leg)
     foot_fid = robot.foot_frame_ids[leg]
@@ -120,21 +94,19 @@ def compute_max_thrust(
     )
     J_tc = J_foot[np.ix_([0, 2], [thigh_nv, calf_nv])]  # 2×2 sagittal
 
-    # Per-link drag terms are pose-only, so they are resolved once and the whole
-    # velocity sweep is then one vectorised call per link.
+    # Pose-dependent terms once per link; the velocity sweep is vectorised.
     link_cache = []
     for tname in LEG_SEGMENTS:
         terms = link_drag_terms(robot, f"{leg}_{tname}_link", q)
         if terms is not None:
             link_cache.append(terms)
 
-    # Vectorised angle sweep
     angles = np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False)
     v_tc_all = np.stack([np.cos(angles), np.sin(angles)], axis=1)  # (n_angles, 2)
 
     thrust = np.zeros(n_angles)
     for cyl, R, alpha, axis, J in link_cache:
-        # Only the two columns the sweep actually drives.
+        # Thigh and calf columns only
         v_origin = v_tc_all @ J[:3, [thigh_nv, calf_nv]].T   # (n_angles, 3)
         omega = v_tc_all @ J[3:, [thigh_nv, calf_nv]].T      # (n_angles, 3)
         thrust += drag_force(cyl, R, alpha, axis, v_origin, omega)[:, 0]
@@ -148,15 +120,14 @@ def compute_max_thrust(
 
 
 def build_heatmap(robot: QuadrupedRobot, leg: str, n_grid: int = 60):
-    """Sweep (q_thigh, q_calf) with side=0 and return foot positions, max
-    thrust capability, and the optimal sweep direction at each pose."""
+    """Sweep (thigh, calf) over the URDF limits (side = 0).
+
+    Returns foot x, foot z, max thrust and optimal direction per sample.
+    """
     q_base = robot.neutral_config()
     _, thigh_q, calf_q = _leg_q_indices(robot, leg)
     foot_fid = robot.foot_frame_ids[leg]
 
-    # Sweep each joint over its actual URDF travel.  The fixed box this
-    # replaced (thigh +/-90 deg, calf -60..120 deg) put 55% of the samples
-    # outside the joint limits and still clipped 15 deg off the calf's top end.
     lo, hi = robot.model.lowerPositionLimit, robot.model.upperPositionLimit
     thigh_vals = np.linspace(lo[thigh_q], hi[thigh_q], n_grid)
     calf_vals = np.linspace(lo[calf_q], hi[calf_q], n_grid)
@@ -178,13 +149,8 @@ def build_heatmap(robot: QuadrupedRobot, leg: str, n_grid: int = 60):
     xs, zs = np.array(xs), np.array(zs)
     eff, dirs = np.array(eff), np.array(dirs)
 
-    # Past ~90 deg of calf the joint rectangle folds onto itself, so two
-    # postures can put the foot in the same place with different link
-    # orientations — and different drag.  Thrust is then multivalued in (x, z),
-    # and the interpolation triangulates across both sheets, which shows up as
-    # spikes near the fold.  Keep the best posture per 1 mm cell (the display
-    # resolution): the map already reports a best case over sweep directions,
-    # so a max over postures is the same kind of envelope.
+    # Different postures can reach the same foot position (the workspace folds),
+    # which makes the interpolation spiky. Keep the best posture per 1 mm cell.
     key = np.round(np.column_stack((xs, zs)) / 1e-3).astype(np.int64)
     order = np.lexsort((-eff, key[:, 1], key[:, 0]))
     first = np.ones(len(order), dtype=bool)
@@ -193,18 +159,13 @@ def build_heatmap(robot: QuadrupedRobot, leg: str, n_grid: int = 60):
     return xs[keep], zs[keep], eff[keep], dirs[keep]
 
 
-# ---------------------------------------------------------------------------
-# OCP animation data
-# ---------------------------------------------------------------------------
+# --- Solution animation data ---
 
 
 def _build_anim_data(robot: QuadrupedRobot, sol_path: Path, leg: str) -> dict:
-    """Pre-compute body-frame sagittal (x, z) positions for all joints at all timesteps.
+    """Base-frame sagittal (x, z) of the leg joints and foot at every node.
 
-    Uses leg_centerline_positions (sagittal projection) so the chain appears planar,
-    exactly matching the foot positions shown on the heatmap.  Those are swept with
-    the base at neutral_config, so the frames only agree once the base rotation is
-    undone too — subtracting the base position alone leaves the pitch in.
+    Base-frame (not world) positions, to match the heatmap computed at the neutral base.
     """
     d = np.load(sol_path)
     X, nq, N = d["X"], int(d["nq"]), int(d["N"])
@@ -217,8 +178,7 @@ def _build_anim_data(robot: QuadrupedRobot, sol_path: Path, leg: str) -> dict:
         q = X[:nq, t]
         robot.forward_kinematics(q)
         proj = robot.leg_centerline_positions(leg)
-        # oMi[1] is the free-flyer placement, and a view into robot.data, so it
-        # has to be read here rather than hoisted out of the loop.
+        # Base placement (a view into robot.data, so read it per step)
         oMb = robot.data.oMi[1]
         for k in joint_keys:
             v = oMb.actInv(proj[k])
@@ -229,16 +189,14 @@ def _build_anim_data(robot: QuadrupedRobot, sol_path: Path, leg: str) -> dict:
     return data
 
 
-# ---------------------------------------------------------------------------
-# Leg stick figure helpers
-# ---------------------------------------------------------------------------
+# --- Leg stick figure ---
 
 
 def _init_leg_ax(ax: plt.Axes, anim_data: dict, leg: str, xs: np.ndarray, zs: np.ndarray):
-    """Draw the initial leg stick figure and return a dict of artist handles."""
+    """Draw the leg at node 0 and return the artist handles."""
     t0_pts = {k: anim_data[k][0] for k in ("side", "thigh", "calf", "foot")}
 
-    # Body reference: a rounded box centred on the mean side-joint x position
+    # Body box centred on the mean hip position
     side_x = float(np.mean(anim_data["side"][:, 0]))
     side_z = float(t0_pts["side"][1])
     box_w, box_h = 0.20, 0.036
@@ -255,21 +213,17 @@ def _init_leg_ax(ax: plt.Axes, anim_data: dict, leg: str, xs: np.ndarray, zs: np
                        solid_capstyle="round", zorder=4)
         return h
 
-    # Three link segments with matching colors
     h_side = _seg(t0_pts["side"], t0_pts["thigh"], _LEG_COLORS["side"])
     h_thigh = _seg(t0_pts["thigh"], t0_pts["calf"], _LEG_COLORS["thigh"])
     h_calf = _seg(t0_pts["calf"], t0_pts["foot"], _LEG_COLORS["calf"], ls="--")
 
-    # Joint markers
     jx = [t0_pts[k][0] for k in ("side", "thigh", "calf")]
     jz = [t0_pts[k][1] for k in ("side", "thigh", "calf")]
     (h_joints,) = ax.plot(jx, jz, "ko", ms=9, zorder=5)
 
-    # Foot
     (h_foot,) = ax.plot([t0_pts["foot"][0]], [t0_pts["foot"][1]],
                          "v", color="#9B59B6", ms=14, markeredgecolor="k", zorder=6)
 
-    # Axes formatting
     all_x = np.concatenate([anim_data[k][:, 0] for k in ("side", "thigh", "calf", "foot")])
     all_z = np.concatenate([anim_data[k][:, 1] for k in ("side", "thigh", "calf", "foot")])
     margin = 0.04
@@ -281,7 +235,7 @@ def _init_leg_ax(ax: plt.Axes, anim_data: dict, leg: str, xs: np.ndarray, zs: np
     ax.set_title(f"{leg.replace('_', ' ')} — sagittal plane view")
     ax.grid(True, alpha=0.25)
 
-    # Trajectory ghost
+    # Full foot path
     ft = anim_data["foot"]
     ax.plot(ft[:, 0], ft[:, 1], color="gray", lw=1, alpha=0.4, zorder=3, label="full trajectory")
     ax.legend(fontsize=7, loc="upper right")
@@ -296,6 +250,7 @@ def _init_leg_ax(ax: plt.Axes, anim_data: dict, leg: str, xs: np.ndarray, zs: np
 
 
 def _update_leg(handles: dict, anim_data: dict, t: int):
+    """Move the leg artists to node ``t``."""
     pts = {k: anim_data[k][t] for k in ("side", "thigh", "calf", "foot")}
     handles["side"].set_data([pts["side"][0], pts["thigh"][0]],
                               [pts["side"][1], pts["thigh"][1]])
@@ -309,20 +264,14 @@ def _update_leg(handles: dict, anim_data: dict, t: int):
     handles["foot"].set_data([pts["foot"][0]], [pts["foot"][1]])
 
 
-# ---------------------------------------------------------------------------
-# Main plot
-# ---------------------------------------------------------------------------
+# --- Plotting ---
 
 
 def _interp_grid(xs: np.ndarray, zs: np.ndarray, eff: np.ndarray):
-    """Max thrust on a regular grid, blanked where the leg cannot reach.
+    """Thrust on a regular grid, blanked away from sampled poses: ``(Xg, Zg, Eg, tree)``.
 
-    griddata fills the convex hull of the samples, but a two-link leg sweeps a
-    crescent: the hull bridges concavities the foot cannot reach.  Every cell
-    far from an actual sampled pose is blanked, with "far" scaled by the local
-    sample spacing, which varies across the map with the leg Jacobian.
-
-    Returns ``(Xg, Zg, Eg, tree)`` — the tree is reused to place the quiver.
+    Needed because griddata fills the convex hull, while the workspace is
+    concave. "Far" scales with the local sample spacing.
     """
     x_lin = np.linspace(xs.min(), xs.max(), 300)
     z_lin = np.linspace(zs.min(), zs.max(), 300)
@@ -338,17 +287,12 @@ def _interp_grid(xs: np.ndarray, zs: np.ndarray, eff: np.ndarray):
 
 def _draw_quiver(ax, xs, zs, dirs, tree, n_arrows: int = 14, scale: float = 22,
                  width: float = 0.005, keep_frac: float = 0.6, **kw):
-    """Optimal sweep direction at each pose, subsampled for clarity.
-
-    One sample nearest each node of a coarse lattice, so the arrows stay evenly
-    spaced in foot space.  Index striding would not: the fold reduction leaves
-    the samples no longer a full square grid.
-    """
+    """Optimal sweep arrows at the samples nearest a coarse lattice (even spacing)."""
     gx = np.linspace(xs.min(), xs.max(), n_arrows)
     gz = np.linspace(zs.min(), zs.max(), n_arrows)
     Gx, Gz = np.meshgrid(gx, gz)
     d_q, i_q = tree.query(np.column_stack((Gx.ravel(), Gz.ravel())))
-    # Drop lattice nodes with no sample nearby, so no arrows in blank areas.
+    # No arrows in unreachable areas
     step = max(gx[1] - gx[0], gz[1] - gz[0])
     keep = np.unique(i_q[d_q < keep_frac * step])
     return ax.quiver(
@@ -368,67 +312,41 @@ def plot_thrust_map(
     save_path: Path | None = None,
     figsize: tuple[float, float] = (5.6, 4.0),
 ):
-    """The thrust map alone, as a figure for the thesis.
+    """The 2D thrust map alone as a thesis figure (no title, no cursor).
 
-    The panel ``plot`` puts top left, without what only makes sense on screen:
-    no title (the LaTeX caption carries it) and no timestep cursor.
-
-    On a narrow canvas the colourbar goes under the map rather than beside it,
-    and that is a trade rather than a free win: the map is ``aspect="equal"``,
-    so whichever dimension runs out first sizes it in *both*.  Beside the map it
-    is width-limited and extra canvas height buys nothing (1.84 in^2 at every
-    height tried); under it, it is height-limited and grows with the canvas —
-    1.40 in^2 at 2.2 in, 2.34 at 2.6, 3.06 at 3.0.  So the bottom colourbar pays
-    only together with ``HALF_MAP``'s taller canvas, and ``--figsize 2.94 2.2``
-    would be the worst of both.
-
-    Drawn under ``thesis_style`` rather than this module's plain-matplotlib
-    default, so it sets in the same face and at the same sizes as the rest of
-    the chapter — a raw ``science`` context matched the face but not the type
-    scale.  Both stay scoped to this function: the interactive figure's labels
-    carry unicode arrows that usetex would choke on.
+    On narrow canvases (< 4 in) the colourbar goes below the map, which only
+    pays off with a taller canvas such as ``HALF_MAP``. The thesis style is
+    scoped to this function since the interactive labels use unicode arrows
+    that usetex cannot render.
     """
     Xg, Zg, Eg, tree = _interp_grid(xs, zs, eff)
     with plt.style.context(["science"]), plt.rc_context({"text.usetex": True}):
-        # A half-width canvas needs the smaller type *and* a stacked legend:
-        # the two entries side by side are wider than 2.94 in and run into the
-        # colourbar label.
+        # Narrow: smaller fonts and a single-column legend
         narrow = figsize[0] < 4.0
         if narrow:
             half_width()
         fig, ax = plt.subplots(figsize=figsize)
         cf = ax.contourf(Xg, Zg, Eg, levels=40, cmap="viridis")
         ax.contour(Xg, Zg, Eg, levels=12, colors="k", linewidths=0.4, alpha=0.4)
-        # Under the map on the narrow canvas, not beside it.  Width is the
-        # scarce dimension at 2.94 in and an equal-aspect map is sized by
-        # whichever of the two runs out first, so a bar on the right shrinks the
-        # map itself; below, it costs height the map was not using.  It also
-        # gets the label back onto one line.
         cb = fig.colorbar(cf, ax=ax, **(dict(location="bottom", pad=0.15,
                                              fraction=0.075, aspect=30)
                                         if narrow else {}))
         cb.set_label("max thrust [N at unit joint speed]")
         if narrow:
-            # pad is a fraction of the parent axes, and has to clear the
-            # x-label a bottom colourbar is otherwise drawn straight over.  The
-            # 40 contour levels also put a tick on every other one, which at
-            # this width is a grey smear.
+            # Fewer ticks than the 40 contour levels would give
             cb.locator = MaxNLocator(5)
             cb.update_ticks()
 
         handles = []
         if dirs is not None:
-            # Fewer, shorter arrows than the on-screen panel: this canvas is
-            # half its width, and at the original density they close over the
-            # trajectory instead of framing it.
+            # Sparser arrows than on screen
             _draw_quiver(ax, xs, zs, dirs, tree, n_arrows=10, scale=20,
                          width=0.005, keep_frac=0.45)
             handles.append(Line2D([], [], ls="none", marker=r"$\rightarrow$",
                                   color="0.35", ms=9,
                                   label="optimal sweep direction"))
         if foot_traj is not None:
-            # Above the quiver (zorder 6): at the default zorder the arrows drew
-            # over the trajectory, which is the thing you actually want to read.
+            # Trajectory above the arrows (zorder 6)
             ax.plot(foot_traj[:, 0], foot_traj[:, 1], "k-", lw=2.0, zorder=7)
             handles.append(Line2D([], [], color="k", lw=2.0,
                                   label="OCP trajectory"))
@@ -436,16 +354,9 @@ def plot_thrust_map(
         ax.set_xlabel(r"foot $x$ [m]")
         ax.set_ylabel(r"foot $z$ [m]")
         ax.set_aspect("equal")
-        # 'science' sets axisbelow="line", so the grid lands above the fill
-        # (a patch) and below the contour lines, quiver and trajectory.
         ax.grid(alpha=0.3)
         if handles:
-            # Above the axes, not in a corner of them.  The reachable region is
-            # a crescent that fills one upper corner and leaves the other empty,
-            # and which corner that is flips with the leg — a front leg reaches
-            # forward, a hind leg's workspace is its fore-aft mirror — so any
-            # in-axes placement covers the map for half the legs.  ``savefig``
-            # crops to ``bbox_inches="tight"``, so the row costs no canvas.
+            # Legend above the axes; any corner covers the map for some leg.
             ax.legend(handles=handles, loc="lower center",
                       bbox_to_anchor=(0.5, 1.0),
                       ncol=1 if narrow else len(handles), fontsize=7,
@@ -471,8 +382,9 @@ def plot(
     anim_data: dict | None = None,
     save_path: Path | None = None,
 ):
+    """Interactive figure: 2D map, 3D surface and (with ``anim_data``) the leg with a slider."""
     Xg, Zg, Eg, _tree = _interp_grid(xs, zs, eff)
-    # Fast interpolator for slider updates
+    # Interpolator for slider updates
     _interp = LinearNDInterpolator(list(zip(xs, zs)), eff)
 
     has_anim = anim_data is not None
@@ -497,7 +409,7 @@ def plot(
         ax2 = fig.add_subplot(1, 2, 2, projection="3d")
         ax3 = None
 
-    # ── Top-left: 2D contour map ──────────────────────────────────────────
+    # --- 2D map (top left) ---
     cf = ax1.contourf(Xg, Zg, Eg, levels=40, cmap="viridis")
     ax1.contour(Xg, Zg, Eg, levels=12, colors="k", linewidths=0.4, alpha=0.4)
     plt.colorbar(cf, ax=ax1, label="Max thrust  [N at unit joint speed]")
@@ -506,14 +418,13 @@ def plot(
         _draw_quiver(ax1, xs, zs, dirs, _tree, label="optimal sweep direction")
 
     if foot_traj is not None:
-        # Above the quiver (zorder 6): at the default zorder the arrows drew
-        # over the trajectory, which is the thing you actually want to read.
+        # Trajectory above the arrows (zorder 6)
         ax1.plot(foot_traj[:, 0], foot_traj[:, 1], "k-", lw=2.5, alpha=0.9,
                  zorder=7, label="OCP trajectory")
         ax1.plot(foot_traj[0, 0], foot_traj[0, 1], "ko", ms=8, zorder=7)
         ax1.plot(foot_traj[-1, 0], foot_traj[-1, 1], "k^", ms=8, zorder=7)
 
-    # Red dot (current timestep) — starts hidden
+    # Current-node marker (empty until the slider is set up)
     (dot_heat,) = ax1.plot([], [], "ro", ms=11, zorder=10,
                             markeredgecolor="darkred", markeredgewidth=1.5)
 
@@ -525,17 +436,11 @@ def plot(
     )
     ax1.set_aspect("equal")
     if foot_traj is not None or dirs is not None:
-        # Below the axes, for the reason plot_thrust_map gives: the crescent
-        # fills one upper corner and which one flips with the leg.  Below rather
-        # than above, because this panel carries a two-line title and the row
-        # under it is empty in this layout.
+        # Legend below the axes (see plot_thrust_map; the title occupies the top)
         ax1.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.14),
                    ncol=2, frameon=False)
 
-    # ── Top-right: 3D topographic surface ────────────────────────────────
-    # NaN straight through: masked cells become holes in the surface.  Filling
-    # them with the minimum (as this did) draws a flat floor that reads as a
-    # genuine low-thrust basin rather than as absent data.
+    # --- 3D surface (top right); NaN cells stay holes ---
     ax2.plot_surface(Xg, Zg, Eg, cmap="viridis", edgecolor="none", alpha=0.88)
 
     if foot_traj is not None:
@@ -554,14 +459,13 @@ def plot(
     if foot_traj is not None:
         ax2.legend(fontsize=8)
 
-    # ── Bottom: Leg stick figure + slider ────────────────────────────────
+    # --- Leg stick figure and slider (bottom) ---
     if has_anim:
         N = int(anim_data["N"])
         T = float(anim_data.get("T", 1.0))
 
         leg_handles = _init_leg_ax(ax3, anim_data, leg, xs, zs)
 
-        # Initialise red dot at t=0
         fx0, fz0 = anim_data["foot"][0]
         e0 = float(_interp([[fx0, fz0]])[0])
         if np.isnan(e0):
@@ -570,11 +474,9 @@ def plot(
         dot_3d.set_data([fx0], [fz0])
         dot_3d.set_3d_properties([e0])
 
-        # Red dot also on leg axes (for fun, same point)
         (dot_leg,) = ax3.plot([fx0], [fz0], "ro", ms=11, zorder=10,
                                markeredgecolor="darkred", markeredgewidth=1.5)
 
-        # Time-step label
         dt = T / N
         time_text = ax3.text(
             0.02, 0.96, f"t = 0 / {N}  ({0*dt:.2f} s)",
@@ -582,7 +484,6 @@ def plot(
             bbox=dict(facecolor="white", edgecolor="none", alpha=0.7),
         )
 
-        # Slider
         ax_sl = fig.add_axes([0.15, 0.03, 0.70, 0.025])
         slider = Slider(ax_sl, "Time step", 0, N, valinit=0, valstep=1, color="#5CB85C")
 
@@ -610,11 +511,6 @@ def plot(
         print(f"Saved → {save_path}")
     else:
         plt.show()
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 
 def main():

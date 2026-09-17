@@ -1,15 +1,11 @@
-"""Freeze BODY2's linkage geometry into the JSON the OCP pipeline reads.
+"""Write BODY2's linkage geometry to body2_linkage.json for the OCP pipeline.
 
-``leg_linkage_sim`` derives the pin positions by fitting cylinders to the STL
-hole walls.  That is the right way to *establish* the geometry but the wrong
-thing to depend on at import time: it carries half a dozen tuned tolerances and
-raises on any mismatch, so re-exporting a mesh would silently take the whole
-optimisation pipeline down.  This script runs the derivation once and writes the
-~70 numbers out; ``tests/test_body2_linkage.py`` re-derives and checks them.
+Runs the mesh-based pin fit of leg_linkage_sim once, so the pipeline does not
+depend on it at import time. Re-run after CAD changes (prepare_urdf.py does
+this automatically).
 
-    python src/BODY2/scripts/dump_linkage.py
-
-Re-run after changing the CAD or re-running ``rehome_urdf.py``.
+Usage:
+  python src/BODY2/scripts/dump_linkage.py
 """
 
 from __future__ import annotations
@@ -23,17 +19,12 @@ from leg_linkage_sim import LEGS, PLANE, Leg
 OUT = (Path(__file__).resolve().parents[3]
        / "stage1_gait_optimization" / "hydro_model" / "robots" / "body2_linkage.json")
 
-# Which link frame carries each pin that no joint origin sits on.  The cylinder
-# specs need these as offsets in the owning link's local frame.
+# Pins without a joint origin, and the link whose frame they are expressed in
 LOCAL_POINTS = {"P6": "2.1", "P8": "1.3", "tip": "2.3"}
 
 
 def _to_local(leg: Leg, link_key: str, p_xz) -> list:
-    """A pin, expressed in the local frame of one of the links it belongs to.
-
-    The pin is a line parallel to world Y; we take the point on it level with
-    the link frame origin, so the offset has no spurious out-of-plane component.
-    """
+    """Pin position in a link's local frame, taken at the link origin's y."""
     R, o = leg.frames[f"Link_{leg.name}{link_key}"]
     p_world = np.array([p_xz[0], o[1], p_xz[1]])
     return (R.T @ (p_world - o)).tolist()
@@ -44,9 +35,8 @@ def main() -> None:
     ref_len = ref_branch = None
     for name in LEGS:
         leg = Leg(name)
-        # Lengths are kept per leg rather than shared: each leg's values are
-        # derived from that same leg's pins, so the loops close exactly at the
-        # zero pose.  They agree across legs to ~1 nm (mesh-fitting noise).
+        # Per-leg lengths so each leg's loops close exactly at zero pose
+        # (legs agree to ~1 nm).
         this_len = {k: float(v) for k, v in leg.L.items()}
         this_branch = [float(b) for b in leg.branch]
         legs[name] = {

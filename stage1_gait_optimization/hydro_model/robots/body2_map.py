@@ -7,22 +7,14 @@ Each leg is driven by two hip angles and closes two loops:
     P8          rigid on link 1.3
     P7          = circle(P5, |P5P7|)  x  circle(P8, |P8P7|)     -> links 2.2, 2.3
 
-The one subtlety is how a link's rotation is turned into a joint value.  The
-obvious ``atan2`` is unusable: BODY2's reachable set wraps past +-180 deg, so a
-branch cut would sit *inside* the workspace and break collocation.  Instead the
-rotation is read out directly as a ``(cos, sin)`` pair.  Because each circle
-intersection puts its point at a known exact radius, e.g. ``|P3 - P2| = |P2P3|``
-by construction, the pair is a ratio of dot and cross products:
+Joint rotations are returned as ``(cos, sin)`` pairs rather than angles, since
+the workspace wraps past +-180 deg and ``atan2`` would put a branch cut inside
+it. Both vectors have a known length r, so
 
     cos = (w0 . w) / r^2        sin = (w0 x w) / r^2
 
-which is rational, globally smooth, and satisfies cos^2 + sin^2 = 1 to machine
-precision.  Pinocchio wants exactly this representation anyway, since every
-BODY2 joint is ``continuous`` and therefore unbounded.
-
-The velocity map follows from the same pairs: for a unit pair,
-``thetadot = c * sdot - s * cdot``, which stays well defined where the angle
-itself is not.
+which is smooth and matches Pinocchio's representation of continuous joints.
+Velocities follow from ``thetadot = c * sdot - s * cdot``.
 """
 
 from __future__ import annotations
@@ -32,22 +24,12 @@ import numpy as np
 
 from ..coordinate_map import CoordinateMap
 
-# The six tree joints of a leg, in the order their rotations are computed.
+# The six tree joints of a leg
 JOINT_KEYS = ("1.1", "1.2", "1.3", "2.1", "2.2", "2.3")
 
-# Floor under the circle-circle half-chord, as h^2.  Sits at (H_MIN/2)^2 for
-# body2's H_MIN = 2 mm: strictly inside the region the feasibility constraint
-# already excludes, so the feasible set is unchanged, while keeping d/dh_sq of
-# the sqrt bounded (500 here) instead of letting it blow up at h_sq = 0.
-#
-# Raising it to H_MIN^2 does not make the dynamics outside the band harmless,
-# so it is not worth the kink that would then land exactly on the constraint
-# boundary where the optimiser converges.  Only the perpendicular half-chord is
-# clamped here; ``c1 + a*u`` below tracks the crank pins and goes on moving P3
-# along the centre line however far outside the band the iterate strays, and
-# the reduced-dynamics bias was measured to vary out there with gradients of
-# the same order (~0.5) either way.  Freezing the pose would mean clamping that
-# term too.
+# Floor on h^2 = (H_MIN/2)^2. Lies inside the infeasible region, so the feasible
+# set is unchanged, but keeps the sqrt derivative bounded. Keep it below H_MIN^2
+# so the kink does not land on the constraint boundary.
 _H_FLOOR = 1e-6
 
 
@@ -57,29 +39,17 @@ def _rot(c, s, p):
 
 
 def _pair(v0, v, r_sq):
-    """``(cos, sin)`` of the rotation carrying ``v0`` onto ``v``.
-
-    Both vectors have length ``sqrt(r_sq)`` by construction, so this needs no
-    normalisation and no ``atan2``.
-    """
+    """``(cos, sin)`` of the rotation from ``v0`` to ``v``; both have length ``sqrt(r_sq)``."""
     c = (v0[0] * v[0] + v0[1] * v[1]) / r_sq
     s = (v0[0] * v[1] - v0[1] * v[0]) / r_sq
     return c, s
 
 
 def _circle_circle(c1, r1, c2, r2, branch, h_floor=_H_FLOOR):
-    """Intersection of two circles; returns the point and the squared half-chord.
+    """Circle-circle intersection point and squared half-chord ``h_sq``.
 
-    ``h_sq`` is exported because it is both the assemblability margin and the
-    quantity that must stay positive for the branch to be well defined.
-
-    The ``sqrt`` is floored so the point stays finite even where the loop does
-    not close.  IPOPT keeps only simple variable bounds strictly feasible, so
-    its line search does evaluate configurations outside the assemblable band;
-    an unguarded ``sqrt`` returns NaN there, and a NaN constraint leaves the
-    solver nothing to do but cut back the step.  The returned ``h_sq`` is the
-    true, unclamped value, so the feasibility constraint built on it keeps its
-    correct gradient and is what drives the iterate back into the band.
+    ``h_sq`` is the assemblability margin and is returned unclamped. The sqrt
+    is floored so IPOPT iterates outside the feasible band do not produce NaNs.
     """
     d = c2 - c1
     L_sq = d[0] ** 2 + d[1] ** 2
@@ -92,17 +62,16 @@ def _circle_circle(c1, r1, c2, r2, branch, h_floor=_H_FLOOR):
 
 
 def _solve_leg(q1, q2, leg_data, branch):
-    """Rotation pairs of a leg's six tree joints, plus both loop margins.
+    """Rotation pairs of a leg's six tree joints and both loop margins.
 
-    Mirrors ``leg_linkage_sim.Leg.solve``; see that module for the geometry.
+    Same geometry as ``leg_linkage_sim.Leg.solve``.
     """
     P = {k: ca.DM(v) for k, v in leg_data["pins"].items()}
     sgn, Ls = leg_data["sgn"], leg_data["lengths"]
     r1, r2 = Ls["P2P3"], Ls["P6P3"]
     r3, r4 = Ls["P5P7"], Ls["P8P7"]
 
-    # Body rotations of the two cranks.  The joint value is q; the body turns
-    # by sgn*q, and cos is even so only sin picks up the sign.
+    # Crank body rotations are sgn*q; only sin picks up the sign.
     t1c, t1s = ca.cos(q1), sgn["1.1"] * ca.sin(q1)
     t2c, t2s = ca.cos(q2), sgn["2.1"] * ca.sin(q2)
 
@@ -135,11 +104,7 @@ def _solve_leg(q1, q2, leg_data, branch):
 
 
 def feasibility_expr(theta, leg_names, linkage):
-    """Squared half-chords of every loop; each must stay positive.
-
-    ``theta`` is ordered ``(q1, q2)`` per leg, matching
-    ``RobotSpec.actuated_joint_names``.
-    """
+    """Squared half-chords of all loops (must stay positive); ``theta`` is (q1, q2) per leg."""
     branch = linkage["branch"]
     out = []
     for i, leg in enumerate(leg_names):
@@ -166,8 +131,7 @@ class Body2CoordinateMap(CoordinateMap):
         cos_of = [None] * self.nv_j
         sin_of = [None] * self.nv_j
 
-        # Pinocchio orders joints alphabetically, which is not the spec's leg
-        # order, so every entry is placed by the model's own index.
+        # Pinocchio's joint order differs from the spec's; index via the model.
         for i, leg in enumerate(LEG_NAMES):
             pairs, _ = _solve_leg(th[2 * i], th[2 * i + 1],
                                   LINKAGE["legs"][leg], LINKAGE["branch"])
@@ -184,8 +148,7 @@ class Body2CoordinateMap(CoordinateMap):
                 q[iq], q[iq + 1] = c, s
                 cos_of[iv], sin_of[iv] = c, s
 
-        # For a unit pair, thetadot_i = c_i * sdot_i - s_i * cdot_i.  Smooth
-        # even where the angle itself has a branch cut.
+        # thetadot_i = c_i * sdot_i - s_i * cdot_i
         S = ca.vertcat(*[
             cos_of[i] * ca.jacobian(sin_of[i], th) - sin_of[i] * ca.jacobian(cos_of[i], th)
             for i in range(self.nv_j)
@@ -199,7 +162,7 @@ class Body2CoordinateMap(CoordinateMap):
         self._f_q = ca.Function("body2_q", [th], [q])
         self._f_S = ca.Function("body2_S", [th], [S])
         self._f_v = ca.Function("body2_v", [th, thd], [S @ thd])
-        # jtimes gives (dS/dtheta : thd) @ thd without forming the full tensor
+        # jtimes gives Sdot @ thd without forming dS/dtheta
         self._f_a = ca.Function("body2_a", [th, thd, thdd],
                                 [S @ thdd + ca.jtimes(S @ thd, th, thd)])
         self._f_tau = ca.Function("body2_tau", [th, tau], [S.T @ tau])

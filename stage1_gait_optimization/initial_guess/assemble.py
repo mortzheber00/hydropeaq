@@ -1,19 +1,8 @@
-"""Shared tail of every initial-guess builder.
+"""Turn a prescribed joint stroke into a full initial guess.
 
-A builder's job is to invent a stroke in the actuated coordinates.  What
-happens afterwards is the same whatever invented it: expand the stroke onto the
-Pinocchio tree, simulate the floating base under that prescribed motion, and
-read off the torques that produce it.
-
-Keeping that here is what lets one builder serve both kinds of robot.  Every
-expansion below goes through the robot's ``CoordinateMap``, so for a serial
-robot -- whose map is the identity and returns its arguments unchanged -- the
-arithmetic is exactly what the builders did inline before, while a closed-chain
-robot gets its tree configuration and its ``S^T`` torque projection for free.
-
-The state written out is in the *reduced* coordinates the OCP works in, so it
-is ``nq_reduced + nv_reduced`` tall rather than ``nq + nv``: for BODY2 that is
-29 rows against the tree's 85.
+Expands the stroke onto the tree via the robot's ``CoordinateMap``, simulates
+the floating base and computes the joint torques. Works for serial and
+closed-chain robots; the output is in reduced coordinates.
 """
 
 from __future__ import annotations
@@ -42,8 +31,7 @@ def assemble_guess(
     theta, thd, thdd : (n_theta, N+1)
         Actuated coordinates and their first two time derivatives.
     n_cycles : int
-        Gait periods the base simulation is run for before its forward speed is
-        taken as settled -- *not* the number of gait cycles inside ``T``.
+        Gait periods simulated to let the base speed settle.
 
     Returns
     -------
@@ -82,10 +70,7 @@ def assemble_guess(
     X_guess[nq_r:nq_r + 6] = v_base
     X_guess[nq_r + 6:] = thd[:, : N + 1]
 
-    # The base acceleration comes from the simulated twist rather than being
-    # zeroed: it enters the joint torques through the M[6:, :6] coupling block,
-    # which is not a small term for a robot whose links weigh a fraction of a
-    # gram against a 116 g chassis.
+    # Include the base acceleration; it couples into the joint torques via M[6:, :6].
     U_guess = np.zeros((robot.n_actuated, N))
     for k in range(N):
         a_full = np.concatenate([(v_base[:, k + 1] - v_base[:, k]) / dt, a_tree[:, k]])

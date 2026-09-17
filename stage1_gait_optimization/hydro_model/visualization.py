@@ -1,9 +1,4 @@
-"""
-3D visualization of the cylinder-approximated quadruped robot.
-
-Uses matplotlib for a static 3D view showing each link as a cylinder
-at the pose computed by Pinocchio forward kinematics.
-"""
+"""Matplotlib 3D views of the robot skeleton and its cylinder approximation."""
 
 from __future__ import annotations
 
@@ -52,7 +47,6 @@ def _rotation_align_z_to(target: np.ndarray) -> np.ndarray:
     return np.eye(3) + vx + vx @ vx * (1 - c) / (s * s + 1e-15)
 
 
-# Color palette for different link types
 LINK_COLORS = {
     "base": "#4A90D9",
     "side": "#E8A838",
@@ -62,9 +56,7 @@ LINK_COLORS = {
 }
 
 
-# Cycled per segment of a leg's cylinder chain, so a robot with any number of
-# links per leg is drawn consistently.  Base blue is not in the cycle: a
-# six-link leg would reach it and share a colour with the hull.
+# Cycled along a leg's cylinder chain; excludes the base colour.
 _SEGMENT_COLORS = [LINK_COLORS["side"], LINK_COLORS["thigh"], LINK_COLORS["calf"],
                    LINK_COLORS["foot"], "#E17FB0", "#7FD4C1"]
 
@@ -72,13 +64,8 @@ _SEGMENT_COLORS = [LINK_COLORS["side"], LINK_COLORS["thigh"], LINK_COLORS["calf"
 def link_color_key(robot: QuadrupedRobot) -> tuple[dict[str, str], dict[str, str]]:
     """``({link name: colour}, {legend label: colour})`` for one robot.
 
-    amph's links are named for what they are — side, thigh, calf, foot — and
-    ``LINK_COLORS`` keys off those names, which is what its figures use.  A
-    robot whose links are named otherwise landed every leg link on a grey
-    fallback and was still handed amph's legend: BODY2's ``Link_FL1.2`` matches
-    none of the five.  Those legs are coloured by position in the leg's
-    cylinder chain instead, and labelled with whatever follows the leg name in
-    the link name — for BODY2 the pin numbers, 1.1 through 2.3.
+    Links named like amph's (side, thigh, ...) use ``LINK_COLORS``; others are
+    coloured by chain position and labelled by their name suffix (BODY2: 1.1 ...).
     """
     base = robot.spec.base_link
     colors = {base: LINK_COLORS["base"]}
@@ -122,22 +109,15 @@ def visualize_skeleton(
     figsize: tuple[float, float] = (12, 9),
     save_path: str | None = None,
 ) -> plt.Figure:
-    """Render the kinematic skeleton: joints as nodes, links as edges.
+    """Draw the kinematic skeleton: joints as markers, links as lines.
 
     Parameters
     ----------
-    robot : QuadrupedRobot
-        Pinocchio-backed robot model.
-    q : joint angles (defaults to the neutral configuration).
-    centerline : accepted for backwards compatibility and ignored.  Whether a
-        leg is drawn sagittally projected is now a property of the robot: the
-        skeleton follows its cylinder chain, and ``CylinderSpec.project_leg``
-        decides the projection.
-    title : plot title, or None (the default) for none — these figures go
-        into LaTeX floats, where the caption carries the description.
+    q : configuration (default: neutral).
+    centerline : unused; projection is set by ``CylinderSpec.project_leg``.
+    title : optional title (thesis figures leave it to the caption).
     elev, azim : camera angles.
-    figsize : figure size.
-    save_path : if given, save figure to this path.
+    save_path : if given, save the figure there.
     """
     LEG_NAMES = robot.spec.leg_names
     colors, legend = link_color_key(robot)
@@ -152,7 +132,7 @@ def visualize_skeleton(
 
     all_pts = []
 
-    # -- Base (universe) joint --
+    # --- Base ---
     base_pos = np.array(robot.data.oMi[0].translation)
     base_R = np.array(robot.data.oMi[0].rotation)
     all_pts.append(base_pos)
@@ -169,19 +149,15 @@ def visualize_skeleton(
         color="dimgray",
     )
 
-    # -- Draw each leg --
+    # --- Legs ---
     feet = robot.foot_positions()
     for leg in LEG_NAMES:
-        # The skeleton is the robot's cylinder chain, so a closed-chain leg
-        # draws both of its sub-chains with no extra bookkeeping here.  The
-        # segments already carry any sagittal projection the spec asks for.
         segments = robot.leg_skeleton(leg)
         foot_fid = robot.foot_frame_ids[leg]
-        # The link the foot point sits on, so the marker and the stub out to it
-        # carry that link's colour rather than amph's foot purple.
+        # Colour of the link carrying the foot point
         foot_color = colors.get(robot.spec.foot_points[leg][0], LINK_COLORS["foot"])
 
-        # Joint markers and frame axes at each segment start
+        # Joint markers at each segment start
         for p_start, _ in segments:
             all_pts.append(p_start)
             ax.scatter(*p_start, s=40, c="k", zorder=5)
@@ -201,7 +177,7 @@ def visualize_skeleton(
         )
         _draw_frame_axes(ax, foot_pos, foot_R, length=0.015)
 
-        # Connecting lines: the cylinder chain, plus base -> first segment
+        # Segments, plus base -> first joint and last joint -> foot
         for idx, (p_start, p_end) in enumerate(segments):
             ax.plot(*zip(p_start, p_end), color=_SEGMENT_COLORS[idx % len(_SEGMENT_COLORS)],
                     linewidth=2.5, alpha=0.8)
@@ -213,12 +189,7 @@ def visualize_skeleton(
 
     all_pts = np.array(all_pts)
     _set_equal_aspect(ax, all_pts)
-    # The skeleton spans only the joint positions, the geometry figures span the
-    # mesh too — 0.38 m against 0.44 m, which falls either side of the automatic
-    # locator's threshold and gives this figure alone 0.05 m ticks and twice the
-    # labels.  Capping the count puts both back on the same 0.1 m spacing.
-    # steps= as well as nbins: left to choose freely it lands on 0.08 m here,
-    # and the ticks should read 0.1, 0.2 like the other figures'.
+    # Force 0.1 m ticks to match the geometry figures.
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10]))
 
@@ -240,17 +211,14 @@ def visualize_skeleton(
     return fig
 
 
-# ---------------------------------------------------------------------------
-# Geometry-representation helpers and figures
-# ---------------------------------------------------------------------------
+# --- Geometry representation figures ---
 
 
 def _make_urdf_transform_manager(robot: QuadrupedRobot):
     """Load the robot URDF into a pytransform3d UrdfTransformManager."""
     from pytransform3d.urdf import UrdfTransformManager
 
-    # package_dir replaces 'package://' in mesh filenames, so it needs a
-    # trailing slash: 'package://amph/meshes/x.STL' -> '<pkg_root>/amph/meshes/x.STL'
+    # Replaces "package://", hence the trailing slash.
     package_dir = str(robot.urdf_path.parent.parent.parent) + "/"
     with open(robot.urdf_path) as f:
         urdf_str = f.read()
@@ -260,7 +228,7 @@ def _make_urdf_transform_manager(robot: QuadrupedRobot):
 
 
 def _draw_cylinder(ax, center, axis_world, radius, length, color, alpha=0.6, n=16, edgecolor="k"):
-    """Draw a single cylinder on ax, returning its surface points."""
+    """Draw one cylinder and return its surface points."""
     X, Y, Z = _cylinder_mesh(radius, length, n_facets=n)
     R_cyl = _rotation_align_z_to(axis_world)
     pts = []
@@ -283,12 +251,10 @@ def visualize_robot_representations(
     save_prefix: str | None = None,
     save_suffix: str = ".png",
 ) -> dict[str, plt.Figure]:
-    """The four geometry representations, each on its own figure.
+    """Mesh, drag cylinders, buoyancy cylinders and their overlay as four figures.
 
-    STL mesh, drag cylinder, buoyancy/added-mass cylinder, and all three
-    overlaid — split into four standalone figures sharing one bounding box.
-    Returns a dict keyed by "mesh", "drag", "buoyancy", "overlay".  If
-    ``save_prefix`` is given, each figure is written to
+    Returns ``{"mesh", "drag", "buoyancy", "overlay": Figure}`` with a shared
+    bounding box. With ``save_prefix`` each is saved as
     ``<save_prefix>_<key><save_suffix>``.
     """
     import warnings
@@ -303,11 +269,8 @@ def visualize_robot_representations(
     robot.build_cylinders()
 
     tm = _make_urdf_transform_manager(robot)
-    # Every tree joint has to be set, not just the actuated ones: on a
-    # closed-chain robot the passive joints carry the loop closure, and leaving
-    # them at zero tears the legs off their pins.  The angle comes from the
-    # Pinocchio configuration by joint index -- for a continuous joint that
-    # configuration is a (cos, sin) pair rather than an angle.
+    # Set all tree joints (passive ones close the loops on closed-chain robots).
+    # Continuous joints are stored as (cos, sin).
     for jid in range(1, robot.model.njoints):
         joint = robot.model.joints[jid]
         if joint.nq == 1:
@@ -367,7 +330,7 @@ def visualize_robot_representations(
         figs[kind] = fig
         axes[kind] = ax
 
-    # Mesh vertices for a bounding box shared across all four figures.
+    # Shared bounding box from the mesh vertices
     for name in robot.links:
         go = robot.link_geom_objects.get(name)
         if go is None:

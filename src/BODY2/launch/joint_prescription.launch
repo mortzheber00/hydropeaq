@@ -1,15 +1,11 @@
 <launch>
 
-  <!-- BODY2's prescribed gait with no fluid at all, for visual inspection.
+  <!-- BODY2 gait replay without fluid, to inspect the joint prescription alone.
 
-       Same robot, same URDF, same replay node as swimming_pool.launch, but the
-       world holds only the robot: no SPH plugin, no pool, no water, no gravity.
-       Whatever the legs do here is the joint prescription alone.
+       Same replay as swimming_pool.launch, but the world contains only the
+       robot (no SPH, no pool, no gravity).
 
-           roslaunch BODY2 joint_prescription.launch
-
-       Headless runs measured this configuration as stable: the base angular
-       velocity stays at the OCP's own initial value and never diverges. -->
+           roslaunch BODY2 joint_prescription.launch npz_path:=/home/ws/task3_solution.npz -->
 
   <arg name="npz_path" default="/home/ws/task3_solution.npz" />
   <arg name="n_repeat" default="10" />

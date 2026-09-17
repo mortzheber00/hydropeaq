@@ -1,25 +1,13 @@
 #!/usr/bin/env python3
-"""Outer co-design sweep over (initial gait, cycle period T).
+"""Speed vs. cost-of-transport sweep over initial gait, cycle period and target speed.
 
-For each of the four initial gaits {LSPG25, LSPG33, TLPG50, Prototype} and each
-period on its per-gait T grid, solve the collocation OCP
-(``gait_ocp_eval.solve_gait_ocp``).  Every solve self-refines T within a narrow
-band, so there is no separate refine stage.  The feasible points are collected
-into a speed-vs-efficiency (COT) Pareto front.
+Solves one OCP per (gait, T centre, speed target) via ``solver.solve_gait_ocp``
+and extracts the Pareto front. Each (gait, T centre) is a chain over ascending
+speeds, warm-started link to link, and chains run in parallel. Configure the
+sweep with the constants below. Results go to codesign_results/ and MLflow.
 
-It is structured so the sweep driver can later be swapped for a pymoo NSGA-II
-driver (adding leg dimensions as co-design variables) while reusing
-``solve_gait_ocp`` unchanged.
-
-Solves are grouped into *chains*: one chain per (gait, T centre), sweeping the
-speed targets in ascending order, each link warm-started from the previous
-link's converged primal-dual point.  The chain is also the unit of parallelism,
-so continuation stays sequential where it has to be while the workers stay busy.
-
-Run:
-    python run_codesign.py
-Toggle ``PARALLEL`` below: serial (default) keeps RAM bounded on a laptop;
-parallel uses ``N_WORKERS`` processes when you have the memory.
+Usage:
+  python stage1_gait_optimization/codesign/run_codesign.py
 """
 
 from __future__ import annotations
@@ -45,39 +33,29 @@ try:
 except ImportError:
     tqdm = None
 
-# ── Sweep configuration ─────────────────────────────────────────────────────
-# Target-speed axis (ε-constraint): the inner solve minimises energy subject to
-# speed >= v_target, the floor binds, so each value yields a point at that speed.
-# Sweeping it is what spans the speed axis of the Pareto front.
-SPEED_TARGETS = np.linspace(0.1, 0.2, 7)  # m/s; 0.025 spacing gives ~10% speed resolution
+# --- Sweep configuration ---
+# Speed floors; the floor binds, so each target yields a point at that speed.
+SPEED_TARGETS = np.linspace(0.1, 0.2, 7)  # [m/s]
 
-# Pareto dominance tolerance on speed.  The ε-constraint floor binds, so
-# converged speeds cluster at the targets up to solver/float noise (~1e-8).
-# Without a tolerance that noise makes points at the *same* target speed look
-# like distinct speeds, so higher-COT points survive as spurious front members.
-# Treat speeds within SPEED_TOL as equal (well below the 0.025 target spacing).
+# Speeds closer than this count as equal in the Pareto filter, so solver noise
+# at a shared target does not keep dominated points.
 SPEED_TOL = 1e-4
 
-# Period grid per gait.  At each target speed, T is the efficiency knob: the grid
-# (each point free-T-refined) explores cadences and the Pareto filter keeps the
-# most efficient one per (gait, speed).  Keep it small — total solves = gaits ×
-# speeds × T-centres.  Each gait may override with its own cadence range.
+# T centres per gait (total solves = gaits x speeds x T centres).
 T_GRID_DEFAULT = np.linspace(0.8, 1.2, 3)
 GAIT_T_OVERRIDE: dict[str, np.ndarray] = {
     # "LSPG25": np.linspace(0.5, 1.2, 3),
 }
-FREE_T_BAND = 0.2   # δ: free-T half-window; > grid spacing/2 so bands overlap
+FREE_T_BAND = 0.2   # free-T half-window; > grid spacing / 2 so bands overlap
 
-PARALLEL = True     # serial keeps RAM bounded; set True to use a process pool
+PARALLEL = True     # False keeps RAM bounded
 N_WORKERS = 4        # processes when PARALLEL
-# Continuation within a chain: each speed seeded from the previous link's
-# solution.  Off means every point starts cold from its analytic guess — slower,
-# but the points are then independent, so a bad solve cannot propagate down the
-# chain and the sweep is a clean multistart.
+# Warm-start each speed from the previous one in its chain. False makes every
+# solve an independent cold start (slower).
 WARM_START = True
-QUIET_SOLVES = False  # suppress per-solve guess/IPOPT prints for a clean bar
+QUIET_SOLVES = False  # suppress per-solve output
 
-# ── Experiment tracking ─────────────────────────────────────────────────────
+# --- Experiment tracking ---
 USE_MLFLOW = True
 MLFLOW_TRACKING_URI = "http://localhost:5000"
 MLFLOW_EXPERIMENT = "gait_codesign"
@@ -88,7 +66,7 @@ OUT_DIR = Path(__file__).parent / "codesign_results"
 
 @contextlib.contextmanager
 def _maybe_quiet(quiet: bool):
-    """Swallow stdout (noisy guess/solver prints) so the progress bar stays clean."""
+    """Suppress stdout if ``quiet``."""
     if not quiet:
         yield
         return
@@ -101,32 +79,17 @@ def gait_t_centers(gait: str) -> np.ndarray:
 
 
 def build_chains() -> list[tuple[str, float, list[float]]]:
-    """One continuation chain per (gait, T centre): its speed targets, ascending.
+    """One chain per (gait, T centre) over the ascending speed targets.
 
-    Only ``v_target`` is a parameter of the NLP (it scales the speed floor), so
-    it is the only axis a solution can be continued along.  The gait is not —
-    it merely picks the analytic initial guess — and the four gaits exist
-    precisely to sample different basins: ``guess_multistart`` has them landing
-    on distinct minima (torque_max spread 40%, base_z_min nearly 2x) at COT
-    within 5% of each other.  Warm-starting across gaits would pull them all
-    into one basin and report it four times, so chains never cross a gait.
-
-    T centres stay separate too: the v grid is the finer axis (0.008 m/s steps
-    against 0.15 s), and a smaller step is a smaller perturbation to continue
-    over.  Ascending order starts each chain at the loosest speed floor.
+    Chains never span gaits: the gaits are meant to reach different local minima,
+    and warm-starting across them would collapse those into one.
     """
     speeds = sorted(float(v) for v in SPEED_TARGETS)
     return [(g, float(t), speeds) for g in ev.GAITS for t in gait_t_centers(g)]
 
 
 def _eval_chain(chain: tuple[str, float, list[float]], robot=None, dyn=None) -> list[dict]:
-    """Worker entry: solve one chain, each link warm-started from the last.
-
-    Robot/dyn are cached per process when not supplied.  A link that fails
-    returns no warm start, so the next speed restarts cold rather than
-    inheriting a broken iterate.  With ``WARM_START`` off every link is cold and
-    the chain is only a grouping of solves.
-    """
+    """Solve one chain; after a failed link the next one starts cold."""
     gait, t_center, speeds = chain
     rows, warm = [], None
     for v in speeds:
@@ -134,8 +97,7 @@ def _eval_chain(chain: tuple[str, float, list[float]], robot=None, dyn=None) -> 
             r = ev.solve_gait_ocp(gait, t_center, v_target=v,
                                   free_T_band=FREE_T_BAND,
                                   robot=robot, dyn=dyn, warm_start=warm)
-        # Popped, not kept: the decision vector is large and would otherwise be
-        # pickled back to the parent for every one of the 700 points.
+        # Pop the large vector so it is not sent back to the parent process.
         nxt = r.pop("warm_start")
         warm = nxt if WARM_START else None
         rows.append(r)
@@ -143,11 +105,7 @@ def _eval_chain(chain: tuple[str, float, list[float]], robot=None, dyn=None) -> 
 
 
 def pareto_front(rows: list[dict]) -> list[int]:
-    """Indices of non-dominated feasible points: maximise speed, minimise COT.
-
-    Speeds within ``SPEED_TOL`` are treated as equal, so float/solver noise at a
-    shared target speed doesn't keep higher-COT points as spurious front members.
-    """
+    """Indices of non-dominated feasible points (max speed, min COT), sorted by speed."""
     feasible = [i for i, r in enumerate(rows) if r["feasible"] and np.isfinite(r["cot"])]
     keep = []
     for i in feasible:
@@ -181,14 +139,12 @@ def _save(rows: list[dict], pareto_idx: list[int]) -> None:
             "cot": r["cot"],
             "feasible": r["feasible"],
             "pareto": i in pareto_set,
-            # Solver cost, so the warm-start chaining can be measured rather
-            # than assumed: compare warm links against each chain's cold head.
+            # Solver cost, to compare warm and cold starts
             "iterations": r["iterations"],
             "wall_time_s": r["wall_time_s"],
             "status": r["status"],
             "warm_started": r["warm_started"],
         })
-        # Per-point trajectory for feasible solves.
         if r["feasible"]:
             tag = f"{r['gait']}_v{r['v_target']:.2f}_T{r['t_center']:.3f}".replace(".", "p")
             np.savez(
@@ -219,7 +175,7 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
     if not pts:
         return
 
-    # Marker shape per gait; colour encodes the solved cycle period T.
+    # Marker = gait, colour = solved period T
     markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
     gait_marker = {g: markers[i % len(markers)] for i, g in enumerate(ev.GAITS)}
     t_all = [r["T"] for r in pts]
@@ -238,7 +194,6 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
             zorder=3,
         )
 
-    # Pareto front as a dashed line; the markers keep their T colour.
     front = sorted((rows[i] for i in pareto_idx), key=lambda r: r["speed"])
     if front:
         ax.plot([r["speed"] for r in front], [r["cot"] for r in front],
@@ -247,7 +202,7 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
     if sc is not None:
         fig.colorbar(sc, ax=ax).set_label("cycle period T [s]")
 
-    # Gait legend via marker shape (neutral colour, since colour now means T).
+    # Gait legend in a neutral colour, since colour encodes T
     handles = [
         Line2D([], [], marker=gait_marker[g], color="gray", linestyle="",
                markeredgecolor="k", label=GAIT_LABELS.get(g, g))
@@ -258,12 +213,10 @@ def _plot(rows: list[dict], pareto_idx: list[int]) -> None:
 
     ax.set_xlabel(r"forward speed [m\,s$^{-1}$]")
     ax.set_ylabel("cost of transport [-]")
-    # Under the front (zorder 2) and the markers (3), as in the stage3 figures.
     ax.grid(alpha=0.3)
     fig.tight_layout()
     OUT_DIR.mkdir(exist_ok=True)
-    # Thesis figures: 300 dpi raster + vector PDF.  pad_inches above the default:
-    # the tight bbox under-measures usetex text.
+    # Extra padding: the tight bbox under-measures usetex text.
     for suffix in (".png", ".pdf"):
         path = OUT_DIR / f"pareto_front{suffix}"
         fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.12)
@@ -281,10 +234,7 @@ def _git_sha() -> str:
 
 
 def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
-    """Log the whole sweep as one MLflow run: config params, summary metrics,
-    and the full codesign_results/ directory (summary.json, png, per-point npz)
-    as artifacts.  Inner solves do not log, so there are no nested/concurrent
-    runs."""
+    """Log the sweep as a single MLflow run with OUT_DIR as artifacts."""
     if not USE_MLFLOW:
         return
     try:
@@ -298,8 +248,6 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
                 "speed_targets": np.array2string(np.asarray(SPEED_TARGETS), precision=3),
                 "t_grid": np.array2string(np.asarray(T_GRID_DEFAULT), precision=3),
                 "free_T_band": FREE_T_BAND,
-                # From the robot's OCPSettings, the same source run_collocation
-                # logs, so a sweep records the settings it actually solved with.
                 "N_collocation": ev.CFG.n,
                 "d_colloc": ev.CFG.d_colloc,
                 "tau_max": ev.CFG.tau_max,
@@ -328,7 +276,6 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
             if feasible:
                 metrics["min_cot"] = min(r["cot"] for r in feasible)
                 metrics["max_speed"] = max(r["speed"] for r in feasible)
-            # Warm vs cold solver cost — the whole point of the chaining.
             warm = [r for r in rows if r["warm_started"]]
             cold = [r for r in rows if not r["warm_started"]]
             metrics["total_iterations"] = sum(r["iterations"] for r in rows)
@@ -339,14 +286,13 @@ def _log_mlflow(rows: list[dict], pareto_idx: list[int], n_tasks: int) -> None:
                         np.mean([r["iterations"] for r in group]))
                     metrics[f"mean_wall_s_{label}"] = float(
                         np.mean([r["wall_time_s"] for r in group]))
-            # Best (lowest) COT achieved at each target speed.
+            # Best COT per target speed
             for v in SPEED_TARGETS:
                 at_v = [r["cot"] for r in feasible if abs(r["v_target"] - v) < 1e-9]
                 if at_v:
                     metrics[f"best_cot_v{float(v):.2f}"] = min(at_v)
             mlflow.log_metrics(metrics)
 
-            # All run artifacts: summary.json, pareto_front.png, per-point npz.
             mlflow.log_artifacts(str(OUT_DIR))
         print(f"Logged sweep to MLflow ({MLFLOW_EXPERIMENT}/{run_name})")
     except Exception as e:  # never let logging kill a finished sweep
@@ -365,7 +311,7 @@ def main() -> None:
     bar = tqdm(total=n_solves, desc="co-design sweep") if tqdm is not None else None
     if PARALLEL:
         with Pool(N_WORKERS) as pool:
-            # Chains, not points: continuation is sequential inside a chain.
+            # Parallelise over chains; each chain is sequential.
             for i, chain_rows in enumerate(pool.imap_unordered(_eval_chain, chains), 1):
                 rows.extend(chain_rows)
                 if bar is not None:

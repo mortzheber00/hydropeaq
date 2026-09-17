@@ -1,26 +1,9 @@
 #!/usr/bin/env python3
-"""Numeric port of the drag model the OCP solves, evaluated link by link.
+"""Numeric per-link version of the OCP drag model, for fast evaluation in figures.
 
-``hydro_model.hydrodynamics`` builds the drag as CasADi expressions over a whole
-robot; a figure wants one link's force at one pose, as floats, thousands of
-times.  This is that same model rewritten numerically, and the point is that it
-is the *same* model: the transverse drag is integrated over ``_DRAG_N_STRIPS``
-midpoint strips along the axis (imported, not restated, so the two cannot drift
-apart), Fossen's linear damping term sits beside the quadratic one, the
-submersion ratio scales both, and the coefficients are the fitted ones.  Only
-the force is ported — ``drag_wrench`` also returns a moment, which no figure
-here needs; see ``link_drag_x`` for why that is safe for a forward force.
-
-Getting that agreement was not free.  A hand-rolled version here previously
-sampled the transverse drag once at the cylinder midpoint (which underestimates
-the rotational drag moment by 50%), left every link fully wetted at all times
-(this robot swims at the surface: the hull averages 13% submerged and the front
-legs leave the water each cycle), and carried its own ``CD_T = 1.0 / CD_A = 0.1``
-from before the 2026-08-16 SPH fit set 3.25 / 0.8.  The front-left leg's cycle
-impulse came out 4.6x low.  Every one of those numbers is now imported rather
-than restated — the coefficients from ``hydro_params``, which calls itself the
-single source of truth and says to change them nowhere else, and the strip count
-and epsilons from ``hydrodynamics`` itself.
+Mirrors ``hydrodynamics.drag_wrench`` (force only): strip-integrated transverse
+drag, linear plus quadratic terms, scaled by the submersion ratio. Coefficients,
+strip count and epsilons are imported from the model so the two stay in sync.
 """
 from __future__ import annotations
 
@@ -50,36 +33,21 @@ CD_LIN_A = hydro_params.CD_LIN_A
 V_LIN_THRESH = hydro_params.V_LINEAR_THRESHOLD
 RHO = RHO_WATER
 
-# Wake-slip scale the model applies to every non-trunk link at assembly time
-# (``hydrodynamics.build``).  It is 1.0 as fitted, so it changes nothing today —
-# it is carried here so that setting it does not silently split this port from
-# the model it claims to reproduce.
-LEG_THRUST_SCALE = hydro_params.LEG_THRUST_SCALE
+LEG_THRUST_SCALE = hydro_params.LEG_THRUST_SCALE  # applied to non-base links
+Z_SURFACE = 0.0  # same as SymbolicDynamics' default
 
-# The free surface the submersion ratio is measured against, matching
-# SymbolicDynamics' own default.
-Z_SURFACE = 0.0
-
-# The sagittal-plane figures assume a 3-joint serial leg whose drag is the sum
-# over thigh, calf and foot.  The BODY2 analogue -- sweep (theta1, theta2), mask
-# by assemblability, sum over the leg's six links -- is a separate piece of work.
+# The sagittal-plane figures assume amph's 3-joint serial legs.
 SUPPORTED_ROBOTS = ("amph",)
 
-# The three links an amph leg's drag is summed over, in kinematic order.
+# amph leg links included in the leg drag
 LEG_SEGMENTS = ("Thigh", "Calf", "Foot")
 
 
 def leg_links(robot: QuadrupedRobot, leg: str) -> tuple[str, ...]:
-    """The links one leg's drag is summed over, in kinematic order.
+    """Links included in one leg's drag, in kinematic order.
 
-    amph keeps the three it has always used.  Its fourth leg cylinder, the
-    Side link, is a stub on a joint the OCP pins to zero, so it never sweeps
-    and has never been counted as leg drag; folding it in now would move every
-    published amph number.
-
-    Any other robot takes every segment cylinder whose link carries the leg's
-    name — ``QuadrupedRobot.leg_skeleton``'s own rule, so BODY2's six-link
-    closed chain needs no list of its own here.
+    amph: thigh, calf and foot (the Side link is pinned and excluded). Other
+    robots: all segment cylinders whose name contains the leg name.
     """
     if robot.spec.name == "amph":
         return tuple(f"{leg}_{s}_link" for s in LEG_SEGMENTS)
@@ -97,11 +65,7 @@ def require_supported(robot_name: str, figure: str) -> None:
 
 def submersion_ratio(cyl, R: np.ndarray, p_origin: np.ndarray,
                      axis: np.ndarray) -> float:
-    """Fraction of one cylinder below the surface, with the model's smooth clamp.
-
-    Numeric port of ``SymbolicHydrodynamicModel.submersion_ratio``; a link clear
-    of the water scales to zero drag here exactly as it does there.
-    """
+    """Numeric ``SymbolicHydrodynamicModel.submersion_ratio``."""
     z_center = float((p_origin + R @ cyl.center_local)[2])
     axis_z_abs = np.sqrt(axis[2] ** 2 + _EPS)
     dz_half = (0.5 * cyl.length * axis_z_abs
@@ -115,16 +79,12 @@ def submersion_ratio(cyl, R: np.ndarray, p_origin: np.ndarray,
 
 def drag_force(cyl, R: np.ndarray, alpha: float, axis: np.ndarray,
                v_origin: np.ndarray, omega: np.ndarray) -> np.ndarray:
-    """World-frame drag force on one cylinder — numeric port of ``drag_wrench``.
-
-    ``v_origin`` and ``omega`` are ``(n, 3)`` batches of the link frame's twist,
-    so a whole velocity-direction sweep costs one call.  Returns ``(n, 3)``.
-    """
+    """World-frame drag force (numeric ``drag_wrench``) for ``(n, 3)`` batches of link twists."""
     n_strips = _DRAG_N_STRIPS
     L, D = cyl.length, 2.0 * cyl.radius
     F = np.zeros_like(v_origin)
 
-    # Transverse: strip-wise, each with its own midpoint velocity.
+    # Transverse, per strip
     A_t = D * (L / n_strips)
     D1_t = 0.5 * RHO * CD_LIN_T * A_t * V_LIN_THRESH
     kq_t = 0.5 * RHO * CD_T * A_t
@@ -137,7 +97,7 @@ def drag_force(cyl, R: np.ndarray, alpha: float, axis: np.ndarray,
         mag = np.sqrt((v_tr ** 2).sum(axis=1) + _EPS)[:, None]
         F -= D1_t * v_tr + kq_t * mag * v_tr
 
-    # Axial: end-cap form drag, one sample at the midpoint (not distributed).
+    # Axial, at the midpoint
     A_a = cyl.cross_section_axial
     v_mid = v_origin + np.cross(omega, R @ cyl.center_local)
     v_ax_mag = v_mid @ axis
@@ -150,11 +110,7 @@ def drag_force(cyl, R: np.ndarray, alpha: float, axis: np.ndarray,
 
 
 def link_drag_terms(robot: QuadrupedRobot, link_name: str, q: np.ndarray):
-    """``(cyl, R, alpha, axis, J)`` for a link at the current pose, or None.
-
-    Pose-only, so a caller sweeping velocities at a fixed pose evaluates it once.
-    ``robot.forward_kinematics(q)`` must already have been called.
-    """
+    """Pose-dependent drag inputs ``(cyl, R, alpha, axis, J)``, or None (call FK first)."""
     link = robot.links.get(link_name)
     if link is None or link.cylinder is None:
         return None
@@ -173,17 +129,10 @@ def link_drag_terms(robot: QuadrupedRobot, link_name: str, q: np.ndarray):
 
 def link_drag_x(robot: QuadrupedRobot, link_name: str, q: np.ndarray,
                 v: np.ndarray) -> float:
-    """World-x drag force on one link.
+    """World-x drag force on one link (positive = forward thrust).
 
-    The fluid force ON the link opposes its motion, so a backward-sweeping link
-    (v_x < 0) gives F_drag[0] > 0 — forward thrust.
-
-    This is the quantity that lands in the base linear rows of ``f_tau_drag``:
-    the free-flyer's first three Jacobian columns are the base rotation, so
-    ``tau[0:3] = R^T F`` and the drag *moment* — which this port does not carry —
-    contributes only to the rotational and joint rows.  Checked against the
-    symbolic model's own per-link assembly at every collocation point of the
-    reference solution: worst disagreement 7.1e-15 N.
+    The moment is not needed: it does not enter the base linear rows of
+    ``f_tau_drag``. Matches the symbolic model to ~1e-14 N.
     """
     terms = link_drag_terms(robot, link_name, q)
     if terms is None:
@@ -207,12 +156,10 @@ def _leg_joint_indices(robot: QuadrupedRobot, leg: str) -> list[int]:
 
 
 def leg_cycle_drag(robot, Xc_leg, nq, N, leg, hold=None, d=D_COLLOC) -> float:
-    """Cycle-mean world-x drag on one leg [N], optionally with the leg frozen.
+    """Cycle-mean world-x drag on one leg [N].
 
-    ``hold`` is a per-joint angle vector for this leg's three joints; when
-    given, the leg is pinned there with zero joint velocity and everything else
-    in the state — the base motion, the other three legs — is left as solved, so
-    the difference from the free case is attributable to this leg's own motion.
+    With ``hold`` (three joint angles) the leg is frozen there while the rest of
+    the state stays as solved.
     """
     idx = _leg_joint_indices(robot, leg)
     trace = np.zeros(N * d)
@@ -237,9 +184,7 @@ def leg_mean_pose(robot, Xc_leg, leg) -> np.ndarray:
 def stroke_benefit(robot, Xc_leg, nq, N) -> dict:
     """``{leg: (solved, frozen)}`` cycle-mean forward drag [N].
 
-    ``frozen`` holds the leg at its own cycle-mean pose, which is the baseline
-    the raw cycle-mean force is missing: a submerged limb costs drag whether or
-    not it moves, so zero is the wrong thing to compare a leg against.
+    ``frozen`` holds the leg at its mean pose, the baseline for the stroke's benefit.
     """
     return {leg: (leg_cycle_drag(robot, Xc_leg, nq, N, leg),
                   leg_cycle_drag(robot, Xc_leg, nq, N, leg,

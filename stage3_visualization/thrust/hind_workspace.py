@@ -1,67 +1,24 @@
 #!/usr/bin/env python3
-"""
-Reachable workspace of a leg vs. the foot path its guess builder commands.
+"""Check a leg's commanded (or solved) foot path against its reachable workspace.
 
-``initial_guess/paper.py`` drives the front legs with the paper's paddling
-trajectory and then hands the resulting hip-relative foot path to the hind legs
-by inverse kinematics, so that every foot traces the same path.  ``_ik_leg`` is
-an unconstrained damped-least-squares solve — it never sees the URDF joint
-limits, and ``_grid_seed`` searches a joint box wider than they are — so it
-tracks the path by driving the hind thigh through its mechanical stop rather
-than reporting that the path is out of range.
+``<name>_workspace``  reachable sagittal foot positions (joint-limit sweep; for
+                      BODY2 only the assemblable region connected to home) with
+                      the path on top, unreachable samples marked
+``<name>_angles``     joint angles of the IK / guess / solution vs the limits
 
-This figure is the check that was missing.  The ``workspace`` figure sweeps the
-hind leg over its *actual* joint limits to get the reachable set in the sagittal
-plane, and draws the commanded path on top of it, split into the part that fits
-and the part that does not — or, when all of it fits, as one unsplit
-trajectory.  The ``angles`` figure shows the joint angles the IK returned
-against those same limits.
-
-``--solution`` plots a solved trajectory instead of a commanded one.  There is
-no commanded path to miss then: the drawn curve is the solution's own forward
-kinematics, and the reachability check runs against that, so the figure reports
-whether the OCP's own joint limits agree with the sweep here.
-
-For the paper gaits the commanded path always comes from ``Front_Left``, because
-``paper.py`` hardcodes it there; ``--leg`` picks which leg is checked against it,
-and running it on a front leg is a self-consistency check that can only report
-0 % unreachable — the path *is* that leg's forward kinematics.  The right- and
-left-side legs are the same motion at a phase offset.
-
-``--gait Prototype`` checks the firmware IK gait instead, and there the check is
-real for every leg: ``firmware.py`` builds each leg its own stroke from absolute
-travel parameters rather than copying one leg's kinematics, with separate
-x-centres front and rear.  That gait needs the check more than the paper ones
-do, because its own reachability guard does not cover this robot —
-``build_robot_ik_initial_guess`` raises when the worst foot-tracking error
-exceeds a tolerance, but only accumulates that error on the closed-chain branch,
-so for a serial robot like amph ``worst_err`` stays 0 and the guard never
-fires.
-
-The sweep runs over whichever two coordinates a leg has in the sagittal plane:
-amph's thigh and calf, or a closed-chain leg's two hip servos.  For BODY2 the
-box is not the whole story — most of the ``(theta1, theta2)`` square cannot be
-assembled, and the assemblable cells fall into islands of which only the one
-holding the home pose can be driven to — so the sweep keeps exactly the set
-``src/BODY2/scripts/leg_linkage_sim.py`` draws as the usable workspace.  The
-paper gaits are amph's, being written as thigh and calf angles; a closed-chain
-robot defaults to ``--gait Prototype``, the firmware stroke, which
-``firmware.py`` solves in theta.
-
-Note the guess overlay is only as fine as the OCP grid it was built on — the
-IK is solved once per collocation node, so a coarse ``N`` samples the stroke
-coarsely.  The commanded path is drawn from the analytic Fourier trajectory and
-is independent of ``N``.
-
-``--save x.pdf`` writes the two figures separately, as ``x_workspace.pdf`` and
-``x_angles.pdf``.
+The paper-gait IK (paper.py) ignores joint limits and can drive the hind thigh
+past its stop; this makes that visible. For the paper gaits the path comes from
+Front_Left, so checking a front leg is only a self-consistency test.
+``--gait Prototype`` checks the firmware stroke (default for closed-chain
+robots); note firmware.py's own reachability check is only active for
+closed-chain robots. ``--solution`` checks a solved trajectory instead.
 
 Usage:
-  python hind_workspace.py
-  python hind_workspace.py --leg Front_Left --save ../../docs/figures/front.pdf
-  python hind_workspace.py --solution ../task3_solution.npz --leg Hind_Left
-  python hind_workspace.py --guess ../task3_guess.npz --resolution 480
-  python hind_workspace.py --robot body2 --leg BL --solution ../task3_solution.npz
+  python stage3_visualization/thrust/hind_workspace.py
+  python stage3_visualization/thrust/hind_workspace.py --leg Front_Left --save front.pdf
+  python stage3_visualization/thrust/hind_workspace.py --solution task3_solution.npz --leg Hind_Left
+  python stage3_visualization/thrust/hind_workspace.py --guess task3_guess.npz --resolution 480
+  python stage3_visualization/thrust/hind_workspace.py --robot body2 --leg BL --solution task3_solution.npz
 """
 from __future__ import annotations
 
@@ -94,30 +51,20 @@ from stage1_gait_optimization.initial_guess.paper import (
 )
 from stage1_gait_optimization.ocp_common import limits_for
 
-PROTOTYPE = "Prototype"      # the firmware IK gait, not one of paper.py's
+PROTOTYPE = "Prototype"      # the firmware IK gait
 
-# Both figures go side by side, so both take the shared half-width canvas and
-# are saved uncropped: same page size, same scale in LaTeX, same type on the
-# page.  The equal-aspect panel letterboxes inside the canvas rather than
-# shrinking it.
+# Side-by-side figures: shared half-width canvas, saved uncropped.
 half_width()
 
-# paper.py defines the commanded foot path as this leg's own foot path.
-FRONT_LEG = "Front_Left"
-DEFAULT_LEG = "Hind_Left"   # the leg paper.py solves by IK, and the one at risk
-# Legacy state layout: 7 base coordinates, then the actuated joints in spec order.
-QJ0_LEGACY = 7
+FRONT_LEG = "Front_Left"    # source of the paper gaits' foot path
+DEFAULT_LEG = "Hind_Left"   # solved by IK in paper.py
+QJ0_LEGACY = 7              # first joint row in the quaternion state
 
 
 def leg_dofs(robot, leg: str) -> tuple[int, int]:
-    """Indices, into the actuated coordinates, of the two this figure sweeps.
+    """Actuated indices of the leg's two sagittal coordinates (the last two per leg).
 
-    A sagittal workspace is a 2-D slice, so it needs exactly two coordinates per
-    leg.  body2's legs have two, the hip servos; amph's have three, the extra
-    one being the out-of-plane side joint that ``pose_constraints`` pins to
-    zero.  The last two per leg are the right pair in both cases, and the pinned
-    joint stays where the sweep leaves it — at zero — so the slice really is the
-    whole workspace.
+    amph: thigh and calf (the side joint is pinned at zero); BODY2: both hip servos.
     """
     legs = list(robot.spec.leg_names)
     per = robot.n_actuated // len(legs)
@@ -129,27 +76,22 @@ def leg_dofs(robot, leg: str) -> tuple[int, int]:
 
 
 def dof_labels(robot) -> tuple[str, str]:
-    """Display names of the two swept coordinates, from the spec's own labels."""
+    """Display names of the two swept coordinates."""
     a, b = robot.spec.leg_joint_labels[-2:]
     return a.replace("_joint", "").lower(), b.replace("_joint", "").lower()
 
 
 def home_theta(robot) -> np.ndarray:
-    """Actuated coordinates at the home pose — the sweep's held-fixed context."""
+    """Actuated coordinates at the home pose."""
     home = robot.spec.theta_home
     return (np.zeros(robot.n_actuated) if home is None
             else np.array(home, dtype=float))
 
 
 def foot_xz(robot, leg: str, ab: np.ndarray) -> np.ndarray:
-    """Hip-relative sagittal ``(x, z)`` of the foot, one row per ``(a, b)``.
+    """Hip-relative foot ``(x, z)`` for each row ``(a, b)`` of the swept coordinates.
 
-    ``ab`` carries the leg's two swept coordinates; everything else is held at
-    home.  A closed-chain leg goes through the coordinate map, which is what
-    turns two hip angles into the tree joints the loops imply — reading the
-    tree joints straight out of a configuration vector would not close them.
-
-    The hip is read once: it is mounted on the base, which does not move here.
+    Other coordinates stay at home; the coordinate map closes the loops.
     """
     i0, i1 = leg_dofs(robot, leg)
     theta = home_theta(robot)
@@ -167,11 +109,7 @@ def foot_xz(robot, leg: str, ab: np.ndarray) -> np.ndarray:
 
 
 def connected(ok: np.ndarray, seed) -> np.ndarray:
-    """Cells of ``ok`` reachable from ``seed`` by 4-connected steps.
-
-    The limit box spans at most one turn, so a step off one edge of the grid is
-    not a step onto the other and no wrap-around neighbour is needed.
-    """
+    """Cells of ``ok`` 4-connected to ``seed`` (no wrap-around)."""
     out = np.zeros_like(ok)
     if not ok[seed]:
         return out
@@ -188,22 +126,11 @@ def connected(ok: np.ndarray, seed) -> np.ndarray:
 
 
 def reachable_set(robot, leg: str, resolution: int) -> np.ndarray:
-    """Hip-relative (x, z) foot positions the leg can actually be driven to.
+    """Reachable hip-relative foot positions from a sweep over the joint-limit box.
 
-    Sweeps the leg's two coordinates over their limit box and keeps the cells
-    that are feasible — the coordinate map's own constraints — *and* connected
-    to the home pose across the grid.  Both tests are no-ops for a serial leg:
-    it has no feasibility constraints, so every cell of the box is a
-    configuration and the flood keeps all of them.
-
-    For BODY2 they are not.  Only ~41% of the ``(theta1, theta2)`` square can
-    be assembled at all, and those cells fall into several islands of which only
-    the one holding the home pose can be driven to without taking the leg apart
-    — the set ``src/BODY2/scripts/leg_linkage_sim.py`` draws as the usable
-    workspace.  The OCP is stricter still, holding a 2 mm loop half-chord
-    (``pose_constraints``), so the very rim of this cloud is assemblable but not
-    usable; that makes the cloud an outer bound, which is the safe direction for
-    a figure that reports what falls outside it.
+    Keeps feasible cells connected to the home pose (relevant for closed chains;
+    all cells for serial legs). Slightly larger than what the OCP allows, since
+    its pose constraint keeps a margin.
     """
     i0, i1 = leg_dofs(robot, leg)
     q_lb, q_ub = limits_for(robot)[:2]
@@ -213,8 +140,7 @@ def reachable_set(robot, leg: str, resolution: int) -> np.ndarray:
     home = home_theta(robot)
     theta = home.copy()
     ok = np.ones((resolution, resolution), bool)
-    # The other legs stay at home, where they are feasible by construction, so
-    # their (constant) constraints never decide this leg's mask.
+    # Other legs stay at home and are always feasible.
     if robot.coord_map.feasibility(theta).numel():
         for ia, a in enumerate(a_ax):
             for ib, b in enumerate(b_ax):
@@ -233,20 +159,14 @@ def reachable_set(robot, leg: str, resolution: int) -> np.ndarray:
 
 
 def commanded_path(robot, gait: str, samples: int, leg: str) -> np.ndarray:
-    """Foot path the guess builder asks ``leg`` to follow, hip-relative.
+    """Hip-relative foot path the guess builder commands for ``leg``.
 
-    The two gait families define it differently, and the difference matters for
-    reading this figure.  ``paper.py`` builds one path from ``Front_Left``'s own
-    kinematics and hands it to every leg by IK, so the commanded path is the
-    same curve whichever leg is being checked.  ``firmware.py`` instead builds a
-    stroke per leg from absolute travel parameters, with separate x-centres for
-    the front and rear pairs — so under the Prototype gait ``--leg`` changes the
-    commanded path as well as the workspace it is checked against.
+    Paper gaits: one path from Front_Left (transformed for hind legs).
+    Prototype: a per-leg firmware stroke.
     """
     t = np.arange(samples) / samples
     if gait != PROTOTYPE:
-        # The paper gaits are written as thigh and calf angles driven straight
-        # onto the tree, which only means anything for a serial leg.
+        # Paper gaits are thigh/calf angles, only meaningful for serial legs.
         if not isinstance(robot.coord_map, IdentityMap):
             raise SystemExit(
                 f"{robot.spec.name} is a closed-chain robot, so the paper "
@@ -257,30 +177,23 @@ def commanded_path(robot, gait: str, samples: int, leg: str) -> np.ndarray:
             np.radians(theta1(t) + _THIGH_OFFSET_DEG),
             np.radians(_CALF_OFFSET_DEG - theta2(t)),
         ]))
-        # A hind leg is asked to trace the transformed path, not the raw front
-        # one; checking it against the untransformed path would test something
-        # the guess builder never commands.
+        # Hind legs get the transformed path (paper.hind_target_path).
         return front if leg.startswith("Front") else hind_target_path(front,
                                                                      robot.spec)
 
-    # The firmware stroke is an offset from the *trim* foot position.
-    # find_trim_state solves only for base z, roll and pitch with the joints
-    # held at home, so the trim foot is the home foot displaced with the base —
-    # and a hip-relative position is unchanged by that.  The reference is
-    # therefore available from the home pose alone, with no dynamics build.
-    # (If find_trim_state ever solved for joint angles too, this would silently
-    # stop being the right reference.)
+    # The firmware stroke is relative to the trim foot. Trim only moves the base,
+    # so the hip-relative home foot is the same reference (no dynamics needed).
+    # This breaks if find_trim_state ever changes the joint angles.
     p = {**_DEFAULT_GAIT, **robot.spec.firmware_gait}
     i0, i1 = leg_dofs(robot, leg)
     ref = foot_xz(robot, leg, home_theta(robot)[[i0, i1]][None])[0]
 
     is_front = list(robot.spec.leg_names).index(leg) < 2
     cx = p["center_x_front"] if is_front else p["center_x_rear"]
-    # C-firmware z is positive-downward, so deeper is a negative world dz.
+    # Firmware depths are positive downward; world z is up.
     dz_surface = -(p["depth_surface"] - p["stand_h"])
     dz_deep = -(p["depth_deep"] - p["stand_h"])
-    # Phase offsets between legs shift when the stroke happens, not where, so
-    # they are irrelevant to the traced path.
+    # Leg phase offsets do not change the path shape.
     out = [_firmware_foot_target(tc, 1.0, p["ratio_recovery"], p["ratio_strike"],
                                  p["ratio_power"], cx + p["stroke_len"],
                                  cx - p["stroke_len"], dz_surface, dz_deep)
@@ -289,17 +202,10 @@ def commanded_path(robot, gait: str, samples: int, leg: str) -> np.ndarray:
 
 
 def solve_leg_angles(robot, gait: str, leg: str, n: int):
-    """``(thigh, calf)`` the guess builder would produce right now.
+    """``(thigh, calf)`` as paper.py computes them for the current spec.
 
-    Recomputed rather than read from a saved guess, because the two get out of
-    step: the commanded path is built live from the analytic trajectory and the
-    robot's current ``paper_gait`` transform, while a saved npz records whatever
-    the spec said when that run happened.  Overlaying a stale file on a fresh
-    path shows an IK solution that does not belong to the curve beneath it.
-
-    Reproduces ``paper.py``'s own path: the same ``_grid_seed`` then
-    ``_ik_leg`` sequence, warm-started along the cycle, so the overlay is what
-    the builder would hand the OCP — joint-limit violations and all.
+    Same seed and IK sequence as paper.py, so limit violations show up as they
+    would in the guess.
     """
     theta1, theta2 = paper_fourier_trajectory(GAITS[gait])
     t = np.arange(n) / n
@@ -319,12 +225,7 @@ def solve_leg_angles(robot, gait: str, leg: str, n: int):
 
 
 def guess_leg_angles(robot, path: Path, leg: str) -> tuple[np.ndarray, np.ndarray]:
-    """The leg's two swept coordinates, as the guess builder produced them.
-
-    Under a paper gait these are the paper angles applied directly on a front
-    leg and what ``_ik_leg`` returned on a hind one; under the firmware gait
-    they are what its own IK returned, in theta for a closed-chain leg.
-    """
+    """The leg's two swept coordinates from a saved initial guess."""
     d = np.load(path, allow_pickle=True)
     X, n = d["X"], d["U"].shape[1]
     i0, i1 = leg_dofs(robot, leg)
@@ -332,14 +233,7 @@ def guess_leg_angles(robot, path: Path, leg: str) -> tuple[np.ndarray, np.ndarra
 
 
 def solution_leg_angles(robot, path: Path, leg: str) -> tuple[np.ndarray, np.ndarray]:
-    """The leg's two swept coordinates per node of a solved trajectory.
-
-    Read through ``load_solution`` and indexed as actuated coordinates, which is
-    what the limit box, the sweep and the forward kinematics here are all
-    written in.  A closed-chain solution's state carries theta rather than the
-    tree joints it expands to, and theta is exactly what is wanted.  The final
-    column repeats the first and is dropped.
-    """
+    """The leg's two swept coordinates per node of a solution (last node dropped)."""
     d = load_solution(str(path))
     if d["robot"] != robot.spec.name:
         raise SystemExit(f"{path.name} is a {d['robot']} solution, but this "
@@ -356,13 +250,10 @@ def foot_path(robot, leg: str, q_th, q_ca) -> np.ndarray:
 
 def plot_workspace(robot, cloud, traj, outside, q_th, q_ca, n_nodes, leg,
                    overlay: str | None):
-    """Workspace and joint-angle figures, standalone, keyed by name.
+    """Workspace and joint-angle figures as ``{name: fig}``.
 
-    ``overlay`` labels the crosses marking where the leg's angles put the foot,
-    drawn on top of the path the guess builder commanded.  It is None when the
-    drawn path already *is* the forward kinematics of ``q_th``/``q_ca`` — a
-    solution has no commanded path to miss — and the crosses then mark that one
-    path's own nodes rather than a second curve.
+    ``overlay`` labels the crosses for the angles' foot positions; None means
+    the path itself comes from those angles (solution) and the crosses mark its nodes.
     """
     lo, hi = limits_for(robot)[:2]
     i_th, i_ca = leg_dofs(robot, leg)
@@ -372,17 +263,13 @@ def plot_workspace(robot, cloud, traj, outside, q_th, q_ca, n_nodes, leg,
     fig, ax = plt.subplots(figsize=HALF)
     figs["workspace"] = fig
 
-    # Sampling the limit box gives a point cloud, not a polygon; drawn as a
-    # rasterised stipple so the PDF does not carry resolution**2 vector dots.
+    # Rasterised to keep the PDF small
     ax.plot(cloud[:, 0] * 100, cloud[:, 1] * 100, ".", ms=0.7, color="0.84",
             rasterized=True, zorder=0)
-    # Labels are kept short on purpose: at half the text width a spelled-out
-    # legend entry is half the figure.
     handles = [plt.Line2D([], [], ls="", marker="s", ms=5, color="0.84",
                           label="reachable")]
     if outside.any():
-        # Two classes of sample, so draw them as samples: a line would bridge
-        # the gaps between the reachable stretches.
+        # Points, since a line would bridge the unreachable gaps
         ax.plot(traj[~outside, 0] * 100, traj[~outside, 1] * 100, ".", ms=2.2,
                 color=PALETTE[0], zorder=3)
         ax.plot(traj[outside, 0] * 100, traj[outside, 1] * 100, ".", ms=2.2,
@@ -394,16 +281,13 @@ def plot_workspace(robot, cloud, traj, outside, q_th, q_ca, n_nodes, leg,
                        label=rf"unreachable ({outside.mean() * 100:.0f}\%)"),
         ]
     else:
-        # Nothing to split it into, so it is just the path: one closed curve,
-        # which also reads at the node count of a solution.
+        # Fully reachable: draw as one closed curve
         closed = np.vstack([traj, traj[:1]])
         ax.plot(closed[:, 0] * 100, closed[:, 1] * 100, "-", lw=1.3,
                 color=PALETTE[0], zorder=3)
         key = dict(lw=1.3, color=PALETTE[0], label="trajectory")
         if overlay is None and n_nodes:
-            # The path *is* the grid here, so mark the nodes the way the guess
-            # overlay does — the crosses are what show how coarsely the cycle
-            # is discretised.
+            # Mark the solution nodes
             ax.plot(traj[:, 0] * 100, traj[:, 1] * 100, "x", ms=3.2, mew=0.7,
                     color="k", zorder=5)
             key.update(marker="x", ms=4, mew=0.8, mec="k",
@@ -423,8 +307,7 @@ def plot_workspace(robot, cloud, traj, outside, q_th, q_ca, n_nodes, leg,
     ax.legend(handles=handles, loc="best", framealpha=0.92)
     fig.tight_layout()
 
-    # Without angles there is nothing to draw against the limits, so the panel
-    # is dropped rather than drawn empty.
+    # No angles, no angle figure
     if not n_nodes:
         return figs
 
@@ -438,11 +321,7 @@ def plot_workspace(robot, cloud, traj, outside, q_th, q_ca, n_nodes, leg,
             ax2.axhline(b, color=col, lw=0.9, ls="--", zorder=1)
         ax2.plot(ph, q, "-o", ms=2.0, lw=1.2, color=col, zorder=3,
                  label=rf"{lbl}")
-    # Each label sits by the stop its own curve runs closest to, at whichever
-    # end of the cycle leaves it room.  Which end that is depends on the gait —
-    # amph's thigh dips onto its lower stop mid-cycle, BODY2's 2.1 rides its
-    # upper one early — so it is measured over the third of the panel the text
-    # spans rather than fixed.
+    # Place each limit label at the end of the cycle where the curve is farther away
     for q, i, lbl, col, at_lo in ((q_th, i_th, lbl_th, PALETTE[2], True),
                                   (q_ca, i_ca, lbl_ca, PALETTE[0], False)):
         y = np.degrees(lo[i]) + 3 if at_lo else np.degrees(hi[i]) - 3
@@ -455,8 +334,7 @@ def plot_workspace(robot, cloud, traj, outside, q_th, q_ca, n_nodes, leg,
     ax2.set_ylabel("joint angle [deg]")
     ax2.set_xlim(0, 1)
     ax2.grid(alpha=0.3)
-    # Span the stops plus whatever the trajectory does outside them, so a leg
-    # that stays in range is not drawn on a scale sized for one that does not.
+    # y range covers the limits and the trajectory
     span = [np.degrees(lo[i_th]), np.degrees(hi[i_th]),
             np.degrees(lo[i_ca]), np.degrees(hi[i_ca]),
             q_th.min(), q_th.max(), q_ca.min(), q_ca.max()]
@@ -506,10 +384,7 @@ def main():
                         help="write the figure here (format from the extension)")
     args = parser.parse_args()
 
-    # A solution or guess file says which robot it belongs to, so pointing this
-    # figure at one is enough — the workspace it is checked against has to be
-    # that robot's or the comparison is meaningless.  An explicit --robot still
-    # wins, and solution_leg_angles then reports the disagreement.
+    # Default robot from the input file; an explicit --robot is checked against it.
     src_file = args.solution or args.guess
     if args.robot is None:
         args.robot = ("amph" if src_file is None or not src_file.exists()
@@ -517,9 +392,7 @@ def main():
 
     robot = load_robot(args.robot)
     legs = list(robot.spec.leg_names)
-    # Both defaults are amph's, and neither is a name every robot has: body2's
-    # legs are FL/FR/BL/BR, and its guess is the firmware stroke written in
-    # theta rather than one of paper.py's gaits.
+    # Robot-dependent defaults
     if args.leg is None:
         args.leg = DEFAULT_LEG if DEFAULT_LEG in legs else legs[0]
     if args.gait is None:
@@ -532,9 +405,7 @@ def main():
     n_nodes = 0
     overlay = None
     if args.solution is not None:
-        # The path is the solution's own forward kinematics.  Drawing the guess
-        # builder's commanded path here instead would show a curve the solved
-        # leg never follows: the OCP is free to leave the guess, and does.
+        # Path from the solution's own kinematics
         if not args.solution.exists():
             raise SystemExit(f"no solution at {args.solution}")
         q_th, q_ca = solution_leg_angles(robot, args.solution, args.leg)
@@ -545,9 +416,7 @@ def main():
         traj = commanded_path(robot, args.gait, args.samples, args.leg)
         source = f"{args.gait} commanded foot path"
 
-    # Distance to the nearest reachable configuration: ~0 inside the workspace,
-    # the excursion itself outside.  The sweep is a finite grid, so anything
-    # within one grid step counts as reachable.
+    # Distance to the reachable cloud; within one grid step counts as reachable.
     excursion = cKDTree(cloud).query(traj)[0] * 1000.0
     tol = 1000.0 * np.linalg.norm(cloud.max(0) - cloud.min(0)) / args.resolution
     outside = excursion > tol
@@ -565,7 +434,7 @@ def main():
         print(f"  ({FRONT_LEG} defines the commanded path, so 0% is the only "
               f"possible answer — this is a self-consistency check)")
 
-    # A solution's angles are already loaded: they are what drew the path.
+    # Angle overlay (a solution's angles are already loaded)
     if args.solution is None:
         overlay = "driven angles" if args.leg.startswith("Front") else "IK solution"
         if args.guess is None and args.gait != PROTOTYPE:
@@ -578,23 +447,20 @@ def main():
         elif args.guess.exists():
             q_th, q_ca = guess_leg_angles(robot, args.guess, args.leg)
             n_nodes = len(q_th)
-            # The npz carries no gait tag, so an overlay from a run of a different
-            # gait would be drawn against the wrong commanded path unwarned.
+            # The guess file records no gait, so warn about the assumption.
             print(f"  overlay from {args.guess.name} (N={n_nodes}), assumed to be a "
                   f"{args.gait} guess — the file records no gait, and none of the "
                   f"spec it was built under")
         else:
             print(f"  (no guess at {args.guess}; skipping the angle overlay)")
 
-    # Reported for whichever overlay was used, so the live and saved paths are
-    # held to the same check.
+    # Joint-limit margins of the overlay angles
     if n_nodes:
         lo, hi = limits_for(robot)[:2]
         for lbl, i, q in zip(dof_labels(robot), leg_dofs(robot, args.leg),
                              (q_th, q_ca)):
             slack = np.degrees(min(q.min() - lo[i], hi[i] - q.max()))
-            # A solution that made the limit active sits microdegrees past it,
-            # which is the solver's tolerance and not a violation to report.
+            # Within solver tolerance of the limit
             if abs(slack) < 1e-3:
                 verdict = "at the stop"
             else:
@@ -608,8 +474,7 @@ def main():
     if args.save:
         for name, fig in figs.items():
             path = args.save.with_name(f"{args.save.stem}_{name}{args.save.suffix}")
-            # Page = the canvas set above, identical for both figures; see the
-            # savefig.bbox override at the top of the module.
+            # Uncropped (see half_width())
             fig.savefig(path, dpi=300)
             print(f"Saved → {path}")
     else:

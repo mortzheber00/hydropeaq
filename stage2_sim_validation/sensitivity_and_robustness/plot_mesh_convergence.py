@@ -1,31 +1,15 @@
 #!/usr/bin/env python3
-"""
-Mesh-refinement figure for the gait OCP: the evidence behind a choice of N.
+"""Mesh-convergence figures for an n_sweep_continuation.py ladder (read from MLflow).
 
-Reads a continuation ladder back out of MLflow (the runs ``n_sweep_continuation``
-tagged with ``ladder``) and draws the three things a grid choice has to rest on:
-
-  (a) the worst-converging joint's trajectory at every N, so a reader can see
-      the coarse grids separate and the fine ones collapse;
-  (b) solution error against the finest grid on log-log axes, with the scheme's
-      theoretical slope for reference — this is what distinguishes "the numbers
-      stopped moving" from "the discretisation is resolved";
-  (c) the quantities actually reported in the thesis, as deviation from the
-      finest grid, against a tolerance band declared up front.
-
-Energy (and so COT) is integrated on the collocation points with the Radau
-weights, which needs ``Xc`` in the solution file.  Runs written before that was
-saved are refused rather than silently measured a second, coarser way — mixing
-two quadratures inside one convergence figure would make the trend an artefact.
-
-The tolerance band is an argument, not an observation: pick ``--tolerance``
-before looking at the plot, or the figure justifies whatever N it happens to
-land on.
+Writes two figures: the deviation of the reported quantities from the finest
+grid with a +-tolerance band (``_quantities``), and wall time per iteration vs
+N (``_cost``). The console table adds the joint-trajectory difference. Choose
+--tolerance before looking at the results. Solutions need ``Xc``.
 
 Usage:
-  python plot_mesh_convergence.py --ladder 20260827_185136
-  python plot_mesh_convergence.py --ladder TAG1 TAG2 --select 48 --tolerance 5
-  python plot_mesh_convergence.py --ladder TAG --save ../docs/figures/mesh_study.pdf
+  python stage2_sim_validation/sensitivity_and_robustness/plot_mesh_convergence.py --ladder 20260827_185136
+  python stage2_sim_validation/sensitivity_and_robustness/plot_mesh_convergence.py --ladder TAG1 TAG2 --select 48 --tolerance 5
+  python stage2_sim_validation/sensitivity_and_robustness/plot_mesh_convergence.py --ladder TAG --save mesh_study.pdf
 """
 from __future__ import annotations
 
@@ -49,8 +33,7 @@ from hydro_model.trajectory import load_solution                # noqa: E402
 from ocp_common import collocation_coefficients                 # noqa: E402
 from thesis_style import HALF, PALETTE, half_width              # noqa: E402
 
-# The two figures go side by side, so both take the shared half-width canvas
-# and are saved uncropped: same page size, same scale in LaTeX.
+# Side-by-side figures: shared half-width canvas, saved uncropped.
 half_width()
 
 MLFLOW_TRACKING_URI = "http://localhost:5000"
@@ -58,20 +41,13 @@ MLFLOW_EXPERIMENT_ID = "1"
 GRAVITY = 9.81
 PHASE_SAMPLES = 256          # common grid for comparing trajectories across N
 
-# N is ordered, so it gets a sequential ramp (one hue, light -> dark) with the
-# values spelled out in the legend — not the categorical palette, which encodes
-# identity.  The four quantities in panel (c) are unordered, so they do.
+# Sequential colours for N (ordered); quantities use the categorical palette.
 N_RAMP = plt.get_cmap("Blues")
 N_RAMP_RANGE = (0.38, 0.95)
 
 
 def fetch_ladder(tags):
-    """Load every rung of the named ladder(s).
-
-    Returns ``({N: solution}, {N: timing})``.  The timing comes from the run's
-    logged metrics, not the artifact, because it is a property of the solve
-    rather than of the trajectory.
-    """
+    """``({N: solution}, {N: timing})`` for all rungs of the given ladder tag(s)."""
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     c = MlflowClient()
     out, meta, seen = {}, {}, {}
@@ -118,7 +94,7 @@ def joint_angles(sol, samples: int) -> np.ndarray:
 
 
 def metrics(sol, robot, B, d) -> dict:
-    """Reported quantities, with energy on the collocation quadrature."""
+    """Cycle-integrated quantities (COT, torque/heave/pitch RMS)."""
     X, U, Xc, T, n = sol["X"], sol["U"], sol["Xc"], sol["T"], sol["U"].shape[1]
     n_act, nv = robot.n_actuated, robot.nv_reduced
     v_j = slice(12 + n_act, 2 * nv)          # tangent-state joint velocities
@@ -130,15 +106,10 @@ def metrics(sol, robot, B, d) -> dict:
     forward = float(X[0, -1] - X[0, 0])
     mass = pin.computeTotalMass(robot.model)
     z = X[2, :]
-    # Base pitch straight off the quaternion (x, y, z, w): asin(-R[2,0]).
+    # Base pitch from the quaternion (x, y, z, w): asin(-R[2,0])
     qx, qy, qz, qw = X[3, :], X[4, :], X[5, :], X[6, :]
     pitch = np.arcsin(np.clip(2.0 * (qw * qy - qx * qz), -1.0, 1.0))
-    # Every entry is an integral or an RMS over the cycle.  Peak quantities are
-    # deliberately excluded: tau_max sits on a torque spike at a velocity-limit
-    # junction and grows with every refinement (1.79 -> 2.18 over N = 16..96),
-    # so it measures how well a mesh resolves a near-discontinuity rather than
-    # converging to anything.  Peak-to-peak heave has the same weakness in
-    # milder form.  Both belong in the results table, not in a convergence test.
+    # No peak values: tau_max sits on a torque spike and keeps growing with N.
     return {
         "COT": energy / (mass * GRAVITY * abs(forward)),
         "tau_rms": float(np.sqrt((U ** 2).mean())),
@@ -147,9 +118,7 @@ def metrics(sol, robot, B, d) -> dict:
     }
 
 
-# Plain keys travel through the code and the console table; LaTeX only reaches
-# the figure, where usetex can render it.
-TRAJ = "trajectory"      # console table only; kept off the figure
+TRAJ = "trajectory"      # console table only
 
 LABELS = {
     "COT": "COT",
@@ -158,12 +127,7 @@ LABELS = {
     "pitch_rms": "pitch rms",
 }
 
-# Colour follows the quantity, never its position in the list.  Enumerating the
-# series and taking PALETTE[i] repaints every survivor whenever one is added or
-# dropped — removing mean-square power moved tau_rms from red to green and
-# heave rms from pink to red, so the same quantity had two colours across two
-# drafts of the same figure.  Slots are reserved here, including for quantities
-# not currently plotted, so adding one back disturbs nothing.
+# Fixed palette slot per quantity, so colours stay stable when series change
 COLORS = {
     "COT": 0,          # blue
     "tau_rms": 1,      # green
@@ -175,24 +139,7 @@ COLORS = {
 
 
 def figure_quantities(Ns, quants, select, tol):
-    """Deviation of each reported quantity from the finest grid, against N.
-
-    The reference point is dropped: its deviation is zero by construction, and
-    its true error is unknowable without a grid finer still.
-
-    No axes title — these are exported one per file for \includegraphics, so the
-    LaTeX caption carries the description and a title inside the PDF would
-    duplicate it at a different size and font.
-
-    Two other panels were tried and cut.  A trajectory overlay: the controls
-    stay visibly noisy at every N, so it read as clutter rather than evidence.
-    A solution-error curve (RMS joint difference vs N): one series, five points,
-    and measured against a reference that is itself unconverged — a relative
-    difference between two unresolved grids, which looks like an error bound and
-    is not one.  Those numbers belong in the text; the honest verification
-    measure is an ODE residual, which needs no reference grid and is not
-    implemented here.
-    """
+    """Deviation of each quantity from the finest grid vs N (reference N omitted)."""
     ref_N = Ns[-1]
     ns = np.array([n for n in Ns if n != ref_N], dtype=float)
     fig, ax = plt.subplots(figsize=HALF)
@@ -206,8 +153,7 @@ def figure_quantities(Ns, quants, select, tol):
     for name in names:
         ax.plot(ns, devs[name], "-o", ms=3.2, lw=1.2,
                 color=PALETTE[COLORS[name]], zorder=3)
-    # Direct labels in the left margin, replacing a legend box.  Placed by value
-    # at the coarsest grid and pushed apart where they would overlap.
+    # Direct labels left of the coarsest point, spread apart to avoid overlap
     lo_all = min(dv.min() for dv in devs.values())
     hi_all = max(dv.max() for dv in devs.values())
     gap = 0.075 * (hi_all - lo_all)
@@ -232,8 +178,7 @@ def figure_quantities(Ns, quants, select, tol):
     ax.set_xticks(ns)
     ax.set_xticklabels([f"{int(n)}" for n in ns])
     ax.minorticks_off()
-    # The left margin holds the direct labels, so it is sized for the longest of
-    # them ("heave rms" at 8 pt) at the half-width canvas, not for the data.
+    # Left margin sized for the labels
     ax.set_xlim(ns[0] - 0.40 * span, ns[-1] + 0.08 * span)
     lo = min(min(dv.min() for dv in devs.values()), -tol)
     hi = max(max(dv.max() for dv in devs.values()), tol)
@@ -247,16 +192,10 @@ def figure_quantities(Ns, quants, select, tol):
 
 
 def figure_cost(Ns, meta, select):
-    """Wall time per iteration against N, with a fitted power law.
+    """Wall time per iteration vs N with a power-law fit.
 
-    Per iteration, not total: under continuation the total is set by how good
-    the warm start was (N=64 solved in 31 iterations and finished faster than
-    N=48's 70), so it measures the ladder, not the mesh.  Cost per iteration
-    depends only on problem size.  Every rung is here, including the reference,
-    which has no convergence datum but does have a cost.
-
-    The fitted exponent is printed by main() rather than drawn on the axes; it
-    belongs in the caption.
+    Per iteration, since total time depends on the warm start. The exponent is
+    printed by main().
     """
     n_all = np.array(Ns, dtype=float)
     wpi = np.array([meta[n]["wall"] / meta[n]["iters"] for n in Ns])
@@ -322,8 +261,7 @@ def main():
     j = int(np.unravel_index(np.abs(U_ref).argmax(), U_ref.shape)[0])
     print(f"peak-torque joint on the finest grid: {robot.actuated_joint_names[j]} "
           f"(|tau|max {np.abs(U_ref[j]).max():.4f} Nm) — the junction that limits this study")
-    # The trajectory error is a criterion like the others, so it is in the table
-    # and in the band test, not only on the figure.
+    # Trajectory difference, relative to its amplitude, also counts for the band test
     traj_pct = {n: 100 * errs[n] / amp for n in Ns}
     cols = list(quants[ref_N]) + [TRAJ]
     print("\n   N   RMS diff [deg]" + "".join(f"{k:>14s}" for k in cols))
@@ -349,11 +287,8 @@ def main():
     }
     if args.save:
         for tag, fig in figs.items():
-            # One file per figure: \includegraphics wants them separate, and a
-            # LaTeX caption per float beats a title baked into the PDF.
             out = args.save.with_name(f"{args.save.stem}_{tag}{args.save.suffix}")
-            # Page = the shared canvas, identical for both figures; see the
-            # savefig.bbox override in thesis_style.half_width().
+            # Uncropped (see thesis_style.half_width), so both pages match.
             fig.savefig(out, dpi=300)
             print(f"Saved → {out}")
             if out.suffix == ".pdf":

@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
-"""
-Replay an OCP solution in MeshCat with full STL meshes.
+"""Replay an OCP solution in MeshCat (http://localhost:7000) until interrupted.
+
+The robot is read from the solution file; reduced states are expanded to the
+full tree.
 
 Usage:
-    python visualize_solution.py [solution.npz]
-
-The robot is read from the solution file.  A closed-chain robot's state is
-stored in its reduced coordinates, so it is expanded onto the Pinocchio tree
-before display — which is also what makes the linkage loops visibly close.
-
-Opens a browser tab at http://localhost:7000.  The trajectory loops
-continuously until the script is interrupted.
+  python stage3_visualization/gait/visualize_solution.py task3_solution.npz
 """
 
 import sys
@@ -36,8 +31,7 @@ def main():
     print(f"Loaded {SOL_PATH}: robot={sol['robot']}, N={N}, T={T:.3f}s, "
           f"nq={nq}, coords={sol['coords']}")
 
-    # Two different package-dir conventions are in play: pinocchio strips the
-    # package name itself, so it wants the directory *containing* the package.
+    # Pinocchio expects the directory containing the package.
     model, collision_model, visual_model = pin.buildModelsFromUrdf(
         str(spec.urdf_path), package_dirs=[str(spec.package_root)],
         root_joint=pin.JointModelFreeFlyer(),

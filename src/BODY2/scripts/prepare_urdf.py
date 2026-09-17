@@ -1,45 +1,19 @@
-"""Turn the raw SolidWorks export of BODY2 into a URDF the pipeline can use.
+"""Post-process BODY2's SolidWorks URDF export in place (run after every CAD export).
 
-Run this once after every CAD re-export.  It applies, in order:
+Steps:
+0. Rename joints ``Joint_FL1.1`` -> ``Joint_FL1_1`` (ROS names cannot contain
+   dots; link names and mesh files keep them).
+1. Make all leg joints continuous, move their origins onto the pin centres and
+   re-home all legs to the same zero pose (link origins are compensated).
+2. Move the base frame to the CoM with +x forward (yaw only, so the leg planes
+   stay normal to y); the inertia tensor is rotated too.
+3. Regenerate body2_linkage.json.
 
-0. **Sanitise the joint names.**  The export spells them ``Joint_FL1.1``; ROS
-   graph resource names forbid dots, so every joint becomes ``Joint_FL1_1``.
-   Link names, mesh files and the ``"1.1"`` keys used throughout
-   ``leg_linkage_sim`` and ``body2_map`` keep the CAD's dotted nomenclature --
-   none of those ever becomes a ROS name.
+Idempotent. Loop closures are not representable in URDF; see
+hydro_model/robots/body2_map.py.
 
-1. **Fix the leg joints.**  ``Joint_*1.3`` and ``Joint_*2.3`` are exported as
-   ``fixed`` but are real pins, and several joint origins sit up to 2.6 mm off
-   the physical hole centres (two of them are not even on the part).  Every leg
-   joint becomes ``continuous`` with its origin on the pin it represents, and
-   all four legs are re-homed so ``q = 0`` is the same physical pose on each --
-   the export freezes whatever crank angle each leg happened to have, which
-   differs by up to 13 deg.  Moving a joint origin moves its child link frame,
-   so that link's visual, collision and inertial origins are compensated and
-   the geometry stays exactly where it was.
-
-2. **Re-frame the base.**  The export leaves ``base_link`` at the CAD origin,
-   ~1.1 m from the robot and facing -x, with the handedness mirrored relative
-   to amph.  Everything is moved to amph's convention -- origin at the centre
-   of mass, +x forward, +y to the robot's left -- by translating to the CoM and
-   yawing 180 deg.  A yaw is the only rotation that keeps the leg planes normal
-   to world Y, which the closed-form linkage solver relies on.  The base
-   inertia tensor is rotated too, not just translated.  This runs *after* the
-   legs are homed, so the origin lands on the CoM of the pose the robot will
-   actually sit in -- which is also what makes a second run a no-op.
-
-3. **Refresh the frozen pin geometry** in ``hydro_model/robots/body2_linkage.json``,
-   which is expressed in world coordinates and so depends on both steps above.
-
-    python src/BODY2/scripts/prepare_urdf.py
-
-Idempotent: every transform is measured from the current file, so re-running
-computes identities (bar ~1e-14 of float round-trip through the text).
-
-What this still cannot do: URDF has no way to express the two loop-closure pins
-per leg, so the result is a kinematically correct but under-constrained tree
-with 6 joints for 2 real DOF.  The loops live in the coordinate map instead --
-see ``hydro_model/robots/body2_map.py``.
+Usage:
+  python3 src/BODY2/scripts/prepare_urdf.py
 """
 
 from __future__ import annotations
@@ -65,10 +39,10 @@ AXIS = re.compile(r'(<axis\s+xyz=")([^"]*)(")')
 TYPE = re.compile(r'(type=")([^"]*)(")')
 
 
-# ------------------------------------------------------------------ helpers
+# --- Helpers ---
 
 def read_urdf() -> str:
-    with open(lls.URDF, newline="") as f:      # newline="" keeps the CRLF endings
+    with open(lls.URDF, newline="") as f:      # keep CRLF line endings
         return f.read()
 
 
@@ -78,6 +52,7 @@ def write_urdf(text: str) -> None:
 
 
 def _block(text: str, tag: str, name: str):
+    """``(start, end)`` of the named ``<tag>`` element in ``text``."""
     m = re.search(rf'<{tag}\s+name="{re.escape(name)}"', text)
     if m is None:
         raise KeyError(f"{tag} {name} not found")
@@ -85,7 +60,7 @@ def _block(text: str, tag: str, name: str):
 
 
 def _fmt(v) -> str:
-    # the smallest meaningful figure here is ~1e-4 m, so 1e-12 is noise
+    # Round values below 1e-12 to zero (noise)
     v = np.where(np.abs(np.asarray(v, dtype=float)) < 1e-12, 0.0, v)
     return " ".join(f"{x:.15g}" for x in np.atleast_1d(v))
 
@@ -118,10 +93,10 @@ def _rot_xz(th):
     return np.array([[c, 0, -s], [0, 1, 0], [s, 0, c]])
 
 
-# --------------------------------------------------------- 1. re-frame base
+# --- Re-frame the base ---
 
 def _target_frame(model) -> pin.SE3:
-    """The new base frame, expressed in the current one."""
+    """New base frame (CoM, facing the front legs) in the current base frame."""
     data = model.createData()
     q0 = pin.neutral(model)
     com = np.asarray(pin.centerOfMass(model, data, q0))
@@ -138,6 +113,7 @@ def _target_frame(model) -> pin.SE3:
 
 
 def reframe_base(text: str) -> str:
+    """Move base_link and its child joint origins into the target frame."""
     model = pin.buildModelFromUrdf(str(lls.URDF), pin.JointModelFreeFlyer())
     M = _target_frame(model)
     yaw = float(np.arctan2(M.rotation[1, 0], M.rotation[0, 0]))
@@ -165,7 +141,7 @@ def reframe_base(text: str) -> str:
     if len(seen) != 3:
         raise RuntimeError(f"base_link: expected 3 origins, found {len(seen)}")
 
-    # the tensor is given in the link frame, so rotating the frame rotates it
+    # Inertia is given in the link frame, so rotate it along
     vals = {k: float(_attr(blk, k)) for k in INERTIA}
     I_old = np.array([[vals["ixx"], vals["ixy"], vals["ixz"]],
                       [vals["ixy"], vals["iyy"], vals["iyz"]],
@@ -193,7 +169,7 @@ def reframe_base(text: str) -> str:
     return text
 
 
-# ------------------------------------------------------ 2. fix + home legs
+# --- Fix and re-home the legs ---
 
 def _home_offset(leg, ref):
     """Hip angles putting ``leg`` in the configuration ``ref`` has at its zero."""
@@ -208,6 +184,7 @@ def _home_offset(leg, ref):
 
 
 def _leg_update(name, ref, text):
+    """New joint and link origins for one leg at its home pose, plus the home offset."""
     leg = lls.Leg(name)
     q1, q2 = _home_offset(leg, ref)
     sol = leg.solve(q1, q2)
@@ -223,7 +200,7 @@ def _leg_update(name, ref, text):
         R0, p0 = leg.frames[f"Link_{name}{k}"]
         moved = A1 + M @ (p0 - A0)
         body[k] = (M @ R0, moved)
-        # the link frame keeps that orientation but slides onto the pin axis
+        # Link frame: same orientation, origin moved onto the pin axis
         frame[k] = (M @ R0, np.array([a1[0], moved[1], a1[1]]))
 
     hip = lls.JOINTS[lls.urdf_joint(name, "1.1")]
@@ -235,23 +212,24 @@ def _leg_update(name, ref, text):
         Rp, op = (np.eye(3), np.zeros(3)) if PARENT[k] is None else frame[PARENT[k]]
         jn = lls.urdf_joint(name, k)
         if k in ("1.3", "2.3"):
-            n = n_world                    # new joints follow the hip's handedness
+            n = n_world                    # formerly fixed joints: use the hip axis
         else:
             j = lls.JOINTS[jn]
             n = leg.frames[j["parent"]][0] @ j["R"] @ j["axis"]
         joints[jn] = dict(xyz=Rp.T @ (oc - op), rpy=_to_rpy(Rp.T @ Rc), axis=Rc.T @ n)
 
         Rb, pb = body[k]
-        d = Rc.T @ (pb - oc)               # old link frame, seen from the new one
+        d = Rc.T @ (pb - oc)               # old link frame in the new one
         link = f"Link_{name}{k}"
         a, b = _block(text, "link", link)
         com = np.array([float(v) for v in ORIGIN.search(text[a:b]).group(2).split()])
-        # the mesh may already carry an offset from an earlier run; compose
+        # Compose with any mesh offset from an earlier run
         links[link] = dict(mesh=d + lls._visual_offset(link), com=d + com)
     return joints, links, (q1, q2)
 
 
 def _apply_legs(text, joints, links):
+    """Write the joint and link updates from ``_leg_update`` into the URDF text."""
     for name, upd in joints.items():
         a, b = _block(text, "joint", name)
         blk = text[a:b]
@@ -278,6 +256,7 @@ def _apply_legs(text, joints, links):
 
 
 def fix_and_home_legs(text: str) -> str:
+    """Apply the joint fixes and re-home all legs to the HOME leg's zero pose."""
     ref = lls.Leg(HOME)
     for name in lls.LEGS:
         joints, links, q = _leg_update(name, ref, text)
@@ -287,16 +266,10 @@ def fix_and_home_legs(text: str) -> str:
     return text
 
 
-# ---------------------------------------------------------------- driver
+# --- Driver ---
 
 def sanitise_joint_names(text: str) -> str:
-    """Rewrite ``Joint_FL1.1`` to ``Joint_FL1_1`` and friends.
-
-    ROS graph resource names forbid dots, so a dotted joint name is illegal
-    anywhere a name is built out of it.  Only joint names change; link names,
-    mesh files and the ``"1.1"`` keys used throughout leg_linkage_sim and
-    body2_map keep the CAD's dotted nomenclature.  See ``lls.urdf_joint``.
-    """
+    """Rename ``Joint_FL1.1`` -> ``Joint_FL1_1`` (joints only; see ``lls.urdf_joint``)."""
     text, n = re.subn(r"Joint_([A-Z]{2})([12])\.([123])", r"Joint_\1\2_\3", text)
     print(f"  renamed {n} dotted joint-name occurrence(s)")
     return text
@@ -305,19 +278,16 @@ def sanitise_joint_names(text: str) -> str:
 def main() -> None:
     print(f"preparing {lls.URDF}")
 
-    # Before anything reads a joint by name: the helpers below and
-    # leg_linkage_sim both spell them with an underscore.
+    # First, since everything below looks joints up by their new names
     print("\n[0/4] sanitising joint names for ROS")
     write_urdf(sanitise_joint_names(read_urdf()))
     importlib.reload(lls)
 
-    # Legs first: re-framing measures the centre of mass, and doing it after
-    # homing means the origin lands on the CoM of the pose the robot will
-    # actually sit in -- which is also what makes a second run a no-op.
+    # Legs before the base, so the CoM is measured at the home pose.
     print("\n[1/4] fixing joint types/origins and homing the legs")
     write_urdf(fix_and_home_legs(read_urdf()))
 
-    # leg_linkage_sim caches the URDF at import; it must re-read after a rewrite
+    # leg_linkage_sim reads the URDF at import time
     importlib.reload(lls)
 
     print("\n[2/4] re-framing the base")
