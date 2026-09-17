@@ -249,8 +249,21 @@ hydrodynamic coefficients to the recording instead, use
 [`stage2_sim_validation/README.md`](stage2_sim_validation/README.md) for all comparison
 scripts.
 
-The plugin also writes the fluid particles to `sph_output/vtk/`. To see how the water
-moves around the legs, slice it through each side's leg plane and render the vorticity
+The plugin also writes the fluid particles to `sph_output/vtk/`. To look at the whole
+pool, open the 3D viewer (`x` saves the current view as a PDF, `--save-frame K` and
+`--save-video` render without a window):
+
+```bash
+python stage3_visualization/sph/pool_viewer.py
+```
+
+<p align="center">
+  <img src="docs/figures/sph_pool_view.png" alt="SPH pool with the robot and particles coloured by speed" width="70%">
+  <br>
+  <em>SPH replay, frame 92: fluid particles coloured by speed around the swimming robot.</em>
+</p>
+
+To see how the water moves around the legs, slice it through each side's leg plane and render the vorticity
 with streamlines (`--show` opens an interactive player instead, `--view top` slices
 horizontally):
 
