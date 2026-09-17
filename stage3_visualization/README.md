@@ -60,6 +60,19 @@ listed with the script.
 The speed-sweep scripts read a `run_codesign.py` sweep, and `run_codesign.py` itself
 hardcodes `amph`.
 
+## `sph/` — flow in the SPH simulation
+
+These scripts read the particle export of a Gazebo + SPlisHSPlasH run from
+`sph_output/vtk/` (see [`src/README.md`](../src/README.md)) instead of a solution file.
+
+| Script | Description | amph | body2 |
+|--------|-------------|:----:|:-----:|
+| `pool_viewer.py` | Interactive 3D view of the pool, robot and particles coloured by speed; saves single frames as PDF or a range as mp4/gif. | ✅ | ❌ |
+| `leg_flow_slices.py` | In-plane speed or vorticity with streamlines on planes through the legs (side or top view), as video, stills or one gait cycle in 8 snapshots. | ✅ | ❌ |
+| `wake_spacetime.py` | Space-time diagram of the wake travelling from the front to the hind legs, per body side. | ✅ | ❌ |
+
+The Gazebo simulation does not run for BODY2, so there is no SPH export for it.
+
 ## `model/` — model figures
 
 | Script | Description | amph | body2 |

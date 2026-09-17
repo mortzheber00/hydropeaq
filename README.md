@@ -3,7 +3,7 @@
 Energy-efficient **swimming gaits** for amphibious quadruped robots, found by trajectory
 optimization against a differentiable hydrodynamic model, co-designed on a
 speed-vs-efficiency Pareto front, and validated against a high-fidelity SPH fluid
-simulation. The reference platform is the AMPH quadruped; BODY2 is also supported (see
+simulation. The reference platform is the AMPH quadruped and additional robot called BODY2 is also supported (see
 [Multiple robots](#multiple-robots)).
 
 <p align="center">
@@ -23,17 +23,19 @@ hydrodynamic drag, added mass, and buoyancy. Each link is approximated by a cyli
 these forces are computed symbolically (CasADi) and differentiated through by the
 optimizer.
 
-The project is organized as a three-stage pipeline:
+The project is organized as a three-stage pipeline, plus the Gazebo simulation that
+stage 2 runs against:
 
 | Stage | Folder | What it does |
 |-------|--------|--------------|
 | **1 — Model & optimize** | [`stage1_gait_optimization/`](stage1_gait_optimization/) | Build the robot + hydrodynamic model and solve the gait optimal-control problem (OCP); co-design gait × cadence into a Pareto front. |
+| **Simulation** | [`src/`](src/) | ROS packages and launch files that replay a solved gait in Gazebo with the SPlisHSPlasH fluid plugin ([`splishsplash/`](splishsplash/)) and record it to a rosbag. |
 | **2 — Validate** | [`stage2_sim_validation/`](stage2_sim_validation/) | Calibrate the hydrodynamic coefficients against SPH (SPlisHSPlasH + Gazebo) recordings, replay optimized gaits in the simulator, and test how robust the OCP results are. |
 | **3 — Analyze** | [`stage3_visualization/`](stage3_visualization/) | Thesis figures and metrics for solved gaits, the thrust mechanism, and the co-design sweep; MeshCat 3-D replay. |
 
 The OCP uses degree-3 Radau **direct collocation** over a periodic cycle with a free
 cycle period `T`, minimizing mechanical power subject to an average forward-speed floor.
-Two entry points share the same transcription
+The codesign and single ocp solve share the same transcription
 ([`ocp_common.build_collocation_nlp`](stage1_gait_optimization/ocp_common.py)):
 
 <table>
@@ -143,7 +145,6 @@ source itself needs a licence.
 ### With sudo
 
 ```bash
-sudo apt install gfortran libblas-dev liblapack-dev libmetis-dev
 ./configure
 make
 sudo make install          # installs /usr/local/lib/libcoinhsl.so
@@ -344,11 +345,6 @@ Because P6 and P8 are not URDF joints, a leg can render with a visible seam.
 It does not move the paddle, which reaches the base through a serial chain that
 no gap at those pins can disturb.
 
-> **Resolution caveat.** `particleRadius` is 0.025 in `body2_pool.world`, which
-> does not resolve BODY2's legs: the five thin links per leg are bars 4.8–8.2 mm
-> across, and they carry 56% of the leg's transverse drag area. At this setting
-> the SPH thrust is qualitative. Refine before quoting a number.
-
 The raw SolidWorks export is not directly usable — the base frame sits 1.1 m
 from the robot facing backwards, two leg joints are exported as `fixed` when
 they are really pins, the four legs are homed at different crank angles, and
@@ -358,5 +354,3 @@ all of it and refreshes the frozen pin geometry:
 ```bash
 python3 src/BODY2/scripts/prepare_urdf.py     # re-run after every CAD export
 ```
-
-It is idempotent, so running it on an already-prepared URDF is a no-op.

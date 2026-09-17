@@ -13,7 +13,7 @@ repository root; `--help` lists its options.
 |--------|-------------|:----:|:-----:|
 | `sweep_hydro_params.py` | Fits the six drag/added-mass coefficients so the model's base motion matches one or more SPH rosbags. | ✅ | ❌ |
 | `hydro_fit_sensitivity.py` | Scans each coefficient across its range around the fit to show which ones the recording can actually identify. | ✅ | ❌ |
-| `simulate_ocp.py` | Forward-simulates the base with the OCP's joint trajectory prescribed, for comparing against a bag. | ✅ | ✅ |
+| `simulate_ocp.py` | Forward-simulates the base with the OCP's joint trajectory prescribed, for comparing against a bag. Helpful if coefficients changed to evaluate on the model| ✅ | ✅ |
 
 `sweep_hydro_params.py` and `hydro_fit_sensitivity.py` hardcode `amph`.
 

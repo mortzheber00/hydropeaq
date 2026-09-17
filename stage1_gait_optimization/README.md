@@ -12,6 +12,28 @@ cd /home/ws
 python stage1_gait_optimization/trajopt/run_collocation.py
 ```
 
+## Running the co-design sweep
+
+`codesign/run_codesign.py` solves one OCP per initial gait × cycle period × target speed
+and extracts the speed-vs-cost-of-transport Pareto front:
+
+```bash
+python stage1_gait_optimization/codesign/run_codesign.py
+```
+
+The sweep is configured by constants, not arguments:
+
+| Where | Setting |
+|-------|---------|
+| `codesign/run_codesign.py` | `SPEED_TARGETS`, `T_GRID_DEFAULT` / `GAIT_T_OVERRIDE` (cycle-period centres), `FREE_T_BAND`, `PARALLEL` / `N_WORKERS`, `WARM_START`, `USE_MLFLOW`, `RUN_LABEL` |
+| `codesign/solver.py` | `ROBOT`, `GAITS` (initial gaits), IPOPT options |
+
+Each (gait, period) pair is a chain over ascending speeds, warm-started from the
+previous speed; chains run in parallel. The sweep writes one solution per point,
+`codesign_summary.json` and `pareto_front.{png,pdf}` to `codesign/codesign_results/`,
+and logs to the MLflow experiment `gait_codesign` (start the server first, see below).
+
+
 ## Experiment Tracking (MLflow)
 
 Results, parameters, and solution files are logged to MLflow.
