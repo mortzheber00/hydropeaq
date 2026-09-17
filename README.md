@@ -1,4 +1,7 @@
-# HydroPEAQ — Hydrodynamic Modeling and Trajectory Optimization for Propulsion Efficiency in Amphibious Quadruped Robots
+<p align="center">
+  <img src="docs/figures/banner.svg" alt="HydroPEAQ — Hydrodynamic Modeling and Trajectory Optimization for Propulsion Efficiency in Amphibious Quadruped Robots" width="100%">
+</p>
+
 
 Energy-efficient **swimming gaits** for amphibious quadruped robots, found by trajectory
 optimization against a differentiable hydrodynamic model, co-designed on a
