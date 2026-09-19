@@ -1,17 +1,41 @@
+"""Collocation OCP building blocks shared by the trajectory-optimisation drivers."""
+from __future__ import annotations
+
 import casadi as ca
 import mlflow
 import numpy as np
 import pinocchio as pin
+from hydro_model.trajectory import save_solution
+
+# Grid size at which W_VEL_SMOOTH was tuned. Changing it rescales the smoothness
+# penalties for every robot and N, so treat it as a retune, not a knob.
+VEL_SMOOTH_REF_N = 32
+
+
+def _base_ref(model: pin.Model, q_ref_quat: np.ndarray) -> np.ndarray:
+    """Neutral configuration with the reference base orientation.
+
+    Uses ``pin.neutral`` so continuous joints get a valid ``(cos, sin)`` pair.
+    """
+    q = pin.neutral(model)
+    q[3:7] = q_ref_quat
+    return q
 
 
 def legacy_to_tangent(
-    X_legacy: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model
+    X_legacy: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model,
+    *, nq: int | None = None, nv: int | None = None,
 ) -> np.ndarray:
-    """Convert (nq+nv, K) state with base quaternion to (2*nv, K) with a
-    3-vector base tangent ``phi`` around ``q_ref_quat`` (scalar-last)."""
-    nq, nv = model.nq, model.nv
+    """Convert ``(nq+nv, K)`` quaternion states to ``(2*nv, K)`` tangent states.
+
+    The base orientation becomes a 3-vector ``phi`` around ``q_ref_quat``
+    (scalar-last). For closed-chain robots pass the reduced ``nq``/``nv``;
+    ``model`` is always the tree model and is only used for the base.
+    """
+    nq = model.nq if nq is None else nq
+    nv = model.nv if nv is None else nv
     n_act = nv - 6
-    q_ref_full = np.zeros(nq); q_ref_full[3:7] = q_ref_quat
+    q_ref_full = _base_ref(model, q_ref_quat)
     X_tan = np.zeros((2 * nv, X_legacy.shape[1]))
     for k in range(X_legacy.shape[1]):
         q_k = q_ref_full.copy(); q_k[3:7] = X_legacy[3:7, k]
@@ -24,15 +48,17 @@ def legacy_to_tangent(
 
 
 def tangent_to_legacy(
-    X_tan: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model
+    X_tan: np.ndarray, q_ref_quat: np.ndarray, model: pin.Model,
+    *, nq: int | None = None, nv: int | None = None,
 ) -> np.ndarray:
     """Inverse of ``legacy_to_tangent``."""
-    nq, nv = model.nq, model.nv
+    nq = model.nq if nq is None else nq
+    nv = model.nv if nv is None else nv
     n_act = nv - 6
-    q_ref_full = np.zeros(nq); q_ref_full[3:7] = q_ref_quat
+    q_ref_full = _base_ref(model, q_ref_quat)
     X_leg = np.zeros((nq + nv, X_tan.shape[1]))
     for k in range(X_tan.shape[1]):
-        dv = np.zeros(nv); dv[3:6] = X_tan[3:6, k]
+        dv = np.zeros(model.nv); dv[3:6] = X_tan[3:6, k]
         q_int = pin.integrate(model, q_ref_full, dv)
         X_leg[0:3, k]   = X_tan[0:3, k]
         X_leg[3:7, k]   = q_int[3:7]
@@ -53,18 +79,14 @@ def diagnose_initial_guess(
     W_DRIFT: float,
     F=None,
 ) -> None:
-    """Sanity-check the initial guess and report cost-term balance.
+    """Print and log shooting defects and the cost-term balance of the guess.
 
-    Prints (and logs to MLflow):
-      - per-step shooting defects ‖F(x_k, [0;u_k]) − x_{k+1}‖ if an RK4
-        integrator F(x, tau_full) is supplied.  Large defects ⇒ guess is
-        not dynamically consistent ⇒ IPOPT burns iterations on feasibility.
-      - the four cost terms exactly as built in the OCP, both unweighted
-        and weighted, so the user can rebalance W_* before solving.
+    Defects are only computed if an integrator ``F(x, tau_full)`` is given.
+    The weighted cost terms help rebalance ``W_*`` before solving.
     """
     print("\n  -- Initial-guess diagnostics --")
 
-    # ── Shooting defects ─────────────────────────────────────────────────
+    # --- Shooting defects ---
     if F is not None:
         defects = np.zeros(N)
         for k in range(N):
@@ -86,9 +108,9 @@ def diagnose_initial_guess(
             "guess_defect_mean": float(defects.mean()),
         })
 
-    # ── Cost-term breakdown ──────────────────────────────────────────────
-    # Per-joint mechanical power (τ_j · q̇_j); legacy state stores joint
-    # velocities at [nq+6 : nq+6+n_act]. Match U_guess width (N).
+    # --- Cost-term breakdown ---
+    # The guess has no collocation states, so power is a node sum here: good
+    # enough to balance weights, but not the objective's actual starting value.
     n_act = U_guess.shape[0]
     joint_vels = X_guess[nq + 6 : nq + 6 + n_act, :N]
     power_cost = float(np.sum((U_guess * joint_vels) ** 2)) / N
@@ -110,8 +132,7 @@ def diagnose_initial_guess(
     for name, raw, w in terms:
         print(f"    {name:<11s}{raw:>14.4e}{w:>10.2f}{w * raw:>14.4e}")
 
-    # Flag terms whose weighted magnitude is more than 5x off from power.
-    # Skip when W_POWER == 0 (feasibility stage) — reference is meaningless.
+    # Flag terms more than 5x off from power (no reference in a feasibility stage).
     if W_POWER > 0:
         ref = abs(terms[0][2] * terms[0][1]) + 1e-30
         for name, raw, w in terms[1:]:
@@ -138,15 +159,10 @@ def rollout_guess(
     nq: int,
     F,
 ) -> np.ndarray:
-    """Return a dynamically consistent state trajectory by forward integration.
+    """Forward-integrate ``U_guess`` from ``X_guess[:, 0]`` for a dynamically consistent guess.
 
-    Starts from X_guess[:,0], applies U_guess[:,k] at each step via F, and
-    returns X_rolled with shooting defects ≈ 0 (machine epsilon).  This trades
-    dynamics defects for periodicity residuals, which IPOPT handles better
-    because they are global rather than per-step equality constraints.
-
-    Prints periodicity residuals of the rolled-out trajectory so you can
-    judge how well the guess gait closes the cycle.
+    Trades per-step defects for periodicity residuals, which IPOPT handles
+    better. The residuals are printed.
     """
     X_rolled = np.zeros_like(X_guess)
     X_rolled[:, 0] = X_guess[:, 0]
@@ -196,7 +212,9 @@ def _log_solver_stats(stats: dict) -> None:
         mlflow.log_metrics({"convergence_obj": obj, "inf_pr": inf_pr, "inf_du": inf_du}, step=step)
 
 
-def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
+def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float,
+                     robot: str = "amph", coords: str = "tree",
+                     out_path: str = "task3_solution.npz", Xc_val=None) -> None:
     print(f"  Cycle period T       = {T_FIXED:.4f} s")
     print(f"  Forward distance     = {X_val[0, -1] - X_val[0, 0]:.4f} m")
     print(f"  Average forward vel  = {(X_val[0, -1] - X_val[0, 0]) / T_FIXED:.4f} m/s")
@@ -213,7 +231,8 @@ def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
     print(f"    djoints= {np.linalg.norm(xN[7:nq] - x0[7:nq]):.2e}")
     print(f"    dv     = {np.linalg.norm(xN[nq:] - x0[nq:]):.2e}")
 
-    np.savez("task3_solution.npz", T=T_FIXED, X=X_val, U=U_val, N=N, nq=nq)
+    save_solution(out_path, T=T_FIXED, X=X_val, U=U_val, N=N, nq=nq,
+                  robot=robot, coords=coords, Xc=Xc_val)
     mlflow.log_metrics({
         "forward_dist": float(X_val[0, -1] - X_val[0, 0]),
         "forward_vel":  float((X_val[0, -1] - X_val[0, 0]) / T_FIXED),
@@ -223,65 +242,78 @@ def extract_solution(X_val, U_val, nq: int, N: int, T_FIXED: float) -> None:
         "base_z_min":   float(X_val[2, :].min()),
         "base_z_max":   float(X_val[2, :].max()),
     })
-    mlflow.log_artifact("task3_solution.npz")
-    print("\n  Solution saved to task3_solution.npz")
+    mlflow.log_artifact(out_path)
+    print(f"\n  Solution saved to {out_path}")
 
 
 def collocation_coefficients(d: int):
-    """Lagrange basis derivative matrix C and endpoint vector D for Radau collocation.
+    """Radau collocation coefficients ``(tau_root, C, D, B)``.
 
-    tau_root = [0, tau_1, ..., tau_d]  (d+1 points)
-    C[i, r] = d/dtau L_i(tau_root[r+1])   (r = 0..d-1, the d Radau points)
-    D[i]    = L_i(1)
+    tau_root = [0, tau_1, ..., tau_d]
+    C[i, r]  = dL_i/dtau at tau_root[r+1]
+    D[i]     = L_i(1)
+    B[r]     = quadrature weight of the r-th Radau point
     """
     tau_root = np.concatenate([[0.0], np.array(ca.collocation_points(d, "radau"))])
-    C, D, _ = ca.collocation_coeff(ca.collocation_points(d, "radau"))
-    return tau_root, np.array(C), np.array(D).flatten()
+    C, D, B = ca.collocation_coeff(ca.collocation_points(d, "radau"))
+    return tau_root, np.array(C), np.array(D).flatten(), np.array(B).flatten()
+
+
+def limits_for(robot):
+    """Actuated-joint limits ``(q_lb, q_ub, v_ub, tau_ub)``.
+
+    Taken from the robot spec where set, otherwise from the URDF. Closed-chain
+    robots must set them in the spec. Velocity and effort limits are symmetric.
+    Also used by plot_limit_activity.py so figures show the limits the solver used.
+    """
+    spec = robot.spec
+
+    def _limit(given, fallback):
+        return fallback if given is None else np.asarray(given, dtype=float)
+
+    q_lb = _limit(spec.theta_lower, robot.model.lowerPositionLimit[7:])
+    q_ub = _limit(spec.theta_upper, robot.model.upperPositionLimit[7:])
+    v_ub = _limit(spec.theta_vel_limit, robot.model.velocityLimit[6:])
+    tau_ub = _limit(spec.theta_effort_limit, robot.model.effortLimit[6:])
+    for label, arr in (("position", q_lb), ("velocity", v_ub), ("effort", tau_ub)):
+        if len(arr) != robot.n_actuated:
+            raise ValueError(
+                f"{spec.name}: {label} limits have length {len(arr)}, expected "
+                f"{robot.n_actuated} — set RobotSpec.theta_* for this robot"
+            )
+    return q_lb, q_ub, v_ub, tau_ub
 
 
 def build_collocation_nlp(
     dyn, robot, X_guess, U_guess, n, *,
     t_lo, t_hi, t_init, v_target, f_c, heading_tol, d_colloc=3,
 ):
-    """Build the collocation transcription shared by the standalone driver
-    (``trajopt/run_collocation.py``) and the co-design evaluator
-    (``codesign/solver.py``).
+    """Radau collocation NLP shared by run_collocation.py and codesign/solver.py.
 
-    Creates the ``Opti`` problem with variables (grid states ``X``, collocation
-    states ``Xc``, controls ``U``, free period ``T``), and adds every constraint
-    that is identical between the two formulations: the kinematic + inverse-
-    dynamics collocation defects, state/control bounds, the first-order
-    torque-rate (bandwidth) filter, periodicity, the phi anchor, the average-speed
-    floor (``distance >= v_target * T``), and the heading bound.  It also warm-
-    starts from the guess and returns the common cost terms.
-
-    What is *not* added here — because it genuinely differs between the two —
-    is the objective (the driver adds a forward-distance reward; the evaluator
-    does not), the optional left–right symmetry constraints, and the solver
-    configuration.  The caller assembles those from the returned handles.
+    Adds the variables (``X``, ``Xc``, ``U``, free period ``T``), the dynamics
+    defects, bounds, torque-rate filter, periodicity, average-speed floor and
+    heading bound, and warm-starts from the guess. The caller adds the
+    objective, optional symmetry constraints and solver options using the
+    returned handles and cost terms.
     """
-    nq, nv = robot.nq, robot.nv
+    # Reduced coordinates: equal to the tree dimensions for a serial robot.
+    nq, nv = robot.nq_reduced, robot.nv_reduced
     n_act = robot.n_actuated
     nx = 2 * nv
     Q_J = slice(6, 6 + n_act)
     V_B = slice(6 + n_act, 12 + n_act)
     V_J = slice(12 + n_act, nx)
 
-    q_lb = robot.model.lowerPositionLimit[7:]
-    q_ub = robot.model.upperPositionLimit[7:]
-    v_lb = -robot.model.velocityLimit[6:]
-    v_ub = robot.model.velocityLimit[6:]
-    tau_lb = -robot.model.effortLimit[6:]
-    tau_ub = robot.model.effortLimit[6:]
+    q_lb, q_ub, v_ub, tau_ub = limits_for(robot)
+    v_lb, tau_lb = -v_ub, -tau_ub
 
-    tau_root, C, D = collocation_coefficients(d_colloc)
+    tau_root, C, D, B = collocation_coefficients(d_colloc)
     d = d_colloc
 
-    # Reference quaternion anchors the tangent representation at the guess's
-    # initial base orientation, so phi(t=0) = 0 by construction.
+    # Anchor the tangent representation at the guess's initial orientation.
     q_ref_quat = X_guess[3:7, 0].copy()
     f_kin, f_inv_dyn = dyn.build_tangent_dynamics(q_ref_quat)
-    Xt_guess = legacy_to_tangent(X_guess, q_ref_quat, robot.model)
+    Xt_guess = legacy_to_tangent(X_guess, q_ref_quat, robot.model, nq=nq, nv=nv)
     n_kin = 6 + n_act
 
     opti = ca.Opti()
@@ -289,18 +321,24 @@ def build_collocation_nlp(
     Xc = opti.variable(nx, n * d)       # tangent states at collocation points
     U = opti.variable(n_act, n)         # controls (piecewise constant)
 
-    # Free cycle period, bounded to a (possibly degenerate) band.
+    # Free cycle period; t_lo == t_hi fixes it.
     T = opti.variable()
     dt = T / n
     opti.subject_to(opti.bounded(t_lo, T, t_hi))
     opti.set_initial(T, t_init)
 
-    # Common cost terms (the objective itself is assembled by the caller).
-    power_cost = sum(ca.sumsqr(U[:, k] * X[V_J, k]) for k in range(n)) / n
-    vel_smooth_cost = sum(ca.sumsqr(X[V_B, k + 1] - X[V_B, k]) for k in range(n)) / n
+    # Mean power, integrated on the collocation points. A node sum lets the
+    # optimiser hide large torques at nodes where the velocity happens to be small.
+    # (1/T) * sum B_i * dt * f  ==  (1/n) * sum B_i * f
+    power_cost = sum(
+        B[i] * ca.sumsqr(U[:, k] * Xc[V_J, k * d + i])
+        for k in range(n) for i in range(d)
+    ) / n
     drift_cost = sum(X[1, k] ** 2 + (X[2, k] - X[2, 0]) ** 2 for k in range(n + 1)) / (n + 1)
 
-    # Collocation constraints (kinematic + inverse-dynamics split — no M⁻¹)
+    # Collocation defects, split into kinematics and inverse dynamics (no M^-1).
+    a_base = []          # (weight, base acceleration) per collocation point
+    a_joint = []         # (weight, joint acceleration) per collocation point
     for k in range(n):
         uk_full = ca.vertcat(ca.DM.zeros(6, 1), U[:, k])
         x_all = [X[:, k]] + [Xc[:, k * d + j] for j in range(d)]
@@ -309,30 +347,60 @@ def build_collocation_nlp(
             opti.subject_to(dt * f_kin(x_all[j]) == xp[:n_kin])
             a_poly = xp[n_kin:] / dt
             opti.subject_to(f_inv_dyn(x_all[j], a_poly) == uk_full)
+            a_base.append((B[j - 1], a_poly[:6]))
+            a_joint.append((B[j - 1], a_poly[6:]))
         x_end = sum(D[i] * x_all[i] for i in range(d + 1))
         opti.subject_to(X[:, k + 1] == x_end)
 
-    # Bounds at grid points on tangent state
+    # Mean squared base acceleration. It is mesh-independent, unlike a sum of
+    # velocity differences. The (t_init / VEL_SMOOTH_REF_N)^2 factor keeps the
+    # magnitude W_VEL_SMOOTH was tuned for.
+    vel_smooth_cost = (t_init / VEL_SMOOTH_REF_N) ** 2 * sum(
+        b * ca.sumsqr(a) for b, a in a_base
+    ) / n
+
+    # Same measure for the joints. Power alone does not regularise joint motion
+    # at low torque, which leaves chattering joint trajectories.
+    joint_smooth_cost = (t_init / VEL_SMOOTH_REF_N) ** 2 * sum(
+        b * ca.sumsqr(a) for b, a in a_joint
+    ) / n
+
+    # Robot-specific pose constraints (e.g. amph's pinned side joints, closed-chain
+    # assemblability). Equalities apply at grid points only; inequalities also at
+    # collocation points, since a branch flip mid-interval corrupts the solve.
+    def _pose(theta):
+        if robot.spec.pose_constraints is None:
+            return [], []
+        return robot.spec.pose_constraints(theta)
+
+    # State bounds at grid points
     for k in range(n + 1):
         opti.subject_to(opti.bounded(q_lb, X[Q_J, k], q_ub))
         opti.subject_to(opti.bounded(v_lb, X[V_J, k], v_ub))
         opti.subject_to(opti.bounded(-2.0, X[V_B, k], 2.0))
-        for side_idx in range(6, 6 + n_act, 3):
-            opti.subject_to(X[side_idx, k] == 0.0)
+        eqs, ineqs = _pose(X[Q_J, k])
+        for expr in eqs:
+            opti.subject_to(expr == 0.0)
+        for expr in ineqs:
+            opti.subject_to(expr >= 0.0)
 
-    # Bounds at collocation points
+    # State bounds at collocation points. The last Radau point coincides with the
+    # next grid point, which is already bounded; bounding it twice violates LICQ
+    # and IPOPT fails to converge. Only valid for Radau (last point at tau = 1).
     for k in range(n):
-        for j in range(d):
+        for j in range(d - 1):
             xc_kj = Xc[:, k * d + j]
             opti.subject_to(opti.bounded(q_lb, xc_kj[Q_J], q_ub))
             opti.subject_to(opti.bounded(v_lb, xc_kj[V_J], v_ub))
             opti.subject_to(opti.bounded(-2.0, xc_kj[V_B], 2.0))
+            for expr in _pose(xc_kj[Q_J])[1]:
+                opti.subject_to(expr >= 0.0)
 
-    # Bounds on controls at grid points
+    # Control bounds
     for k in range(n):
         opti.subject_to(opti.bounded(tau_lb, U[:, k], tau_ub))
 
-    # Torque-rate (bandwidth) constraints — first-order filter, symbolic in T.
+    # Torque rate limited by a first-order filter with cutoff f_c (cyclic).
     alpha = 2 * np.pi * dt * f_c / (2 * np.pi * dt * f_c + 1)
     for k in range(1, n):
         opti.subject_to(opti.bounded(
@@ -346,7 +414,7 @@ def build_collocation_nlp(
         (1 - alpha) * U[:, n - 1] + alpha * tau_ub,
     ))
 
-    # Periodicity + phi anchor + average-speed floor + heading bound.
+    # Periodicity, start pose anchor, average-speed floor and heading bound
     x0, xN = X[:, 0], X[:, n]
     opti.subject_to(xN[Q_J] == x0[Q_J])
     opti.subject_to(xN[V_J] == x0[V_J])
@@ -360,7 +428,7 @@ def build_collocation_nlp(
     opti.subject_to(xN[0] - x0[0] >= v_target * T)
     opti.subject_to(opti.bounded(-heading_tol, xN[5], heading_tol))
 
-    # Warm start
+    # Warm start; collocation states are linearly interpolated.
     for k in range(n + 1):
         opti.set_initial(X[:, k], Xt_guess[:, k])
     for k in range(n):
@@ -373,8 +441,162 @@ def build_collocation_nlp(
     return {
         "opti": opti, "X": X, "Xc": Xc, "U": U, "T": T,
         "alpha": alpha, "q_ref_quat": q_ref_quat,
+        # For integrating quantities the same way as the objective
+        "B": B, "d": d,
         "Q_J": Q_J, "V_B": V_B, "V_J": V_J,
         "power_cost": power_cost,
         "vel_smooth_cost": vel_smooth_cost,
+        "joint_smooth_cost": joint_smooth_cost,
         "drift_cost": drift_cost,
     }
+
+
+# --- Cycle energy and cost of transport ---
+GRAVITY = 9.81
+
+
+def cycle_energy(U_val, vc, B, d: int, n: int, T_val: float) -> float:
+    """Absolute mechanical work over the cycle, ∫Σ_j|τ_j·q̇_j|dt.
+
+    Integrated on the collocation points like the objective; ``vc`` is
+    ``Xc[V_J, :]``. Only first-order accurate across velocity sign changes.
+    """
+    dt = T_val / n
+    return float(sum(
+        B[i] * dt * np.sum(np.abs(U_val[:, k] * vc[:, k * d + i]))
+        for k in range(n) for i in range(d)
+    ))
+
+
+def cost_of_transport(energy: float, robot, forward: float) -> float:
+    """Dimensionless COT, ``E / (m g |d|)``; infinite for a stalled cycle."""
+    if abs(forward) <= 1e-9:
+        return np.inf
+    return energy / (pin.computeTotalMass(robot.model) * GRAVITY * abs(forward))
+
+
+# --- Left-right symmetry with free phase ---
+N_HARMONICS = 8  # must stay <= N/2
+
+
+def _fourier_basis(N: int, n_harmonics: int) -> np.ndarray:
+    """``(N, 1 + 2H)`` Fourier basis on the grid (independent of T)."""
+    k = np.arange(N)
+    cols = [np.ones(N)]
+    for m in range(1, n_harmonics + 1):
+        cols.append(np.cos(2.0 * np.pi * m * k / N))
+        cols.append(np.sin(2.0 * np.pi * m * k / N))
+    return np.column_stack(cols)
+
+
+def _detect_mirror_phase(right, left, N):
+    """Node-resolution phase at which ``left`` best matches ``right``; ``(phase, residual)``.
+
+    Both are ``(n_joints, N)``, with the mirror sign already applied to ``left``.
+    """
+    # np.roll(left, s)[k] == left[k - s], i.e. a delay of s / N as in _fourier_at.
+    err = [float(np.abs(right - np.roll(left, s, axis=1)).max()) for s in range(N)]
+    best = int(np.argmin(err))
+    return best / N, err[best]
+
+
+def _fourier_at(coeffs, k: int, N: int, n_harmonics: int, delay):
+    """Fourier series at node ``k`` delayed by ``delay`` cycles (may be symbolic)."""
+    out = coeffs[0]
+    for m in range(1, n_harmonics + 1):
+        arg = 2.0 * np.pi * m * (k / N - delay)
+        out = out + coeffs[2 * m - 1] * ca.cos(arg) + coeffs[2 * m] * ca.sin(arg)
+    return out
+
+
+def add_symmetry_constraints(opti, X, X_guess, robot, N, phases=None, verbose=True):
+    """Constrain each left-right leg pair to one shape with a free phase offset.
+
+        theta_left(t)  = series(c)(t)
+        theta_right(t) = mirror_joint_sign * series(c)(t - delta * T)
+
+    A Fourier series makes the shift ``delta`` differentiable. Only positions
+    are constrained; velocities follow from the kinematics.
+
+    ``phases`` seeds ``delta`` in cycles (scalar, per pair, or None to detect it
+    from the guess). Returns the ``delta`` variables in ``lr_leg_pairs`` order.
+    """
+    pairs = robot.spec.lr_leg_pairs
+    signs = robot.spec.mirror_joint_sign
+    if not pairs or signs is None:
+        raise ValueError(
+            f"{robot.spec.name}: enforce_symmetry needs lr_leg_pairs and "
+            f"mirror_joint_sign on the RobotSpec"
+        )
+    n_per_leg = robot.n_actuated // len(robot.spec.leg_names)
+    if len(signs) != n_per_leg:
+        raise ValueError(
+            f"{robot.spec.name}: mirror_joint_sign has {len(signs)} entries, "
+            f"expected {n_per_leg} (one per joint of a leg)"
+        )
+    sym_joints = robot.spec.symmetry_joints
+    if sym_joints is None:
+        sym_joints = tuple(range(n_per_leg))
+    if not sym_joints or any(not 0 <= j < n_per_leg for j in sym_joints):
+        raise ValueError(
+            f"{robot.spec.name}: symmetry_joints {sym_joints} out of range for "
+            f"{n_per_leg} joints per leg"
+        )
+    sym_signs = np.array([signs[j] for j in sym_joints])
+    if phases is not None:
+        if np.isscalar(phases):
+            phases = (float(phases),) * len(pairs)
+        if len(phases) != len(pairs):
+            raise ValueError(
+                f"{robot.spec.name}: symmetry_phase has {len(phases)} entries, "
+                f"expected {len(pairs)} (one per left-right pair) or a scalar"
+            )
+
+    basis = _fourier_basis(N, N_HARMONICS)
+    leg_index = {leg: i for i, leg in enumerate(robot.spec.leg_names)}
+    qj0 = 6           # first joint row in the tangent state
+    qj0_legacy = 7    # first joint row in the quaternion guess
+
+    sym_phase = []
+    worst_fit = 0.0
+    for i, (r_leg, l_leg) in enumerate(pairs):
+        l0 = qj0 + n_per_leg * leg_index[l_leg]
+        r0 = qj0 + n_per_leg * leg_index[r_leg]
+        gl0 = qj0_legacy + n_per_leg * leg_index[l_leg]
+        gr0 = qj0_legacy + n_per_leg * leg_index[r_leg]
+
+        g_left = X_guess[[gl0 + j for j in sym_joints], :N]
+        g_right = X_guess[[gr0 + j for j in sym_joints], :N]
+
+        detected, mirror_err = _detect_mirror_phase(
+            g_right, g_left * sym_signs[:, None], N)
+        phase0 = detected if phases is None else phases[i]
+        if verbose:
+            print(f"  {r_leg}/{l_leg}: guess mirrors at phase {detected:.4f} "
+                  f"(residual {np.degrees(mirror_err):.2f} deg), seeding {phase0:.4f}")
+
+        coeffs = opti.variable(len(sym_joints), 1 + 2 * N_HARMONICS)
+        delta = opti.variable()  # periodic, so left unbounded
+        opti.set_initial(delta, phase0)
+        sym_phase.append(delta)
+
+        target = g_left.T                             # seed coefficients from the guess
+        fit, *_ = np.linalg.lstsq(basis, target, rcond=None)
+        opti.set_initial(coeffs, fit.T)
+        worst_fit = max(worst_fit, float(np.abs(basis @ fit - target).max()))
+
+        for k in range(N):
+            for row, j in enumerate(sym_joints):
+                c = coeffs[row, :].T
+                opti.subject_to(
+                    X[l0 + j, k] == _fourier_at(c, k, N, N_HARMONICS, 0.0))
+                opti.subject_to(
+                    X[r0 + j, k] == signs[j] * _fourier_at(c, k, N, N_HARMONICS, delta))
+
+    if verbose:
+        # A large fit error means N_HARMONICS is too low for the stroke.
+        print(f"  symmetry: {len(pairs)} pair(s), joints {list(sym_joints)}, "
+              f"{N_HARMONICS} harmonics, phase free")
+        print(f"  worst harmonic fit error on a left leg of the guess: "
+              f"{np.degrees(worst_fit):.2f} deg")
+    return sym_phase

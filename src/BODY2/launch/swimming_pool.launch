@@ -1,0 +1,57 @@
+<launch>
+
+  <!-- BODY2 gait replay in the SPH swimming pool.
+
+       Generate the boundary meshes once beforehand (needed at world load):
+           rosrun sph_replay generate_boundary_obj.py body2
+       Then:
+           roslaunch BODY2 swimming_pool.launch npz_path:=/home/ws/task3_solution.npz -->
+
+  <arg name="gui_required" default="true" />
+  <arg name="npz_path"    default="/home/ws/task3_solution.npz" />
+  <arg name="n_repeat"    default="3" />
+  <arg name="bag_path"    default="/home/ws/sim_log.bag" />
+
+  <!-- Load URDF onto the parameter server -->
+  <param name="robot_description"
+         textfile="$(find BODY2)/urdf/BODY2.urdf" />
+
+  <!-- Start Gazebo with the scaled pool world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find BODY2)/worlds/body2_pool.world" />
+    <arg name="paused"     value="true" />
+    <arg name="use_sim_time" value="true" />
+    <arg name="gui"        value="false" />
+  </include>
+
+  <group if="$(arg gui_required)">
+    <node name="gazebo_gui" pkg="gazebo_ros" type="gzclient" respawn="false" required="true"
+          args=" --verbose -g libFluidVisPlugin.so"/>
+  </group>
+
+  <!-- No controllers: all 24 tree joints are prescribed by the replay plugin.
+       /BODY2/joint_states comes from the publisher declared in the URDF. -->
+
+  <!-- Publish TF from joint states -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher" output="screen">
+    <param name="publish_frequency" value="100.0" />
+    <remap from="joint_states" to="/BODY2/joint_states" />
+  </node>
+
+  <!-- Record robot state topics to a bag file (set bag_path:='' to disable) -->
+  <node if="$(eval arg('bag_path') != '')"
+        name="rosbag_record" pkg="rosbag" type="record"
+        args="-O $(arg bag_path) /BODY2/joint_states /gazebo/model_states"
+        output="screen" />
+
+  <!-- Trajectory replay (set npz_path:='' to disable) -->
+  <node if="$(eval arg('npz_path') != '')"
+        name="trajectory_replay" pkg="sph_replay" type="replay_trajectory.py"
+        output="screen">
+    <param name="robot"    value="body2" />
+    <param name="npz_path" value="$(arg npz_path)" />
+    <param name="n_repeat" value="$(arg n_repeat)" />
+  </node>
+
+</launch>

@@ -8,22 +8,22 @@
     name="base_link">
     <inertial>
       <origin
-        xyz="-0.206616563166805 1.10876238089051 0.0503379803251029"
-        rpy="0 0 0" />
+        xyz="-0.0103914541452094 -0.000104555249807348 0.0143356993500049"
+        rpy="0 0 -3.14159265358979" />
       <mass
         value="0.116296115571092" />
       <inertia
-        ixx="3.10159417013466E-05"
-        ixy="-1.47464613529609E-07"
-        ixz="4.3173022019409E-06"
+        ixx="3.10159417013466e-05"
+        ixy="-1.47464613529622e-07"
+        ixz="-4.3173022019409e-06"
         iyy="0.000140091968925203"
-        iyz="6.91125628618273E-09"
+        iyz="-6.91125628618326e-09"
         izz="0.00014189214201759" />
     </inertial>
     <visual>
       <origin
-        xyz="0 0 0"
-        rpy="0 0 0" />
+        xyz="-0.217008017312015 1.1086578256407 -0.036002280975098"
+        rpy="0 0 -3.14159265358979" />
       <geometry>
         <mesh
           filename="package://BODY2/meshes/base_link.STL" />
@@ -36,8 +36,8 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
-        rpy="0 0 0" />
+        xyz="-0.217008017312015 1.1086578256407 -0.036002280975098"
+        rpy="0 0 -3.14159265358979" />
       <geometry>
         <mesh
           filename="package://BODY2/meshes/base_link.STL" />
@@ -51,14 +51,14 @@
         xyz="0.0180272944873612 -0.00112687309864636 -0.0022259322582463"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494628" />
+        value="0.000900840318089747" />
       <inertia
-        ixx="1.64331754568383E-09"
-        ixy="1.52431762722807E-09"
-        ixz="3.6991888634381E-10"
-        iyy="2.59334970025315E-08"
-        iyz="-2.31233611923169E-11"
-        izz="2.66863584599606E-08" />
+        ixx="6.63044493667688E-09"
+        ixy="6.15030498511224E-09"
+        ixz="1.49254586454185E-09"
+        iyy="1.04636273337669E-07"
+        iyz="-9.32979590823686E-11"
+        izz="1.07673912929323E-07" />
     </inertial>
     <visual>
       <origin
@@ -85,37 +85,40 @@
     </collision>
   </link>
   <joint
-    name="Joint_BR1.1"
+    name="Joint_BR1_1"
     type="continuous">
     <origin
-      xyz="-0.169151121513308 1.15323685412489 0.0640784613687492"
-      rpy="-1.5707963267949 -0.0578319161345941 3.14159265358979" />
+      xyz="-0.0478568957987064 -0.0445790284841874 0.0280761803936512"
+      rpy="-1.5707963267949 -0.0578319161345941 0" />
     <parent
       link="base_link" />
     <child
       link="Link_BR1.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR1.2">
     <inertial>
       <origin
-        xyz="-0.0259990150342754 0.000226348141333226 -0.00150000000000005"
+        xyz="-0.0259990150342754 0.000226348141333224 -0.00150000000000005"
         rpy="0 0 0" />
       <mass
-        value="0.000248010258828361" />
+        value="0.000998814653989497" />
       <inertia
-        ixx="9.33133079610627E-10"
-        ixy="5.54868606269548E-10"
-        ixz="3.36634665805196E-24"
-        iyy="6.46624386890696E-08"
-        iyz="-1.14138826313051E-25"
-        izz="6.52235563804377E-08" />
+        ixx="3.75801790797075E-09"
+        ixy="2.23462891252536E-09"
+        ixz="1.35573277829521E-23"
+        iyy="2.60415805501165E-07"
+        iyz="-4.59672647612271E-25"
+        izz="2.62675601428152E-07" />
     </inertial>
     <visual>
       <origin
-        xyz="-0.00207129298032287 -0.000694506942243584 0"
+        xyz="-0.00207129298032288 -0.000694506942243586 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -129,7 +132,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.00207129298032287 -0.000694506942243584 0"
+        xyz="-0.00207129298032288 -0.000694506942243586 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -138,7 +141,7 @@
     </collision>
   </link>
   <joint
-    name="Joint_BR1.2"
+    name="Joint_BR1_2"
     type="continuous">
     <origin
       xyz="0.0349318189962401 -0.00218356265169693 -0.00479999999999959"
@@ -149,12 +152,15 @@
       link="Link_BR1.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR1.3">
     <inertial>
       <origin
-        xyz="-0.03495281758298 -0.00242521558788733 0.00116122535481821"
+        xyz="-0.03495281758298 -0.00242521558788729 0.00116122535481821"
         rpy="0 0 0" />
       <mass
         value="0.000906851541161849" />
@@ -191,10 +197,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_BR1.3"
+    name="Joint_BR1_3"
     type="continuous">
     <origin
-      xyz="-0.051998029858748 0.000452695454739773 -0.00299999999999965"
+      xyz="-0.051998029858748 0.000452695454739773 -0.00299999999999966"
       rpy="3.14159265358979 0 1.18094495136328" />
     <parent
       link="Link_BR1.2" />
@@ -202,6 +208,9 @@
       link="Link_BR1.3" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR2.1">
@@ -210,14 +219,14 @@
         xyz="0.0246403132607352 -0.000805309723935069 -0.00156195419099547"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490464" />
+        value="0.000972195094897943" />
       <inertia
-        ixx="1.39834497936951E-09"
-        ixy="1.6073462463637E-09"
-        ixz="3.41703875421213E-10"
-        iyy="5.05262880608808E-08"
-        iyz="-1.11677741545383E-11"
-        izz="5.14871362833592E-08" />
+        ixx="5.64641697000469E-09"
+        ixy="6.4903491313234E-09"
+        ixz="1.37977579879082E-09"
+        iyy="2.04021535849427E-07"
+        iyz="-4.50946729410053E-11"
+        izz="2.07901372219596E-07" />
     </inertial>
     <visual>
       <origin
@@ -244,23 +253,26 @@
     </collision>
   </link>
   <joint
-    name="Joint_BR2.1"
+    name="Joint_BR2_1"
     type="continuous">
     <origin
-      xyz="-0.169151121513308 1.15323685412489 0.0360784613687492"
-      rpy="-1.5707963267949 0.633858478635347 -3.14159265358979" />
+      xyz="-0.0478568957987064 -0.0445790284841874 7.61803936512387e-05"
+      rpy="-1.5707963267949 0.633858478635348 0" />
     <parent
       link="base_link" />
     <child
       link="Link_BR2.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR2.2">
     <inertial>
       <origin
-        xyz="-0.0259376386477136 0.00179969395161636 -0.0015000000000005"
+        xyz="-0.0259376386477136 0.00179969395161627 -0.0015000000000005"
         rpy="0 0 0" />
       <mass
         value="0.00064091747643959" />
@@ -274,7 +286,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="-0.000853932485441168 0.000481006774747761 0"
+        xyz="-0.000853932485441178 0.000481006774747673 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -288,7 +300,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.000853932485441168 0.000481006774747761 0"
+        xyz="-0.000853932485441178 0.000481006774747673 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -297,10 +309,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_BR2.2"
+    name="Joint_BR2_2"
     type="continuous">
     <origin
-      xyz="0.0299839903651189 -0.00097995504929356 -0.00329999999999973"
+      xyz="0.0299839903651189 -0.000979955049293556 -0.00329999999999972"
       rpy="0 0 -1.36396393396151" />
     <parent
       link="Link_BR2.1" />
@@ -308,12 +320,15 @@
       link="Link_BR2.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BR2.3">
     <inertial>
       <origin
-        xyz="0.043821731454955 -0.000314374859150497 0.00145405900704023"
+        xyz="0.043821731454955 -0.000314374859150534 0.00145405900704023"
         rpy="0 0 0" />
       <mass
         value="0.00447298928522593" />
@@ -327,7 +342,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="0.00175023851919323 0.00155313723109748 0"
+        xyz="0.00175023851919321 0.00155313723109744 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -341,7 +356,7 @@
     </visual>
     <collision>
       <origin
-        xyz="0.00175023851919323 0.00155313723109748 0"
+        xyz="0.00175023851919321 0.00155313723109744 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -350,17 +365,20 @@
     </collision>
   </link>
   <joint
-    name="Joint_BR2.3"
+    name="Joint_BR2_3"
     type="continuous">
     <origin
-      xyz="-0.0518752774435282 0.0035993876242094 0.00299999999999975"
-      rpy="3.14159265358979 0 1.36396393163113" />
+      xyz="-0.0518752774435282 0.00359938762420931 0.00299999999999974"
+      rpy="3.14159265358979 0 1.36396393163114" />
     <parent
       link="Link_BR2.2" />
     <child
       link="Link_BR2.3" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL1.1">
@@ -369,14 +387,14 @@
         xyz="0.0166927168847503 -0.00689973858338606 0.00257406774175339"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494629" />
+        value="0.000900840261026578" />
       <inertia
-        ixx="5.12022873828736E-09"
-        ixy="8.64230464698444E-09"
-        ixz="3.42533442519669E-10"
-        iyy="2.24565858099281E-08"
-        iyz="-1.41582177770719E-10"
-        izz="2.66863584599606E-08" />
+        ixx="2.0659058044545E-08"
+        ixy="3.48699018084126E-08"
+        ixz="1.38205119984124E-09"
+        iyy="9.06076531816796E-08"
+        iyz="-5.71254640787147E-10"
+        izz="1.07673906108786E-07" />
     </inertial>
     <visual>
       <origin
@@ -403,37 +421,40 @@
     </collision>
   </link>
   <joint
-    name="Joint_BL1.1"
+    name="Joint_BL1_1"
     type="continuous">
     <origin
-      xyz="-0.169151121513308 1.05843685412489 0.0640784613687492"
-      rpy="1.5707963267949 -0.512211698143984 3.14159265358979" />
+      xyz="-0.0478568957987064 0.0502209715158126 0.0280761803936512"
+      rpy="1.5707963267949 -0.512211698143984 0" />
     <parent
       link="base_link" />
     <child
       link="Link_BL1.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL1.2">
     <inertial>
       <origin
-        xyz="-0.025805997036572 -0.0031702564219387 0.0015000000000001"
+        xyz="-0.025805997036572 -0.00317025642193863 0.0015000000000001"
         rpy="0 0 0" />
       <mass
-        value="0.000248010258828361" />
+        value="0.000998814620637674" />
       <inertia
-        ixx="1.87595085212232E-09"
-        ixy="-7.713889795459E-09"
-        ixz="3.55450306234229E-24"
-        iyy="6.3719620916558E-08"
-        iyz="7.95114588469388E-25"
-        izz="6.52235563804379E-08" />
+        ixx="7.55503884214006E-09"
+        ixy="-3.10662387358113E-08"
+        ixz="1.43150918213665E-23"
+        iyy="2.56618775745862E-07"
+        iyz="3.20217429632679E-24"
+        izz="2.62675592657046E-07" />
     </inertial>
     <visual>
       <origin
-        xyz="0.0134626569329217 0.00213352958587739 0"
+        xyz="0.0134626569329217 0.00213352958587746 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -447,7 +468,7 @@
     </visual>
     <collision>
       <origin
-        xyz="0.0134626569329217 0.00213352958587739 0"
+        xyz="0.0134626569329217 0.00213352958587746 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -456,7 +477,7 @@
     </collision>
   </link>
   <joint
-    name="Joint_BL1.2"
+    name="Joint_BL1_2"
     type="continuous">
     <origin
       xyz="0.0323457839693413 -0.0133697500892816 0"
@@ -467,12 +488,15 @@
       link="Link_BL1.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL1.3">
     <inertial>
       <origin
-        xyz="-0.0331414623798684 -0.0113676980629969 0.00116122535481786"
+        xyz="-0.0331414623798684 -0.011367698062997 0.00116122535481786"
         rpy="0 0 0" />
       <mass
         value="0.00090685154116185" />
@@ -486,7 +510,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="-0.0354269422763051 -0.0268311170368777 0"
+        xyz="-0.0354269422763051 -0.0268311170368778 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -500,7 +524,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.0354269422763051 -0.0268311170368777 0"
+        xyz="-0.0354269422763051 -0.0268311170368778 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -509,10 +533,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_BL1.3"
+    name="Joint_BL1_3"
     type="continuous">
     <origin
-      xyz="-0.0516119955246449 -0.00634051342585286 0.00300000000000021"
+      xyz="-0.0516119955246449 -0.00634051342585276 0.00300000000000019"
       rpy="0 0 0.91218357233305" />
     <parent
       link="Link_BL1.2" />
@@ -520,6 +544,9 @@
       link="Link_BL1.3" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL2.1">
@@ -528,14 +555,14 @@
         xyz="0.0237950130582229 -0.00644910186707628 0.00173804580900416"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490465" />
+        value="0.000972195105099795" />
       <inertia
-        ixx="4.71479514151842E-09"
-        ixy="1.2430410092849E-08"
-        ixz="3.29981526277048E-10"
-        iyy="4.7209837898732E-08"
-        iyz="-8.94340537676523E-11"
-        izz="5.14871362833593E-08" />
+        ixx="1.90380056204203E-08"
+        ixy="5.01931070403994E-08"
+        ixz="1.33244180570571E-09"
+        iyy="1.90629949399188E-07"
+        iyz="-3.61128313570204E-10"
+        izz="2.07901374401235E-07" />
     </inertial>
     <visual>
       <origin
@@ -562,23 +589,26 @@
     </collision>
   </link>
   <joint
-    name="Joint_BL2.1"
+    name="Joint_BL2_1"
     type="continuous">
     <origin
-      xyz="-0.169151121513308 1.05993685412489 0.0360784613687492"
-      rpy="1.5707963267949 0.336518268628592 -3.14159265358979" />
+      xyz="-0.0478568957987064 0.0487209715158128 7.61803936512387e-05"
+      rpy="1.5707963267949 0.336518268628592 0" />
     <parent
       link="base_link" />
     <child
       link="Link_BL2.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL2.2">
     <inertial>
       <origin
-        xyz="0.0245934766319604 0.00843569218500528 0.0015000000000003"
+        xyz="0.0245934766319604 0.00843569218500535 0.0015000000000003"
         rpy="0 0 0" />
       <mass
         value="0.000640917476439557" />
@@ -592,7 +622,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="-0.00785502850437895 0.00098802097870179 0"
+        xyz="-0.00785502850437895 0.000988020978701858 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -606,7 +636,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.00785502850437895 0.00098802097870179 0"
+        xyz="-0.00785502850437895 0.000988020978701858 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -615,7 +645,7 @@
     </collision>
   </link>
   <joint
-    name="Joint_BL2.2"
+    name="Joint_BL2_2"
     type="continuous">
     <origin
       xyz="0.0289553723718933 -0.00784770102498905 0"
@@ -626,6 +656,9 @@
       link="Link_BL2.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_BL2.3">
@@ -645,7 +678,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="0.021601840730006 0.00175920441438608 0"
+        xyz="0.021601840730006 0.00175920441438615 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -659,7 +692,7 @@
     </visual>
     <collision>
       <origin
-        xyz="0.021601840730006 0.00175920441438608 0"
+        xyz="0.021601840730006 0.00175920441438615 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -668,10 +701,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_BL2.3"
+    name="Joint_BL2_3"
     type="continuous">
     <origin
-      xyz="0.049186953187325 0.0168713842148242 0"
+      xyz="0.049186953187325 0.0168713842148243 0"
       rpy="3.14159265358979 0 -1.67526464076333" />
     <parent
       link="Link_BL2.2" />
@@ -679,6 +712,9 @@
       link="Link_BL2.3" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR1.1">
@@ -687,14 +723,14 @@
         xyz="0.017151410424343 0.00566412481929759 -0.00222593225824652"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494628" />
+        value="0.000900840346021255" />
       <inertia
-        ixx="3.95536305629977E-09"
-        ixy="-7.28958093108096E-09"
-        ixz="3.51945803508093E-10"
-        iyy="2.36214514919156E-08"
-        iyz="1.16227465341533E-10"
-        izz="2.66863584599606E-08" />
+        ixx="1.5959068794344E-08"
+        ixy="-2.94119457316999E-08"
+        ixz="1.42002825280994E-09"
+        iyy="9.53076529299441E-08"
+        iyz="4.6895369370037E-10"
+        izz="1.07673916267867E-07" />
     </inertial>
     <visual>
       <origin
@@ -721,37 +757,40 @@
     </collision>
   </link>
   <joint
-    name="Joint_FR1.1"
+    name="Joint_FR1_1"
     type="continuous">
     <origin
-      xyz="-0.308551121513308 1.15323685412489 0.0634784613687492"
-      rpy="-1.5707963267949 -0.439226196697785 3.14159265358979" />
+      xyz="0.0915431042012936 -0.0445790284841874 0.0274761803936512"
+      rpy="-1.5707963267949 -0.439226196697785 0" />
     <parent
       link="base_link" />
     <child
       link="Link_FR1.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR1.2">
     <inertial>
       <origin
-        xyz="0.0256435306631247 0.00429061154678059 -0.00150000000000034"
+        xyz="0.0256435306631247 0.00429061154678056 -0.00150000000000034"
         rpy="0 0 0" />
       <mass
-        value="0.00024801025882836" />
+        value="0.00099881458875752" />
       <inertia
-        ixx="2.66409106161949E-09"
-        ixy="-1.03742187111762E-08"
-        ixz="-4.02214084081129E-25"
-        iyy="6.29314807070608E-08"
-        iyz="-1.09608645002382E-25"
-        izz="6.52235563804378E-08" />
+        ixx="1.07291247978803E-08"
+        ixy="-4.17802112083403E-08"
+        ixz="-1.61984144076074E-24"
+        iyy="2.53444681358226E-07"
+        iyz="-4.41428165913451E-25"
+        izz="2.6267558427297E-07" />
     </inertial>
     <visual>
       <origin
-        xyz="-0.0111017384825788 -0.000573721555313193 0"
+        xyz="-0.0111017384825788 -0.000573721555313224 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -765,7 +804,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.0111017384825788 -0.000573721555313193 0"
+        xyz="-0.0111017384825788 -0.000573721555313224 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -774,10 +813,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_FR1.2"
+    name="Joint_FR1_2"
     type="continuous">
     <origin
-      xyz="0.0332346028261404 0.0109754784213317 -0.00479999999999955"
+      xyz="0.0332346028261404 0.0109754784213317 -0.00479999999999954"
       rpy="0 0 1.49528079844306" />
     <parent
       link="Link_FR1.1" />
@@ -785,12 +824,15 @@
       link="Link_FR1.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR1.3">
     <inertial>
       <origin
-        xyz="-0.0347037854836579 0.00481959225568285 0.00116122535481727"
+        xyz="-0.0347037854836579 0.00481959225568286 0.00116122535481727"
         rpy="0 0 0" />
       <mass
         value="0.00090685154116179" />
@@ -827,17 +869,20 @@
     </collision>
   </link>
   <joint
-    name="Joint_FR1.3"
+    name="Joint_FR1_3"
     type="continuous">
     <origin
-      xyz="0.0512870600596529 0.00858122288813052 -0.00300000000000054"
-      rpy="3.14159265358979 0 -1.9934298266756" />
+      xyz="0.0512870600596529 0.00858122288813051 -0.00300000000000054"
+      rpy="3.14159265358979 0 -1.99342982667561" />
     <parent
       link="Link_FR1.2" />
     <child
       link="Link_FR1.3" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR2.1">
@@ -846,14 +891,14 @@
         xyz="0.0237717374344949 0.00653437530948119 -0.00156195419099547"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490464" />
+        value="0.000972195065668047" />
       <inertia
-        ixx="4.80447710033956E-09"
-        ixy="-1.25824517045495E-08"
-        ixz="3.29658747472417E-10"
-        iyy="4.71201559399108E-08"
-        iyz="9.06165982166656E-11"
-        izz="5.14871362833592E-08" />
+        ixx="1.94001341700088E-08"
+        ixy="-5.08070381350479E-08"
+        ixz="1.33113839398463E-09"
+        iyy="1.90267812345572E-07"
+        iyz="3.65903328649198E-10"
+        izz="2.07901365968859E-07" />
     </inertial>
     <visual>
       <origin
@@ -880,23 +925,26 @@
     </collision>
   </link>
   <joint
-    name="Joint_FR2.1"
+    name="Joint_FR2_1"
     type="continuous">
     <origin
-      xyz="-0.308551121513308 1.15323685412489 0.0354784613687492"
-      rpy="-1.5707963267949 0.332932854178985 -3.14159265358979" />
+      xyz="0.0915431042012936 -0.0445790284841874 -0.000523819606348758"
+      rpy="-1.5707963267949 0.332932854178986 0" />
     <parent
       link="base_link" />
     <child
       link="Link_FR2.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR2.2">
     <inertial>
       <origin
-        xyz="0.0257528373839773 0.00357650287451954 -0.0015000000000001"
+        xyz="0.0257528373839773 0.00357650287451953 -0.0015000000000001"
         rpy="0 0 0" />
       <mass
         value="0.000640917476439558" />
@@ -910,7 +958,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="-0.00800707669403571 0.000513593776775388 0"
+        xyz="-0.00800707669403571 0.000513593776775375 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -924,7 +972,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.00800707669403571 0.000513593776775388 0"
+        xyz="-0.00800707669403571 0.000513593776775375 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -933,10 +981,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_FR2.2"
+    name="Joint_FR2_2"
     type="continuous">
     <origin
-      xyz="0.0289270491339261 0.00795146729797108 -0.0032999999999997"
+      xyz="0.0289270491339261 0.00795146729797108 -0.00329999999999969"
       rpy="0 0 1.87128457541191" />
     <parent
       link="Link_FR2.1" />
@@ -944,12 +992,15 @@
       link="Link_FR2.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FR2.3">
     <inertial>
       <origin
-        xyz="0.0417593110893297 -0.0132891998920423 0.00145405587413481"
+        xyz="0.0417593110893296 -0.0132891998920423 0.00145405587413481"
         rpy="0 0 0" />
       <mass
         value="0.00447298869354182" />
@@ -963,7 +1014,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="0.0129467988446871 0.00698618347369069 0"
+        xyz="0.012946798844687 0.00698618347369071 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -977,7 +1028,7 @@
     </visual>
     <collision>
       <origin
-        xyz="0.0129467988446871 0.00698618347369069 0"
+        xyz="0.012946798844687 0.00698618347369071 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -986,17 +1037,20 @@
     </collision>
   </link>
   <joint
-    name="Joint_FR2.3"
+    name="Joint_FR2_3"
     type="continuous">
     <origin
-      xyz="0.0515056747457824 0.00715300535723657 0.00299999999999992"
-      rpy="3.14159265358979 0 -1.87128457420229" />
+      xyz="0.0515056747457824 0.00715300535723654 0.00299999999999995"
+      rpy="3.14159265358979 0 -1.87128457420228" />
     <parent
       link="Link_FR2.2" />
     <child
       link="Link_FR2.3" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL1.1">
@@ -1005,14 +1059,14 @@
         xyz="0.0180296855600706 0.00108794674448348 0.00257406774175362"
         rpy="0 0 0" />
       <mass
-        value="0.000223268078494629" />
+        value="0.000900840181157897" />
       <inertia
-        ixx="1.63684832386113E-09"
-        ixy="-1.47185726849706E-09"
-        ixz="3.69967950997487E-10"
-        iyy="2.59399662243542E-08"
-        iyz="2.23245949883359E-11"
-        izz="2.66863584599606E-08" />
+        ixx="6.60434196655897E-09"
+        ixy="-5.9386374323249E-09"
+        ixz="1.49274360332352E-09"
+        iyy="1.04662359394736E-07"
+        iyz="9.00750896821687E-11"
+        izz="1.07673896562395E-07" />
     </inertial>
     <visual>
       <origin
@@ -1039,37 +1093,40 @@
     </collision>
   </link>
   <joint
-    name="Joint_FL1.1"
+    name="Joint_FL1_1"
     type="continuous">
     <origin
-      xyz="-0.308551121513308 1.05843685412489 0.0634784613687493"
-      rpy="1.5707963267949 -0.0599910783746507 3.14159265358979" />
+      xyz="0.0915431042012935 0.0502209715158126 0.0274761803936513"
+      rpy="1.5707963267949 -0.0599910783746507 0" />
     <parent
       link="base_link" />
     <child
       link="Link_FL1.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL1.2">
     <inertial>
       <origin
-        xyz="-0.0259941919541079 0.000549531111224753 0.00149999999999982"
+        xyz="-0.0259941919541079 0.000549531111224729 0.00149999999999982"
         rpy="0 0 0" />
       <mass
-        value="0.00024801025882836" />
+        value="0.000998814658375445" />
       <inertia
-        ixx="9.56775946683901E-10"
-        ixy="1.34687181508008E-09"
-        ixz="-8.05546590483931E-26"
-        iyy="6.46387958219962E-08"
-        iyz="1.13948400506015E-25"
-        izz="6.52235563804376E-08" />
+        ixx="3.85323512359339E-09"
+        ixy="5.42427284343003E-09"
+        ixz="-3.24418734281691E-25"
+        iyy="2.60320589445571E-07"
+        iyz="4.58905745518416E-25"
+        izz="2.62675602581601E-07" />
     </inertial>
     <visual>
       <origin
-        xyz="-0.00204979025234545 -0.000496616444117567 0"
+        xyz="-0.00204979025234543 -0.000496616444117591 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -1083,7 +1140,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.00204979025234545 -0.000496616444117567 0"
+        xyz="-0.00204979025234543 -0.000496616444117591 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -1092,10 +1149,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_FL1.2"
+    name="Joint_FL1_2"
     type="continuous">
     <origin
-      xyz="0.0349364524941426 0.00210813417164983 0"
+      xyz="0.0349364524941426 0.00210813417164982 0"
       rpy="3.14159265358979 0 1.83862774064259" />
     <parent
       link="Link_FL1.1" />
@@ -1103,12 +1160,15 @@
       link="Link_FL1.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL1.3">
     <inertial>
       <origin
-        xyz="-0.0349976528377883 0.0016569257014521 0.00116122535481748"
+        xyz="-0.0349976528377883 0.00165692570145218 0.00116122535481748"
         rpy="0 0 0" />
       <mass
         value="0.000906851541161829" />
@@ -1145,10 +1205,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_FL1.3"
+    name="Joint_FL1_3"
     type="continuous">
     <origin
-      xyz="-0.051988384179629 0.00109906138814749 0.00300000000000067"
+      xyz="-0.0519883841796289 0.00109906138814747 0.00300000000000067"
       rpy="0 0 1.14654754518106" />
     <parent
       link="Link_FL1.2" />
@@ -1156,6 +1216,9 @@
       link="Link_FL1.3" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL2.1">
@@ -1164,14 +1227,14 @@
         xyz="0.0246258862075774 0.00116588585712182 0.00173804580900505"
         rpy="0 0 0" />
       <mass
-        value="0.000240765805490465" />
+        value="0.00097219515514233" />
       <inertia
-        ixx="1.45591905399244E-09"
-        ixy="-2.32567045014483E-09"
-        ixz="3.41503805725039E-10"
-        iyy="5.0468713986258E-08"
-        iyz="1.61681270641522E-11"
-        izz="5.14871362833592E-08" />
+        ixx="5.87889732799664E-09"
+        ixy="-9.39089144940072E-09"
+        ixz="1.37896801712442E-09"
+        iyy="2.03789068484009E-07"
+        iyz="6.52857442421027E-11"
+        izz="2.07901385102699E-07" />
     </inertial>
     <visual>
       <origin
@@ -1198,23 +1261,26 @@
     </collision>
   </link>
   <joint
-    name="Joint_FL2.1"
+    name="Joint_FL2_1"
     type="continuous">
     <origin
-      xyz="-0.308551121513308 1.05993685412489 0.0354784613687492"
-      rpy="1.5707963267949 0.648496084693685 -3.14159265358979" />
+      xyz="0.0915431042012935 0.0487209715158128 -0.000523819606348758"
+      rpy="1.5707963267949 0.648496084693685 0" />
     <parent
       link="base_link" />
     <child
       link="Link_FL2.1" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL2.2">
     <inertial>
       <origin
-        xyz="-0.0259709098777059 0.00122956503634031 0.00149999999999983"
+        xyz="-0.0259709098777059 0.00122956503634032 0.00149999999999983"
         rpy="0 0 0" />
       <mass
         value="0.000640917476439573" />
@@ -1228,7 +1294,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="-0.00139253559643049 0.000273424528988825 0"
+        xyz="-0.0013925355964305 0.000273424528988826 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -1242,7 +1308,7 @@
     </visual>
     <collision>
       <origin
-        xyz="-0.00139253559643049 0.000273424528988825 0"
+        xyz="-0.0013925355964305 0.000273424528988826 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -1251,10 +1317,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_FL2.2"
+    name="Joint_FL2_2"
     type="continuous">
     <origin
-      xyz="0.0299664342355442 0.00141872819801234 0"
+      xyz="0.0299664342355442 0.00141872819801235 0"
       rpy="3.14159265358979 0 1.40056735852986" />
     <parent
       link="Link_FL2.1" />
@@ -1262,12 +1328,15 @@
       link="Link_FL2.2" />
     <axis
       xyz="0 0 1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
   <link
     name="Link_FL2.3">
     <inertial>
       <origin
-        xyz="0.0438216407785152 0.000327080782614419 0.00145407476591264"
+        xyz="0.0438216407785152 0.000327080782614374 0.00145407476591264"
         rpy="0 0 0" />
       <mass
         value="0.00447299227945805" />
@@ -1281,7 +1350,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="0.00255830525096397 -0.000131770015195965 0"
+        xyz="0.00255830525096393 -0.00013177001519601 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -1295,7 +1364,7 @@
     </visual>
     <collision>
       <origin
-        xyz="0.00255830525096397 -0.000131770015195965 0"
+        xyz="0.00255830525096393 -0.00013177001519601 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -1304,10 +1373,10 @@
     </collision>
   </link>
   <joint
-    name="Joint_FL2.3"
+    name="Joint_FL2_3"
     type="continuous">
     <origin
-      xyz="-0.051941819594197 0.00245912951712825 0"
+      xyz="-0.0519418195941969 0.00245912951712827 0"
       rpy="3.14159265358979 0 1.40056735852985" />
     <parent
       link="Link_FL2.2" />
@@ -1315,5 +1384,379 @@
       link="Link_FL2.3" />
     <axis
       xyz="0 0 -1" />
+    <limit
+      effort="3.5"
+      velocity="12" />
   </joint>
+
+
+  <!-- Gazebo hooks for the SPH replay; see src/BODY2/launch/swimming_pool.launch.
+
+       BODY2's URDF is a 24-joint tree standing in for eight real DOF, because
+       URDF cannot express the two loop-closure pins per leg (see
+       src/BODY2/scripts/prepare_urdf.py).  Replay therefore prescribes every
+       tree joint from Body2CoordinateMap rather than the eight hips: an
+       under-constrained tree left to a position controller simply comes apart.
+       The replay plugin sets all 24 directly and no controller is spawned
+       for them.  gazebo_ros_control is loaded all the same, for the joint
+       brake described below; its own POSITION write is neutralised by the
+       plugin ordering noted at the <gazebo> blocks at the end of this file.
+
+       That is also why a leg can visibly seam, which amph never does: each leg
+       is two independent branches off base_link (1.1, 1.2, 1.3 and 2.1, 2.2,
+       2.3), and the two pins joining them (P6, Link_2.1 to Link_1.3, and P8,
+       Link_1.3 to Link_2.3) are not in the URDF at all; see
+       scripts/leg_linkage_sim.py.  The leg is assembled only while all 24
+       angles match the coordinate map, and nothing constrains it to.  ODE also
+       leaves dParamFMax at 0 unless something sets it, so every hinge is free;
+       at 9e-10 kg m2 of principal inertia the torque the SPH coupling feeds
+       back through Link::AddTorque drifts a joint by 5 deg, a 5 mm gap at the
+       pin, inside a few 1 ms steps.  A dry replay never shows it: nothing
+       applies a torque at all.
+
+       Do not read a seam as the validation being wrong without measuring it.
+       Both cut pins sit on Link_1.3, which is not between base_link and the
+       paddle: Link_2.3 reaches the base through 2.1 -> 2.2 -> 2.3, a plain
+       serial chain of prescribed joints, so no gap at P6/P8 can displace it.
+       What a *large* gap does mean is that the prescribed angles have left the
+       linkage manifold, and then the paddle is misplaced too.
+
+       Closing the loops properly was tried and is worse, so do not repeat it:
+       eight SDF <joint> loop closures driven through a
+       velocity_controllers/JointTrajectoryController on the eight hips left
+       the passive joints at 40 deg RMSE against the kinematic solution, which
+       misplaces the paddles far more than any seam does.  A planar mechanism
+       built from 3D pins is redundantly constrained: 6 surplus constraints
+       per leg, 24 across the robot, hanging off sub-gram links with a 521:1
+       mass spread against the hull, which is the case an iterative LCP handles
+       worst.  Ball joints (redundancy 6 -> 2 per leg) measured worse still at
+       54 deg, and the direct solver, type "world", goes singular and the robot
+       comes apart.
+
+       The <limit effort> on every joint above holds the angles on the map.
+       gazebo_ros_control reads it and calls SetParam("fmax", effort_limit),
+       which is dParamFMax with dParamVel 0, a Coulomb brake, and exactly
+       what amph gets.  This file used to set the same bound directly as
+       <dynamics friction>; the transmissions replace that route, and the two
+       must not both be present.
+
+       3.5 N m is amph's number, a bound rather than a measurement.  Sizing
+       it is a threshold, not a gradient: the fluid torque about a hinge peaks
+       near 0.24 N m, and below that the joint runs away while above it the
+       joint does not move at all.  Real pin friction here would be ~1e-4 N m,
+       but nothing is trying to model that; it says "prescribed, so rigid".
+       It costs nothing while idle, because ODE only ever applies the impulse
+       actually needed and clips at the bound.  Being a constraint rather than
+       a force it is stable at any inertia, unlike <dynamics damping>, which
+       Gazebo integrates explicitly unless <implicit_spring_damper> is set and
+       would need b < 2I/dt of about 2e-6 here.  Joint::SetPosition writes link
+       poses directly, outside the solver, so the brake never fights the
+       prescription.
+
+       The <limit> elements are not decoration.  Without them urdfdom leaves
+       urdf_joint->limits null, DefaultRobotHWSim::registerJointLimits keeps
+       its own default of DBL_MAX, and SetParam("fmax", DBL_MAX) hands ODE an
+       infinite bound.  A continuous joint needs no lower/upper, but it does
+       need effort and velocity for the brake to have a number at all.
+
+       Do not put pid_gains for these joints on the parameter server either:
+       DefaultRobotHWSim switches to POSITION_PID when it finds them and then
+       never sets fmax at all.
+
+       The publisher below exists only to feed /BODY2/joint_states to
+       stage2_sim_validation/gazebo_replay/validate_sim.py.
+
+       jointName is parsed by splitting on "," after erasing spaces, so it has
+       to stay on one line: a newline would end up inside a joint name. -->
+  <gazebo>
+    <plugin name="joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
+      <robotNamespace>/BODY2</robotNamespace>
+      <updateRate>100</updateRate>
+      <jointName>Joint_FL1_1, Joint_FL1_2, Joint_FL1_3, Joint_FL2_1, Joint_FL2_2, Joint_FL2_3, Joint_FR1_1, Joint_FR1_2, Joint_FR1_3, Joint_FR2_1, Joint_FR2_2, Joint_FR2_3, Joint_BL1_1, Joint_BL1_2, Joint_BL1_3, Joint_BL2_1, Joint_BL2_2, Joint_BL2_3, Joint_BR1_1, Joint_BR1_2, Joint_BR1_3, Joint_BR2_1, Joint_BR2_2, Joint_BR2_3</jointName>
+    </plugin>
+  </gazebo>
+
+  <transmission name="Joint_BR1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BR2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BR2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BR2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_BL2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_BL2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_BL2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FR2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FR2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FR2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL1_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL1_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL1_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL1_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL1_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL1_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL1_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL1_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL1_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL2_1_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL2_1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL2_1_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL2_2_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL2_2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL2_2_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="Joint_FL2_3_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="Joint_FL2_3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="Joint_FL2_3_motor">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <!-- Before trajectory_replay, and it has to stay there.  With no position
+       controller spawned, joint_position_command_ is never written and stays
+       at its initial 0.0, so DefaultRobotHWSim::writeSim still calls
+       SetPosition(0, 0.0) on all 24 joints every step.  Both plugins write on
+       WorldUpdateBegin and Gazebo fires handlers in connection order, so the
+       later <gazebo> block wins: replay overwrites that 0.0 within the same
+       step, before physics integrates.  Swap the two and the legs collapse to
+       the zero pose.  The brake is set once at init and is unaffected. -->
+  <gazebo>
+    <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so">
+      <robotNamespace>/BODY2</robotNamespace>
+    </plugin>
+  </gazebo>
+
+  <gazebo>
+    <plugin name="trajectory_replay" filename="libtrajectory_replay_plugin.so">
+      <topic>/BODY2/joint_trajectory_replay</topic>
+    </plugin>
+  </gazebo>
 </robot>

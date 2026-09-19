@@ -1,5 +1,12 @@
 <launch>
 
+  <!-- amph gait replay in the SPH swimming pool.
+
+       Generate the boundary meshes once beforehand:
+           rosrun sph_replay generate_boundary_obj.py amph
+       Then:
+           roslaunch amph swimming_pool.launch npz_path:=/home/ws/task3_solution.npz -->
+
   <arg name="gui_required" default="true" />
   <arg name="npz_path"    default="/home/ws/task3_guess.npz" />
   <arg name="n_repeat"    default="3" />
@@ -22,7 +29,7 @@
           args=" --verbose -g libFluidVisPlugin.so"/>
   </group>
 
-  <!-- joint_state_controller for TF/state publishing -->
+  <!-- Joint state publishing -->
   <rosparam param="/amph/joint_state_controller/type">joint_state_controller/JointStateController</rosparam>
   <rosparam param="/amph/joint_state_controller/publish_rate">100</rosparam>
   <node name="controller_spawner" pkg="controller_manager" type="spawner"
@@ -41,10 +48,11 @@
         args="-O $(arg bag_path) /amph/joint_states /gazebo/model_states"
         output="screen" />
 
-  <!-- Start trajectory replay 2 s after launch (wall-clock, for Gazebo init) -->
+  <!-- Trajectory replay (set npz_path:='' to disable) -->
   <node if="$(eval arg('npz_path') != '')"
-        name="trajectory_replay" pkg="amph" type="replay_trajectory.py"
+        name="trajectory_replay" pkg="sph_replay" type="replay_trajectory.py"
         output="screen">
+    <param name="robot"    value="amph" />
     <param name="npz_path" value="$(arg npz_path)" />
     <param name="n_repeat" value="$(arg n_repeat)" />
   </node>

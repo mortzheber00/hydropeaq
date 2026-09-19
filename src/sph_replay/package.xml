@@ -1,0 +1,24 @@
+<package format="2">
+  <name>sph_replay</name>
+  <version>1.0.0</version>
+  <description>
+    <p>Robot-independent tooling for replaying an optimized gait inside the
+SPlisHSPlasH fluid simulation.</p>
+    <p>Contains the Gazebo plugin that prescribes a published JointTrajectory,
+the node that turns an OCP solution .npz into that trajectory, and the
+collision-mesh exporter the fluid plugin needs. Which robot they act on comes
+from the registry in stage1_gait_optimization/hydro_model/robots and from the
+solution file itself, so no robot is named here and the robot description
+packages carry no copies.</p>
+  </description>
+  <author>TODO</author>
+  <maintainer email="TODO@email.com" />
+  <license>BSD</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>gazebo_msgs</depend>
+  <depend>gazebo_ros</depend>
+  <depend>gazebo</depend>
+</package>

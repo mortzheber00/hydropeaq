@@ -1,10 +1,7 @@
-"""Base-DOF simulator for kinematic initial guesses.
+"""RK4 simulation of the floating base under prescribed joint motion.
 
-Forward-integrates the floating-base dynamics with prescribed joint
-kinematics, using RK4 to match the OCP integrator.  Joint kinematics at RK4
-sub-stages are obtained by linear interpolation between grid-point values;
-the joint acceleration is taken as the forward-difference value on the
-interval, matching the finite-difference scheme used to build ``a_joints``.
+Joint positions and velocities are linearly interpolated at the RK4 sub-stages;
+the joint acceleration is held constant over each interval.
 """
 
 from __future__ import annotations
@@ -21,15 +18,10 @@ def _base_state_dot(
     a_joints: np.ndarray,
     dyn: SymbolicDynamics,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Time derivatives of the base state at the given configuration.
+    """Base state derivative ``(q_dot_base (7,), a_base (6,))``.
 
-    Returns
-    -------
-    q_dot_base : (7,) ndarray
-        Base position derivative + quaternion derivative.
-    a_base : (6,) ndarray
-        Base linear + angular acceleration in body frame, from the
-        ``[:6, :]`` block of the full equations of motion.
+    ``a_base`` is the body-frame base acceleration from the first six rows of
+    the equations of motion.
     """
     q = np.concatenate([q_base, q_joints])
     v = np.concatenate([v_base, v_joints])
@@ -82,12 +74,7 @@ def _rk4_base_step(
     a_j_k: np.ndarray,
     dyn: SymbolicDynamics,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """One RK4 step on the base state across the interval ``[t_k, t_{k+1}]``.
-
-    Joint acceleration is held constant at ``a_j_k`` over the interval,
-    matching the forward-difference scheme.  Joint position/velocity at the
-    sub-stage midpoint use linear interpolation between the grid-point values.
-    """
+    """One RK4 step of the base state over ``[t_k, t_{k+1}]``."""
     q_j_m = 0.5 * (q_j_k + q_j_kp1)
     v_j_m = 0.5 * (v_j_k + v_j_kp1)
 
@@ -128,12 +115,11 @@ def simulate_base_kinematics(
     dt: float,
     n_cycles: int = 20,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Simulate base DOF with prescribed joint trajectory using RK4.
+    """Simulate the base for up to ``n_cycles`` periods; returns the last cycle.
 
-    Runs for up to ``n_cycles`` periods.  Forward velocity is carried over
-    between cycles; orientation and lateral position are reset to trim at
-    the start of each cycle.  Returns the last (or converged) cycle's base
-    trajectory.
+    Forward velocity carries over between cycles; the rest of the base state is
+    reset to trim at each cycle start. Stops early once the distance per cycle
+    converges.
     """
     N = q_joints.shape[1] - 1
 

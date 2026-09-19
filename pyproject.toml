@@ -1,5 +1,5 @@
 [project]
-name = "amphibious-quadruped-optimization"
+name = "hydropeaq"
 version = "0.1.0"
 requires-python = ">=3.10"
 
@@ -20,3 +20,7 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: long-running solves; deselect with -m 'not slow'"]

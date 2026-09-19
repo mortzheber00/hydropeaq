@@ -10,3 +10,6 @@ trimesh
 pytransform3d
 meshcat
 SciencePlots
+pytest
+pyvista<0.45
+vtk<9.4

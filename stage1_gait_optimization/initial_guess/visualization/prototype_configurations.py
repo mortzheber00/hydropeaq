@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
-"""
-Leg-configuration stick figures for the prototype (firmware) swim gait.
+"""Stick figures of the firmware (prototype) swim gait over one cycle.
 
-The firmware gait (``initial_guess/firmware.py``) drives each leg's foot through
-a Cartesian loop made of four phases — recovery (forward swing at the surface),
-strike (descend), power (backward sweep at depth), lift (ascend) — solved to
-joint angles by IK at each instant.  This script visualises that loop: leg
-stick figures sampled over one cycle and coloured by phase, with the four
-phase-transition waypoints highlighted and the foot path overlaid.  A separate
-figure shows the 4-phase gait-timing diagram for all four legs.
-
-Gait parameters (phase ratios, stroke length, depths, diagonal offset) are read
-straight from the defaults of ``build_robot_ik_initial_guess`` so this plot
-always matches the gait that the firmware initial guess actually builds.
-
-Left/right legs are mirror-symmetric, so only the front and hind leg are shown.
+Draws the front and hind leg coloured by phase with the foot path, plus a
+per-leg gait-timing diagram. Gait parameters are resolved the same way as in
+initial_guess/firmware.py. With --save, the timing diagram goes to
+``<name>_timing.<ext>``.
 
 Usage:
-  python prototype_configurations.py
-  python prototype_configurations.py --save proto.pdf
-
-``--save`` writes a vector PDF (plus a ``*_timing.pdf`` for the gait-timing
-diagram); the format follows the extension you give.
+  python stage1_gait_optimization/initial_guess/visualization/prototype_configurations.py
+  python stage1_gait_optimization/initial_guess/visualization/prototype_configurations.py --save proto.pdf
 """
 from __future__ import annotations
 
 import argparse
-import inspect
 import sys
 from pathlib import Path
 
@@ -35,32 +21,27 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scienceplots  # noqa: F401  registers the 'science' matplotlib style
 
-# Professional thesis style with real LaTeX text rendering (Computer Modern).
 plt.style.use(["science"])
 plt.rcParams["text.usetex"] = True
 
 sys.path.insert(0, str(Path(__file__).parents[2]))
-from hydro_model import QuadrupedRobot, SymbolicDynamics
+sys.path.insert(0, str(Path(__file__).parents[3] / "stage3_visualization" / "common"))
+from thesis_style import PALETTE
+from hydro_model import SymbolicDynamics, get_spec, load_robot
 from initial_guess import firmware
 
-URDF_PATH = Path(__file__).parents[3] / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "amph"   # registered robot name; see hydro_model/robots/
 
-# ── Gait parameters, read from the firmware builder's defaults (no drift) ────
-_D = {
-    k: v.default
-    for k, v in inspect.signature(firmware.build_robot_ik_initial_guess).parameters.items()
-    if v.default is not inspect.Parameter.empty
-}
+
+# --- Gait parameters (resolved as in firmware.py) ---
+_D = {**firmware._DEFAULT_GAIT, **get_spec(ROBOT).firmware_gait}
 R_REC, R_STR, R_POW, R_LIFT = _D["ratio_recovery"], _D["ratio_strike"], _D["ratio_power"], _D["ratio_lift"]
 STROKE_LEN = _D["stroke_len"]
 STAND_H, DEPTH_SURF, DEPTH_DEEP = _D["stand_h"], _D["depth_surface"], _D["depth_deep"]
 CENTER_X_FRONT, CENTER_X_REAR = _D["center_x_front"], _D["center_x_rear"]
-# diagonal_phase_offset defaults to None in the builder -> -ratio_recovery/2.
-DIAG_OFFSET = _D["diagonal_phase_offset"]
-if DIAG_OFFSET is None:
-    DIAG_OFFSET = -R_REC / 2.0
+DIAG_OFFSET = -R_REC / 2.0  # builder default: FR/HL lag by half a recovery phase
 
-# z convention matches firmware: deeper water = more negative dz from trim.
+# Deeper = more negative dz from trim
 DZ_SURF = -(DEPTH_SURF - STAND_H)
 DZ_DEEP = -(DEPTH_DEEP - STAND_H)
 
@@ -68,22 +49,21 @@ RATIOS = [R_REC, R_STR, R_POW, R_LIFT]
 BOUNDS = np.concatenate([[0.0], np.cumsum(RATIOS)])  # phase edges in [0, 1]
 PHASES = ["recovery", "strike", "power", "lift"]
 PHASE_COLORS = {
-    "recovery": "#2ca02c",  # green
-    "strike":   "#ff7f0e",  # orange
-    "power":    "#d62728",  # red
-    "lift":     "#1f77b4",  # blue
+    "recovery": PALETTE[1],  # green
+    "strike":   PALETTE[3],  # pink
+    "power":    PALETTE[2],  # red
+    "lift":     PALETTE[0],  # blue
 }
 
 LEG_LABELS = ["FL", "FR", "HL", "HR"]  # firmware leg order
-# Phase offsets per leg (firmware): FR/HL lag FL/HR by DIAG_OFFSET.
 PHASE_OFFSETS = [0.0, DIAG_OFFSET, DIAG_OFFSET, 0.0]
-# Legs drawn as stick figures (left/right mirror): (title, name, idx, x-centre).
+# (title, leg name, leg index, stroke centre x)
 DISPLAY_LEGS = [
     ("Front leg", "Front_Left", 0, CENTER_X_FRONT),
     ("Hind leg", "Hind_Left", 2, CENTER_X_REAR),
 ]
 
-N_TOTAL_FRAMES = 24  # stick figures over one cycle (display density only)
+N_TOTAL_FRAMES = 24  # stick figures per cycle
 
 
 def firmware_dxz(t_norm: float, cx: float) -> np.ndarray:
@@ -96,10 +76,9 @@ def firmware_dxz(t_norm: float, cx: float) -> np.ndarray:
 
 
 def phase_frames(n_total: int = N_TOTAL_FRAMES):
-    """(t, phase_idx, is_waypoint) over one cycle, density ∝ phase duration.
+    """``(t, phase_idx, is_waypoint)`` over one cycle, in time order.
 
-    The first frame of each phase is its transition waypoint.  Frames are in
-    increasing cycle time so the per-leg IK can be continuation-seeded.
+    Frames per phase scale with its duration; each phase's first frame is its waypoint.
     """
     frames = []
     for pi in range(4):
@@ -111,11 +90,7 @@ def phase_frames(n_total: int = N_TOTAL_FRAMES):
 
 
 def leg_cycle_skeletons(robot, q_trim, p_ref, leg_idx, leg_name, cx, ts):
-    """Hip-relative (x, z) leg skeletons [hip, thigh, calf, foot] over ts.
-
-    Foot Cartesian targets come from the firmware loop; joint angles are solved
-    by the firmware's own IK (continuation-seeded along the cycle).
-    """
+    """Hip-relative (x, z) of [hip, thigh, calf, foot] at each time in ``ts`` (firmware IK)."""
     js = 7 + leg_idx * 3
     q_ctx = q_trim.copy()
     out = []
@@ -133,7 +108,7 @@ def leg_cycle_skeletons(robot, q_trim, p_ref, leg_idx, leg_name, cx, ts):
 
 
 def _wrap_segs(start: float, length: float):
-    """broken_barh segments for a bar of given length starting at start, wrapped."""
+    """broken_barh segments of a bar wrapped around [0, 1)."""
     start %= 1.0
     end = start + length
     if end <= 1.0:
@@ -146,7 +121,7 @@ def draw_phase_timing(ax, offsets, labels) -> None:
     n = len(labels)
     for i, off in enumerate(offsets):
         y = n - 1 - i  # leg 0 drawn on top
-        start = (-off) % 1.0  # cycle fraction where this leg's recovery begins
+        start = (-off) % 1.0  # start of this leg's recovery
         for ratio, ph in zip(RATIOS, PHASES):
             for s, length in _wrap_segs(start, ratio):
                 ax.broken_barh([(s, length)], (y - 0.4, 0.8),
@@ -168,13 +143,12 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+
     parser.add_argument("--save", type=Path, default=None)
     args = parser.parse_args()
 
     print("Loading robot and dynamics…")
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(np.zeros(robot.nq))
-    robot.build_cylinders()
+    robot = load_robot(ROBOT)
     dyn = SymbolicDynamics(robot)
     q_trim = dyn.find_trim_state()
     robot.forward_kinematics(q_trim)
@@ -189,7 +163,7 @@ def main():
     for ax, (title, leg_name, leg_idx, cx) in zip(axes, DISPLAY_LEGS):
         p_ref = trim_feet[leg_name]
 
-        # Smooth foot loop (hip-relative): trim foot-to-hip offset + (Δx, Δz).
+        # Hip-relative foot loop
         robot.forward_kinematics(q_trim)
         pos0 = robot.leg_centerline_positions(leg_name)
         offset_xz = (pos0["foot"] - pos0["side"])[[0, 2]]
@@ -222,7 +196,6 @@ def main():
         ax.set_aspect("equal")
         ax.grid(alpha=0.3)
 
-    # Shared limits so leg sizes/positions are comparable across both panels.
     stacked = np.vstack(all_pts)
     (x0, z0), (x1, z1) = stacked.min(0), stacked.max(0)
     mx, mz = 0.05 * (x1 - x0), 0.05 * (z1 - z0)
@@ -231,10 +204,8 @@ def main():
         ax.set_ylim(z0 - mz, z1 + mz)
     axes[0].legend(loc="lower left", fontsize=8)
 
-    fig.suptitle("Foot trajectory of the prototype (firmware) gait", y=0.99)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 
-    # Gait timing (4 phases per leg) as a separate figure.
     fig_timing, ax_timing = plt.subplots(figsize=(9, 3))
     draw_phase_timing(ax_timing, PHASE_OFFSETS, LEG_LABELS)
     fig_timing.tight_layout()

@@ -1,0 +1,42 @@
+<launch>
+
+  <!-- BODY2 gait replay without fluid, to inspect the joint prescription alone.
+
+       Same replay as swimming_pool.launch, but the world contains only the
+       robot (no SPH, no pool, no gravity).
+
+           roslaunch BODY2 joint_prescription.launch npz_path:=/home/ws/task3_solution.npz -->
+
+  <arg name="npz_path" default="/home/ws/task3_solution.npz" />
+  <arg name="n_repeat" default="10" />
+  <arg name="bag_path" default="" />
+
+  <param name="robot_description"
+         textfile="$(find BODY2)/urdf/BODY2.urdf" />
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name"   value="$(find BODY2)/worlds/robot_only.world" />
+    <arg name="paused"       value="true" />
+    <arg name="use_sim_time" value="true" />
+    <arg name="gui"          value="true" />
+  </include>
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher" output="screen">
+    <param name="publish_frequency" value="100.0" />
+    <remap from="joint_states" to="/BODY2/joint_states" />
+  </node>
+
+  <node if="$(eval arg('bag_path') != '')"
+        name="rosbag_record" pkg="rosbag" type="record"
+        args="-O $(arg bag_path) /BODY2/joint_states /gazebo/model_states"
+        output="screen" />
+
+  <node name="trajectory_replay" pkg="sph_replay" type="replay_trajectory.py"
+        output="screen">
+    <param name="robot"    value="body2" />
+    <param name="npz_path" value="$(arg npz_path)" />
+    <param name="n_repeat" value="$(arg n_repeat)" />
+  </node>
+
+</launch>

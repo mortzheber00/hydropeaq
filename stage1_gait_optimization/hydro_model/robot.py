@@ -1,9 +1,6 @@
-"""
-Quadruped robot model built on Pinocchio with cylinder-primitive approximations.
+"""Pinocchio robot model with a cylinder approximation of every link.
 
-Pinocchio handles URDF parsing, kinematic tree, forward kinematics, and
-Jacobians.  On top of that, each link is approximated as a solid cylinder
-(radius = mesh RMS radius, length = joint-to-joint distance) for the
+The cylinders (radius = mesh RMS radius, length from the spec) feed the
 hydrodynamic model.
 """
 
@@ -16,35 +13,34 @@ import numpy as np
 import pinocchio as pin
 import trimesh
 
-# ---------------------------------------------------------------------------
-# Geometric primitive
-# ---------------------------------------------------------------------------
-
+from .coordinate_map import IdentityMap
+from .robots import LocalPoint, RobotSpec, get_spec
 
 @dataclass
 class CylinderPrimitive:
-    """Solid-cylinder approximation of a robot link.
+    """Solid-cylinder approximation of a link.
 
-    For leg links the cylinder spans between two skeleton joints
-    (centerline-projected).  The radius is the RMS perpendicular distance of
-    mesh vertices from the cylinder axis.
-
-    ``center_local`` is the offset of the cylinder midpoint from the link's
-    BODY-frame origin, expressed in the link LOCAL frame.  It is populated by
-    ``QuadrupedRobot.build_cylinders()`` and used by the CasADi symbolic
-    model to compute the correct world-frame cylinder centre from FK:
-
-        p_center_world = R_link @ center_local + t_link_world
+    ``center_local`` is the midpoint relative to the link frame, in link
+    coordinates; set by ``QuadrupedRobot.build_cylinders()``.
     """
 
-    radius: float  # [m] — mesh RMS radius, drives drag areas
+    radius: float  # [m] mesh RMS radius, drives drag areas
     length: float  # [m]
-    volume_displaced: float  # [m^3] actual displaced water — drives buoyancy and added mass
-    center: np.ndarray  # midpoint of the cylinder in world frame [m]
-    axis_world: np.ndarray  # unit vector along the cylinder axis (world frame)
-    axis_local: np.ndarray  # same axis expressed in the link body frame
+    volume_displaced: float  # [m^3] drives buoyancy and added mass
+    center: np.ndarray  # midpoint, world frame [m]
+    axis_world: np.ndarray  # unit axis, world frame
+    axis_local: np.ndarray  # unit axis, link frame
     center_local: np.ndarray = field(default_factory=lambda: np.zeros(3))
-    # offset of cylinder midpoint from link frame origin, in link LOCAL frame
+    volume_added: float | None = None  # added-mass volume; None -> volume_displaced
+
+    @property
+    def volume_entrained(self) -> float:
+        """Fluid volume for the added-mass terms.
+
+        Flat links entrain much more than their own volume, so the spec can
+        override it.
+        """
+        return self.volume_displaced if self.volume_added is None else self.volume_added
 
     @property
     def cross_section_axial(self) -> float:
@@ -65,12 +61,9 @@ class CylinderPrimitive:
         R_frame: np.ndarray,
         volume_displaced: float,
     ) -> CylinderPrimitive:
-        """Build a cylinder spanning from p_start to p_end (world frame).
+        """Cylinder from ``p_start`` to ``p_end`` (world frame).
 
-        Length = distance between the two points.
-        radius: mesh RMS radius (pre-computed by the caller).
-        volume_displaced: actual mesh volume used for buoyancy and added mass.
-        R_frame : 3x3 rotation of the link frame at build time (body to world frame).
+        ``R_frame`` is the link's body-to-world rotation at build time.
         """
         diff = p_end - p_start
         length = float(np.linalg.norm(diff))
@@ -88,63 +81,41 @@ class CylinderPrimitive:
         )
 
 
-# ---------------------------------------------------------------------------
-# Per-link data combining Pinocchio kinematics with cylinder geometry
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class LinkData:
-    """Physical properties of a single link, derived from Pinocchio."""
+    """Mass properties and cylinder of one link."""
 
     name: str
-    frame_id: int  # Pinocchio frame index (BODY type)
-    parent_joint: int  # Pinocchio joint index that moves this link
+    frame_id: int  # Pinocchio BODY frame
+    parent_joint: int  # Pinocchio joint moving this link
     mass: float  # [kg]
-    com_local: np.ndarray  # center of mass in joint frame [m]
+    com_local: np.ndarray  # CoM in joint frame [m]
     cylinder: CylinderPrimitive | None = field(default=None, init=False)
 
 
-# ---------------------------------------------------------------------------
-# Canonical ordering
-# ---------------------------------------------------------------------------
-
-LEG_NAMES = ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]
-JOINTS_PER_LEG = ["Side_joint", "Thigh_joint", "Calf_joint"]
-
-
-# ---------------------------------------------------------------------------
-# Main robot class
-# ---------------------------------------------------------------------------
-
-
 class QuadrupedRobot:
-    """Quadruped robot backed by Pinocchio with cylinder-approximated links.
+    """Pinocchio robot with cylinder-approximated links.
 
     Parameters
     ----------
-    urdf_path : str | Path
-        Path to the URDF file.
+    spec : RobotSpec | str | Path
+        A spec, its registry name, or its URDF path.
     """
 
-    def __init__(self, urdf_path: str | Path):
-        self.urdf_path = Path(urdf_path)
+    def __init__(self, spec: "RobotSpec | str | Path"):
+        self.spec = get_spec(spec)
+        self.urdf_path = Path(self.spec.urdf_path)
 
-        # Build Pinocchio model with a free-floating base so the robot body
-        # can translate and rotate in the world frame.
-        # Configuration layout: q = [x, y, z, qx, qy, qz, qw, joint_angles...]
-        #   nq = 7 (base) + 12 (joints) = 19
-        #   nv = 6 (base twist) + 12 (joints) = 18
-        # The base velocity v[0:3] is the linear velocity in the LOCAL (body)
-        # frame, and v[3:6] is the angular velocity in the LOCAL frame.
+        # Free-flyer base: q = [x, y, z, qx, qy, qz, qw, joints...],
+        # v = [body-frame linear velocity, body-frame angular velocity, joints...]
         self.model: pin.Model = pin.buildModelFromUrdf(
             str(self.urdf_path), pin.JointModelFreeFlyer()
         )
         self._recenter_base_y()
         self.data: pin.Data = self.model.createData()
 
-        # Build mesh-volume map: link_name -> displaced volume [m^3] from STL meshes.
-        # Geometry object names have a numeric suffix (e.g. "base_link_0"); strip it.
+        # Displaced volume per link from the collision meshes. Geometry names
+        # carry a numeric suffix (e.g. "base_link_0").
         _geom_model = pin.GeometryModel()
         pin.buildGeomFromUrdf(
             self.model,
@@ -158,61 +129,62 @@ class QuadrupedRobot:
         for go in _geom_model.geometryObjects:
             link_name = go.name.rsplit("_", 1)[0]
             _m = trimesh.load(go.meshPath)
-            # Non-watertight meshes (e.g. base_link has an open surface) fall back to
-            # convex hull so the displaced volume is a sensible upper bound.
+            # Open meshes fall back to the convex hull (an upper bound). Links
+            # made of disjoint parts need RobotSpec.volume_overrides instead.
             self.link_mesh_volumes[link_name] = float(_m.volume if _m.is_watertight else _m.convex_hull.volume)
             self.link_geom_objects[link_name] = go
+        self.link_mesh_volumes.update(self.spec.volume_overrides)
 
-        # Extract per-link data from Pinocchio frames
         self.links: dict[str, LinkData] = {}
         self._extract_links()
 
-        # Ordered actuated joint names (12 total: 3 per leg × 4 legs)
-        self.actuated_joint_names: list[str] = []
-        self._build_joint_order()
+        self.actuated_joint_names: list[str] = list(self.spec.actuated_joint_names)
+        missing = [n for n in self.actuated_joint_names if not self.model.existJointName(n)]
+        if missing:
+            raise ValueError(f"{self.spec.name}: URDF has no joint(s) {missing}")
 
-        # Map from our ordered joint index to Pinocchio joint index
         self.joint_pin_ids: list[int] = [
             self.model.getJointId(name) for name in self.actuated_joint_names
         ]
 
-        # Foot frame IDs for easy access
         self.foot_frame_ids: dict[str, int] = {}
-        for leg in LEG_NAMES:
-            fname = f"{leg}_Foot_link"
-            fid = self.model.getFrameId(fname)
-            self.foot_frame_ids[leg] = fid
+        self.foot_offsets: dict[str, np.ndarray] = {}
+        for leg, (frame_name, offset) in self.spec.foot_points.items():
+            self.foot_frame_ids[leg] = self._frame_id(frame_name)
+            self.foot_offsets[leg] = np.asarray(offset, dtype=float)
 
-    # ------------------------------------------------------------------
-    # Internal setup
-    # ------------------------------------------------------------------
+        self.coord_map = (
+            IdentityMap(self.n_actuated) if self.spec.coordinate_map is None
+            else self.spec.coordinate_map(self)
+        )
+
+    def _frame_id(self, name: str) -> int:
+        # getFrameId does not raise for unknown names.
+        if not self.model.existFrame(name):
+            raise ValueError(f"{self.spec.name}: URDF has no frame {name!r}")
+        return self.model.getFrameId(name)
+
+    # --- Setup ---
 
     def _recenter_base_y(self):
-        """Shift the base frame origin so the base CoM lies at y = 0.
+        """Move the base frame so the base CoM lies at y = 0.
 
-        The SolidWorks URDF export places the base frame origin ~4 mm off
-        the geometric centerline in y.  This makes left/right side-joint
-        origins asymmetric (±0.057 vs ±0.065) even though the physical
-        robot is symmetric.
-
-        Fix: move the base frame by dy (the base CoM y-offset) and
-        compensate every base-child joint placement by -dy so that all
-        joints remain at their original world-frame positions.
+        Fixes the ~4 mm lateral offset of amph's SolidWorks export; child joint
+        placements are compensated so their world positions stay unchanged.
+        Only enabled via ``spec.recenter_base_y``.
         """
-        # Joint 0 is the free-flyer "universe → base" virtual joint.
-        # Joint 1 is the first real joint (root_joint in Pinocchio).
-        # Base inertia is stored at joint index 1 for a free-flyer model.
-        base_jid = 1
+        if not self.spec.recenter_base_y:
+            return
+
+        base_jid = 1  # free-flyer joint; holds the base inertia
         dy = self.model.inertias[base_jid].lever[1]
         if abs(dy) < 1e-6:
             return
 
-        # Shift all joints whose parent is the base (the 4 side joints)
         for jid in range(2, self.model.njoints):
             if self.model.parents[jid] == base_jid:
                 self.model.jointPlacements[jid].translation[1] -= dy
 
-        # Zero out the base CoM y-offset
         self.model.inertias[base_jid].lever[1] = 0.0
 
     def _extract_links(self):
@@ -223,8 +195,7 @@ class QuadrupedRobot:
             name = frame.name
             joint_id = frame.parentJoint
 
-            # Pinocchio stores inertia per joint, not per frame (frame corresponds to urdf link).
-            # This holds for standard URDFs where each link has a single parent joint.
+            # Pinocchio stores inertia per joint; assumes one link per joint.
             inertia_pin = self.model.inertias[joint_id]
             mass = inertia_pin.mass
             if mass < 1e-8:
@@ -238,49 +209,44 @@ class QuadrupedRobot:
                 com_local=np.array(inertia_pin.lever),
             )
 
-    def _build_joint_order(self):
-        """Build canonical actuated joint ordering."""
-        for leg in LEG_NAMES:
-            for suffix in JOINTS_PER_LEG:
-                jname = f"{leg}_{suffix}"
-                if self.model.existJointName(jname):
-                    self.actuated_joint_names.append(jname)
-
-    # ------------------------------------------------------------------
-    # Forward kinematics (delegated to Pinocchio)
-    # ------------------------------------------------------------------
+    # --- Dimensions and kinematics ---
 
     @property
     def nq(self) -> int:
-        """Number of configuration variables (19 = 7 base + 12 joints)."""
+        """Tree configuration size."""
         return self.model.nq
 
     @property
     def nv(self) -> int:
-        """Number of velocity variables (18 = 6 base + 12 joints)."""
+        """Tree velocity size."""
         return self.model.nv
 
     @property
     def n_base_q(self) -> int:
-        """Configuration variables for the floating base (3 pos + 4 quat = 7)."""
+        """Base configuration size (3 position + 4 quaternion)."""
         return 7
 
     @property
     def n_base_v(self) -> int:
-        """Velocity variables for the floating base (3 lin + 3 ang = 6)."""
+        """Base velocity size (3 linear + 3 angular)."""
         return 6
 
     @property
     def n_actuated(self) -> int:
         return len(self.actuated_joint_names)
 
-    def neutral_config(self) -> np.ndarray:
-        """Return the neutral configuration.
+    @property
+    def nq_reduced(self) -> int:
+        """Configuration size in reduced coordinates (equals ``nq`` for serial robots)."""
+        return self.n_base_q + self.n_actuated
 
-        The floating base is placed at the origin with identity orientation
-        (quaternion w=1), and all joint angles are zero.  Always prefer this
-        over ``np.zeros(robot.nq)`` — a zero quaternion is not a valid rotation.
-        """
+    @property
+    def nv_reduced(self) -> int:
+        """Velocity size in reduced coordinates."""
+        return self.n_base_v + self.n_actuated
+
+    def neutral_config(self) -> np.ndarray:
+        """Neutral configuration; use instead of ``np.zeros(nq)``, which is not a valid pose."""
         return pin.neutral(self.model)
 
     def forward_kinematics(
@@ -289,18 +255,7 @@ class QuadrupedRobot:
         v: np.ndarray | None = None,
         a: np.ndarray | None = None,
     ) -> pin.Data:
-        """Run Pinocchio FK and update frame placements.
-
-        Parameters
-        ----------
-        q : (nq,) joint configuration.
-        v : (nv,) joint velocities (optional, needed for velocity-level FK).
-        a : (nv,) joint accelerations (optional, needed for acceleration-level FK).
-
-        Returns
-        -------
-        data : pinocchio.Data with updated oMi and oMf placements.
-        """
+        """Run FK (optionally with velocity and acceleration) and update frame placements."""
         if v is None and a is None:
             pin.forwardKinematics(self.model, self.data, q)
         elif a is None:
@@ -315,10 +270,7 @@ class QuadrupedRobot:
         return self.data.oMf[frame_id]
 
     def link_world_poses(self) -> dict[str, np.ndarray]:
-        """4x4 world-frame transforms for every link (call FK first).
-
-        Returns dict mapping link name → (4,4) homogeneous transform.
-        """
+        """World-frame 4x4 transform per link (call FK first)."""
         poses = {}
         for name, link in self.links.items():
             oMf = self.data.oMf[link.frame_id]
@@ -329,8 +281,6 @@ class QuadrupedRobot:
         """World-frame CoM position for each link (call FK first)."""
         coms = {}
         for name, link in self.links.items():
-            # CoM is stored relative to the joint frame; the BODY frame
-            # may have an offset, but for standard URDFs they coincide.
             oMj = self.data.oMi[link.parent_joint]
             coms[name] = np.array(
                 oMj.act(pin.SE3.Identity().translation + link.com_local)
@@ -339,21 +289,20 @@ class QuadrupedRobot:
 
     def foot_positions(self) -> dict[str, np.ndarray]:
         """World-frame foot positions (call FK first)."""
-        return {
-            leg: np.array(self.data.oMf[fid].translation)
-            for leg, fid in self.foot_frame_ids.items()
-        }
+        out = {}
+        for leg, fid in self.foot_frame_ids.items():
+            oMf = self.data.oMf[fid]
+            offset = self.foot_offsets[leg]
+            p = np.array(oMf.translation)
+            if offset.any():
+                p = p + np.array(oMf.rotation) @ offset
+            out[leg] = p
+        return out
 
-    # ------------------------------------------------------------------
-    # Cylinder primitives (skeleton-aligned)
-    # ------------------------------------------------------------------
+    # --- Cylinder primitives ---
 
     def _mesh_rms_radius(self, link_name: str, center: np.ndarray, axis_world: np.ndarray) -> float:
-        """RMS perpendicular distance of mesh vertices from the cylinder axis.
-
-        Vertices are transformed to world frame using the current FK and the
-        geometry object's placement, then projected perpendicular to axis_world.
-        """
+        """RMS distance of the link's mesh vertices from the given axis (call FK first)."""
         go = self.link_geom_objects.get(link_name)
         if go is None:
             raise ValueError(f"No geometry object for link {link_name!r}")
@@ -370,110 +319,111 @@ class QuadrupedRobot:
         perp = v_rel - (v_rel @ axis_world)[:, None] * axis_world[None, :]  # (N, 3)
         return float(np.sqrt(np.mean(np.sum(perp**2, axis=1))))
 
-    def build_cylinders(self):
-        """Assign a CylinderPrimitive to every link (call FK first).
+    def _resolve_point(self, endpoint, project_leg: str | None) -> np.ndarray:
+        """World position of a CylinderSpec endpoint (call FK first).
 
-        Leg links get cylinders spanning between centerline-projected joint
-        positions.  The base link uses inertia eigenvectors for axis/length.
-        Foot links share their calf link's axis with a short nominal length.
-
-        This mapping decides which skeleton segment each link belongs to:
-          - Side link  → side joint  → thigh joint
-          - Thigh link → thigh joint → calf joint
-          - Calf link  → calf joint  → foot frame
-          - Foot link  → same as calf (thin cap at the foot)
-          - Base link   → inertia eigenvectors for axis/length
+        A ``str`` is a joint name, or else a frame name. With ``project_leg``
+        the point is projected onto that leg's sagittal plane.
         """
-        # -- Base link (no joint-to-joint segment) --
-        base = self.links.get("base_link")
-        if base is not None:
-            oMj = self.data.oMi[base.parent_joint]
-            R_world = np.array(oMj.rotation)
-            com_world = np.array(oMj.translation) + R_world @ base.com_local
-
-            # Axis and length from inertia eigenvectors (no joint-to-joint segment for the root link).
-            # For a solid cylinder: I_axial = m*r^2/2, I_transverse = m*(3*r^2 + h^2)/12.
-            inertia = np.array(self.model.inertias[base.parent_joint].inertia)
-            eigvals, eigvecs = np.linalg.eigh(inertia)
-            idx_min = int(np.argmin(eigvals))
-            I_sym = eigvals[idx_min]
-            I_trans = float(np.mean([eigvals[i] for i in range(3) if i != idx_min]))
-            r_sq = 2.0 * I_sym / base.mass
-            h_sq = 12.0 * I_trans / base.mass - 3.0 * r_sq
-            length = np.sqrt(max(h_sq, 1e-10))
-            axis_local = eigvecs[:, idx_min]
-            axis_world = R_world @ axis_local
-
-            r_rms = self._mesh_rms_radius("base_link", com_world, axis_world)
-            base.cylinder = CylinderPrimitive(
-                radius=r_rms,
-                length=length,
-                volume_displaced=self.link_mesh_volumes.get("base_link", 0.0),
-                center=com_world,
-                axis_world=axis_world,
-                axis_local=axis_local,
+        if isinstance(endpoint, LocalPoint):
+            oMf = self.data.oMf[self._frame_id(endpoint.link)]
+            p = np.array(oMf.translation) + np.array(oMf.rotation) @ np.asarray(
+                endpoint.xyz, dtype=float
             )
-            self._set_center_local(base)
+        elif self.model.existJointName(endpoint):
+            p = np.array(self.data.oMi[self.model.getJointId(endpoint)].translation)
+        elif self.model.existFrame(endpoint):
+            p = np.array(self.data.oMf[self.model.getFrameId(endpoint)].translation)
+        else:
+            raise ValueError(
+                f"{self.spec.name}: cylinder endpoint {endpoint!r} is neither a joint nor a frame"
+            )
 
-        # -- Leg links --
-        for leg in LEG_NAMES:
-            proj = self.leg_centerline_positions(leg)
+        if project_leg is not None:
+            plane_pt, normal = self.leg_sagittal_plane(project_leg)
+            p = p - np.dot(p - plane_pt, normal) * normal
+        return p
 
-            segments = {
-                "Side": (proj["side"], proj["thigh"]),
-                "Thigh": (proj["thigh"], proj["calf"]),
-                "Calf": (proj["calf"], proj["foot"]),
-            }
+    def build_cylinders(self):
+        """Build a cylinder for every link in ``spec.cylinders`` (call FK first).
 
-            for link_type, (p_start, p_end) in segments.items():
-                link_name = f"{leg}_{link_type}_link"
-                link = self.links.get(link_name)
-                if link is None:
-                    continue
+        Specs are processed in order, so a ``copy`` must come after its ``ref``.
+        """
+        for cs in self.spec.cylinders:
+            link = self.links.get(cs.link)
+            if link is None:
+                raise ValueError(
+                    f"{self.spec.name}: cylinder spec names link {cs.link!r}, "
+                    f"which has no mass-carrying frame in the model"
+                )
+            volume = self.link_mesh_volumes.get(cs.link, 0.0)
+
+            if cs.kind == "inertia":
+                oMj = self.data.oMi[link.parent_joint]
+                R_world = np.array(oMj.rotation)
+                center = np.array(oMj.translation) + R_world @ link.com_local
+
+                # Solid cylinder: I_axial = m*r^2/2, I_transverse = m*(3*r^2 + h^2)/12
+                inertia = np.array(self.model.inertias[link.parent_joint].inertia)
+                eigvals, eigvecs = np.linalg.eigh(inertia)
+                idx_min = int(np.argmin(eigvals))
+                I_sym = eigvals[idx_min]
+                I_trans = float(np.mean([eigvals[i] for i in range(3) if i != idx_min]))
+                r_sq = 2.0 * I_sym / link.mass
+                h_sq = 12.0 * I_trans / link.mass - 3.0 * r_sq
+                axis_local = eigvecs[:, idx_min]
+                axis_world = R_world @ axis_local
+                link.cylinder = CylinderPrimitive(
+                    radius=self._mesh_rms_radius(cs.link, center, axis_world),
+                    length=np.sqrt(max(h_sq, 1e-10)),
+                    volume_displaced=volume,
+                    center=center,
+                    axis_world=axis_world,
+                    axis_local=axis_local,
+                )
+
+            elif cs.kind == "segment":
+                p_start = self._resolve_point(cs.start, cs.project_leg)
+                p_end = self._resolve_point(cs.end, cs.project_leg)
                 diff = p_end - p_start
                 axis_world = diff / max(float(np.linalg.norm(diff)), 1e-6)
                 center = (p_start + p_end) / 2.0
-                r_rms = self._mesh_rms_radius(link_name, center, axis_world)
-                R_frame = np.array(self.data.oMf[link.frame_id].rotation)
                 link.cylinder = CylinderPrimitive.from_segment(
-                    p_start, p_end, r_rms, R_frame,
-                    volume_displaced=self.link_mesh_volumes.get(link_name, 0.0),
+                    p_start, p_end,
+                    self._mesh_rms_radius(cs.link, center, axis_world),
+                    np.array(self.data.oMf[link.frame_id].rotation),
+                    volume_displaced=volume,
                 )
-                self._set_center_local(link)
 
-            # Foot link: thin cylinder at the foot with calf's radius
-            foot_name = f"{leg}_Foot_link"
-            calf_name = f"{leg}_Calf_link"
-            foot_link = self.links.get(foot_name)
-            calf_link = self.links.get(calf_name)
-            if (
-                foot_link is not None
-                and calf_link is not None
-                and calf_link.cylinder is not None
-            ):
-                foot_pos = proj["foot"]
-                foot_vol = self.link_mesh_volumes.get(foot_name, 0.0)
-                foot_length = 0.01  # nominal thin cap
-                r_rms = self._mesh_rms_radius(foot_name, foot_pos, calf_link.cylinder.axis_world)
-                foot_link.cylinder = CylinderPrimitive(
-                    radius=r_rms,
-                    length=foot_length,
-                    volume_displaced=foot_vol,
-                    center=foot_pos,
-                    axis_world=calf_link.cylinder.axis_world,
-                    axis_local=calf_link.cylinder.axis_local,
+            elif cs.kind == "copy":
+                ref = self.links[cs.ref].cylinder
+                if ref is None:
+                    raise ValueError(
+                        f"{self.spec.name}: {cs.link!r} copies {cs.ref!r}, "
+                        f"which is not built yet — reorder spec.cylinders"
+                    )
+                center = self._resolve_point(cs.at, cs.project_leg)
+                link.cylinder = CylinderPrimitive(
+                    radius=self._mesh_rms_radius(cs.link, center, ref.axis_world),
+                    length=cs.length,
+                    volume_displaced=volume,
+                    center=center,
+                    axis_world=ref.axis_world,
+                    axis_local=ref.axis_local,
                 )
-                self._set_center_local(foot_link)
+
+            else:
+                raise ValueError(f"unknown CylinderSpec kind {cs.kind!r}")
+
+            if cs.radius is not None:
+                link.cylinder.radius = cs.radius
+            if cs.added_mass_volume is not None:
+                link.cylinder.volume_added = cs.added_mass_volume
+
+            self._set_center_local(link)
 
     def _set_center_local(self, link: "LinkData") -> None:
-        """Compute cylinder.center_local from the current FK placement.
-
-        center_local = R_frame^T @ (center_world - frame_origin_world)
-
-        This stores the cylinder midpoint as a fixed offset in the link's
-        LOCAL body frame so the symbolic model can reconstruct the correct
-        world-frame position via  p = R_sym @ center_local + t_sym.
-        """
+        """Store the cylinder midpoint in link coordinates for the symbolic model."""
         oMf = self.data.oMf[link.frame_id]
         R = np.array(oMf.rotation)  # world_R_local
         t = np.array(oMf.translation)  # frame origin in world
@@ -489,9 +439,7 @@ class QuadrupedRobot:
             pin.ReferenceFrame.WORLD,
         )
 
-    # ------------------------------------------------------------------
-    # Dynamics helpers (thin wrappers for convenience)
-    # ------------------------------------------------------------------
+    # --- Numeric dynamics ---
 
     def mass_matrix(self, q: np.ndarray) -> np.ndarray:
         """Joint-space mass matrix M(q)."""
@@ -505,47 +453,45 @@ class QuadrupedRobot:
         """Pure gravity torque g(q)."""
         return pin.computeGeneralizedGravity(self.model, self.data, q)
 
-    # ------------------------------------------------------------------
-    # Sagittal-plane (centerline) projection
-    # ------------------------------------------------------------------
+    # --- Leg planes ---
 
     def leg_sagittal_plane(self, leg: str) -> tuple[np.ndarray, np.ndarray]:
-        """Compute the sagittal plane for a leg (call FK first).
+        """``(point, unit normal)`` of a leg's sagittal plane (call FK first).
 
-        Parameters
-        ----------
-        leg : one of LEG_NAMES, e.g. "Front_Left".
-
-        Returns
-        -------
-        point : (3,) a point on the plane (the side joint position).
-        normal : (3,) outward-pointing unit normal (world y direction).
+        Defined by the origin and local y-axis of ``spec.leg_plane_joint[leg]``.
         """
-        side_jid = self.model.getJointId(f"{leg}_Side_joint")
-        oMj = self.data.oMi[side_jid]
+        jname = self.spec.leg_plane_joint.get(leg)
+        if jname is None:
+            raise ValueError(
+                f"{self.spec.name}: no leg_plane_joint for {leg!r}; a robot whose "
+                f"legs are already planar should leave CylinderSpec.project_leg unset"
+            )
+        oMj = self.data.oMi[self.model.getJointId(jname)]
         point = np.array(oMj.translation)
-        # Normal is the side joint's local Y-axis rotated into world frame
-        normal = np.array(oMj.rotation[:, 1])  # second column = local Y
+        normal = np.array(oMj.rotation[:, 1])  # local y-axis
         normal /= np.linalg.norm(normal)
         return point, normal
+
+    def leg_skeleton(self, leg: str) -> list[tuple[np.ndarray, np.ndarray]]:
+        """World-frame segments of one leg's ``segment`` cylinders (call FK first).
+
+        Returns separate segments so closed-chain legs can be drawn too.
+        """
+        out = []
+        for cs in self.spec.cylinders:
+            if cs.kind != "segment" or leg not in cs.link:
+                continue
+            out.append((self._resolve_point(cs.start, cs.project_leg),
+                        self._resolve_point(cs.end, cs.project_leg)))
+        return out
 
     def leg_centerline_positions(
         self,
         leg: str,
     ) -> dict[str, np.ndarray]:
-        """Project leg joint/foot positions onto the leg's sagittal plane.
+        """Side, thigh, calf and foot positions projected onto the leg plane (call FK first).
 
-        Removes the lateral (y) offset so the kinematic chain lies in a
-        single plane — useful for 2D trajectory visualization and for
-        formulating planar optimal control.
-
-        Call FK first.
-
-        Returns
-        -------
-        positions : dict with keys "side", "thigh", "calf", "foot",
-                    each a (3,) world-frame position projected onto the
-                    sagittal plane.
+        Only for amph-style serial legs.
         """
         plane_pt, normal = self.leg_sagittal_plane(leg)
 
@@ -564,10 +510,6 @@ class QuadrupedRobot:
             "calf": _project(np.array(self.data.oMi[calf_jid].translation)),
             "foot": _project(np.array(self.data.oMf[foot_fid].translation)),
         }
-
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
 
     def total_mass(self) -> float:
         """Total robot mass [kg] from the Pinocchio model."""

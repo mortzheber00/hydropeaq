@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Runs on the HOST before the container is created.
-# Grants the container access to the host X11 server (skipped if no display, e.g. SSH without X forwarding).
+# Runs on the host before the container is created.
+# Allows the container to use the host X server (skipped without a display).
 if [ -n "$DISPLAY" ]; then
     xhost +local:docker
 else

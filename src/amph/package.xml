@@ -11,13 +11,14 @@ for amph robot</p>
   <license>BSD</license>
   <buildtool_depend>catkin</buildtool_depend>
   <depend>roslaunch</depend>
-  <depend>roscpp</depend>
-  <depend>trajectory_msgs</depend>
   <depend>gazebo_ros</depend>
   <depend>robot_state_publisher</depend>
   <depend>rviz</depend>
   <depend>joint_state_publisher_gui</depend>
   <depend>gazebo</depend>
+  <!-- swimming_pool.launch runs the replay node and the URDF loads the replay
+       plugin; both live in sph_replay -->
+  <depend>sph_replay</depend>
   <export>
     <architecture_independent />
   </export>

@@ -1,15 +1,11 @@
-"""
-3D visualization of the cylinder-approximated quadruped robot.
-
-Uses matplotlib for a static 3D view showing each link as a cylinder
-at the pose computed by Pinocchio forward kinematics.
-"""
+"""Matplotlib 3D views of the robot skeleton and its cylinder approximation."""
 
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
+from matplotlib.ticker import MaxNLocator
 
 from .robot import QuadrupedRobot
 
@@ -51,7 +47,6 @@ def _rotation_align_z_to(target: np.ndarray) -> np.ndarray:
     return np.eye(3) + vx + vx @ vx * (1 - c) / (s * s + 1e-15)
 
 
-# Color palette for different link types
 LINK_COLORS = {
     "base": "#4A90D9",
     "side": "#E8A838",
@@ -61,12 +56,31 @@ LINK_COLORS = {
 }
 
 
-def _link_color(name: str) -> str:
-    name_lower = name.lower()
-    for key, color in LINK_COLORS.items():
-        if key in name_lower:
-            return color
-    return "#888888"
+# Cycled along a leg's cylinder chain; excludes the base colour.
+_SEGMENT_COLORS = [LINK_COLORS["side"], LINK_COLORS["thigh"], LINK_COLORS["calf"],
+                   LINK_COLORS["foot"], "#E17FB0", "#7FD4C1"]
+
+
+def link_color_key(robot: QuadrupedRobot) -> tuple[dict[str, str], dict[str, str]]:
+    """``({link name: colour}, {legend label: colour})`` for one robot.
+
+    Links named like amph's (side, thigh, ...) use ``LINK_COLORS``; others are
+    coloured by chain position and labelled by their name suffix (BODY2: 1.1 ...).
+    """
+    base = robot.spec.base_link
+    colors = {base: LINK_COLORS["base"]}
+    legend = {"Base": LINK_COLORS["base"]}
+    for leg in robot.spec.leg_names:
+        links = [cs.link for cs in robot.spec.cylinders if leg in cs.link]
+        for idx, name in enumerate(links):
+            key = next((k for k in LINK_COLORS if k in name.lower()), None)
+            if key is not None:
+                colors[name], label = LINK_COLORS[key], key.capitalize()
+            else:
+                colors[name] = _SEGMENT_COLORS[idx % len(_SEGMENT_COLORS)]
+                label = name.split(leg, 1)[-1].strip("_")
+            legend[label] = colors[name]
+    return colors, legend
 
 
 def _set_equal_aspect(ax, points: np.ndarray, margin: float = 1.2):
@@ -89,31 +103,27 @@ def visualize_skeleton(
     robot: QuadrupedRobot,
     q: np.ndarray | None = None,
     centerline: bool = True,
-    title: str = "Robot Kinematic Skeleton",
+    title: str | None = None,
     elev: float = 25.0,
     azim: float = -60.0,
     figsize: tuple[float, float] = (12, 9),
     save_path: str | None = None,
 ) -> plt.Figure:
-    """Render the kinematic skeleton: joints as nodes, links as edges.
+    """Draw the kinematic skeleton: joints as markers, links as lines.
 
     Parameters
     ----------
-    robot : QuadrupedRobot
-        Pinocchio-backed robot model.
-    q : joint angles (defaults to zeros).
-    centerline : if True (default), project each leg's thigh/calf/foot
-        onto the leg's sagittal plane so the chain appears planar.
-        The raw (offset) positions are shown as faint ghost markers.
-    title : plot title.
+    q : configuration (default: neutral).
+    centerline : unused; projection is set by ``CylinderSpec.project_leg``.
+    title : optional title (thesis figures leave it to the caption).
     elev, azim : camera angles.
-    figsize : figure size.
-    save_path : if given, save figure to this path.
+    save_path : if given, save the figure there.
     """
-    from .robot import LEG_NAMES
+    LEG_NAMES = robot.spec.leg_names
+    colors, legend = link_color_key(robot)
 
     if q is None:
-        q = np.zeros(robot.nq)
+        q = robot.neutral_config()
 
     robot.forward_kinematics(q)
 
@@ -122,7 +132,7 @@ def visualize_skeleton(
 
     all_pts = []
 
-    # -- Base (universe) joint --
+    # --- Base ---
     base_pos = np.array(robot.data.oMi[0].translation)
     base_R = np.array(robot.data.oMi[0].rotation)
     all_pts.append(base_pos)
@@ -139,56 +149,27 @@ def visualize_skeleton(
         color="dimgray",
     )
 
-    # -- Draw each leg --
+    # --- Legs ---
+    feet = robot.foot_positions()
     for leg in LEG_NAMES:
-        # Raw joint positions from Pinocchio
-        side_jid = robot.model.getJointId(f"{leg}_Side_joint")
-        thigh_jid = robot.model.getJointId(f"{leg}_Thigh_joint")
-        calf_jid = robot.model.getJointId(f"{leg}_Calf_joint")
+        segments = robot.leg_skeleton(leg)
         foot_fid = robot.foot_frame_ids[leg]
+        # Colour of the link carrying the foot point
+        foot_color = colors.get(robot.spec.foot_points[leg][0], LINK_COLORS["foot"])
 
-        raw = {
-            "side": np.array(robot.data.oMi[side_jid].translation),
-            "thigh": np.array(robot.data.oMi[thigh_jid].translation),
-            "calf": np.array(robot.data.oMi[calf_jid].translation),
-            "foot": np.array(robot.data.oMf[foot_fid].translation),
-        }
-
-        if centerline:
-            proj = robot.leg_centerline_positions(leg)
-            # Show raw positions as faint ghost markers
-            for key in ["thigh", "calf", "foot"]:
-                ax.scatter(*raw[key], s=12, c="gray", alpha=0.3, zorder=2)
-                # Dashed line from ghost to projected
-                ax.plot(
-                    *zip(raw[key], proj[key]),
-                    color="gray",
-                    linewidth=0.5,
-                    linestyle=":",
-                    alpha=0.4,
-                )
-            pts = proj
-        else:
-            pts = raw
-
-        # Joint markers and frame axes
-        chain = ["side", "thigh", "calf"]
-        jids = [side_jid, thigh_jid, calf_jid]
-        for key, jid in zip(chain, jids):
-            pos = pts[key]
-            R = np.array(robot.data.oMi[jid].rotation)
-            all_pts.append(pos)
-            ax.scatter(*pos, s=40, c="k", zorder=5)
-            _draw_frame_axes(ax, pos, R, length=0.012)
+        # Joint markers at each segment start
+        for p_start, _ in segments:
+            all_pts.append(p_start)
+            ax.scatter(*p_start, s=40, c="k", zorder=5)
 
         # Foot marker
-        foot_pos = pts["foot"]
+        foot_pos = feet[leg]
         foot_R = np.array(robot.data.oMf[foot_fid].rotation)
         all_pts.append(foot_pos)
         ax.scatter(
             *foot_pos,
             s=60,
-            c="#9B59B6",
+            c=foot_color,
             marker="v",
             edgecolors="k",
             linewidths=0.5,
@@ -196,60 +177,31 @@ def visualize_skeleton(
         )
         _draw_frame_axes(ax, foot_pos, foot_R, length=0.015)
 
-        # Connecting lines: base→side→thigh→calf, calf--foot
-        ax.plot(
-            *zip(base_pos, pts["side"]),
-            color=_link_color("side"),
-            linewidth=2.5,
-            alpha=0.8,
-        )
-        ax.plot(
-            *zip(pts["side"], pts["thigh"]),
-            color=_link_color("side"),
-            linewidth=2.5,
-            alpha=0.8,
-        )
-        ax.plot(
-            *zip(pts["thigh"], pts["calf"]),
-            color=_link_color("thigh"),
-            linewidth=2.5,
-            alpha=0.8,
-        )
-        ax.plot(
-            *zip(pts["calf"], pts["foot"]),
-            color=_link_color("calf"),
-            linewidth=2.0,
-            linestyle="--",
-            alpha=0.7,
-        )
-
-        # Labels
-        for key in ["side", "thigh", "calf"]:
-            pos = pts[key]
-            label = f"{leg}\n{key}".replace("_", "\n")
-            ax.text(
-                pos[0],
-                pos[1],
-                pos[2] + 0.005,
-                label,
-                fontsize=4,
-                ha="center",
-                va="bottom",
-                color="dimgray",
-            )
+        # Segments, plus base -> first joint and last joint -> foot
+        for idx, (p_start, p_end) in enumerate(segments):
+            ax.plot(*zip(p_start, p_end), color=_SEGMENT_COLORS[idx % len(_SEGMENT_COLORS)],
+                    linewidth=2.5, alpha=0.8)
+        if segments:
+            ax.plot(*zip(base_pos, segments[0][0]), color=_SEGMENT_COLORS[0],
+                    linewidth=2.5, alpha=0.8)
+            ax.plot(*zip(segments[-1][1], foot_pos), color=foot_color,
+                    linewidth=2.0, linestyle="--", alpha=0.7)
 
     all_pts = np.array(all_pts)
     _set_equal_aspect(ax, all_pts)
+    # Force 0.1 m ticks to match the geometry figures.
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10]))
 
-    ax.set_xlabel("X [m]")
-    ax.set_ylabel("Y [m]")
-    ax.set_zlabel("Z [m]")
-    ax.set_title(title)
+    ax.set_xlabel("X [m]", fontsize=8)
+    ax.set_ylabel("Y [m]", fontsize=8)
+    ax.set_zlabel("Z [m]", fontsize=8)
+    if title:
+        ax.set_title(title)
     ax.view_init(elev=elev, azim=azim)
 
     legend_elements = [
-        Patch(facecolor=c, edgecolor="k", label=n.capitalize())
-        for n, c in LINK_COLORS.items()
+        Patch(facecolor=c, edgecolor="k", label=n) for n, c in legend.items()
     ]
     ax.legend(handles=legend_elements, loc="upper left", fontsize=8)
 
@@ -259,17 +211,14 @@ def visualize_skeleton(
     return fig
 
 
-# ---------------------------------------------------------------------------
-# Geometry-representation helpers and figures
-# ---------------------------------------------------------------------------
+# --- Geometry representation figures ---
 
 
 def _make_urdf_transform_manager(robot: QuadrupedRobot):
     """Load the robot URDF into a pytransform3d UrdfTransformManager."""
     from pytransform3d.urdf import UrdfTransformManager
 
-    # package_dir replaces 'package://' in mesh filenames, so it needs a
-    # trailing slash: 'package://amph/meshes/x.STL' -> '<pkg_root>/amph/meshes/x.STL'
+    # Replaces "package://", hence the trailing slash.
     package_dir = str(robot.urdf_path.parent.parent.parent) + "/"
     with open(robot.urdf_path) as f:
         urdf_str = f.read()
@@ -279,7 +228,7 @@ def _make_urdf_transform_manager(robot: QuadrupedRobot):
 
 
 def _draw_cylinder(ax, center, axis_world, radius, length, color, alpha=0.6, n=16, edgecolor="k"):
-    """Draw a single cylinder on ax, returning its surface points."""
+    """Draw one cylinder and return its surface points."""
     X, Y, Z = _cylinder_mesh(radius, length, n_facets=n)
     R_cyl = _rotation_align_z_to(axis_world)
     pts = []
@@ -295,19 +244,17 @@ def _draw_cylinder(ax, center, axis_world, radius, length, color, alpha=0.6, n=1
 def visualize_robot_representations(
     robot: QuadrupedRobot,
     q: np.ndarray | None = None,
-    title: str = "Robot Geometry",
+    title: str | None = None,
     elev: float = 25.0,
     azim: float = -60.0,
     figsize: tuple[float, float] = (7, 6),
     save_prefix: str | None = None,
     save_suffix: str = ".png",
 ) -> dict[str, plt.Figure]:
-    """The four geometry representations, each on its own figure.
+    """Mesh, drag cylinders, buoyancy cylinders and their overlay as four figures.
 
-    STL mesh, drag cylinder, buoyancy/added-mass cylinder, and all three
-    overlaid — split into four standalone figures sharing one bounding box.
-    Returns a dict keyed by "mesh", "drag", "buoyancy", "overlay".  If
-    ``save_prefix`` is given, each figure is written to
+    Returns ``{"mesh", "drag", "buoyancy", "overlay": Figure}`` with a shared
+    bounding box. With ``save_prefix`` each is saved as
     ``<save_prefix>_<key><save_suffix>``.
     """
     import warnings
@@ -315,17 +262,27 @@ def visualize_robot_representations(
     import matplotlib.colors as mcolors
 
     if q is None:
-        q = np.zeros(robot.nq)
+        q = robot.neutral_config()
 
+    colors, legend = link_color_key(robot)
     robot.forward_kinematics(q)
     robot.build_cylinders()
 
     tm = _make_urdf_transform_manager(robot)
-    for i, jname in enumerate(robot.actuated_joint_names):
-        tm.set_joint(jname, float(q[7 + i]))
+    # Set all tree joints (passive ones close the loops on closed-chain robots).
+    # Continuous joints are stored as (cos, sin).
+    for jid in range(1, robot.model.njoints):
+        joint = robot.model.joints[jid]
+        if joint.nq == 1:
+            angle = float(q[joint.idx_q])
+        elif joint.nq == 2:
+            angle = float(np.arctan2(q[joint.idx_q + 1], q[joint.idx_q]))
+        else:  # free-flyer base
+            continue
+        tm.set_joint(robot.model.names[jid], angle)
     for v in tm.visuals:
         link_name = v.frame.split("visual:")[1].rsplit("/", 1)[0]
-        v.color = list(mcolors.to_rgba(_link_color(link_name)))
+        v.color = list(mcolors.to_rgba(colors.get(link_name, "#888888")))
 
     subtitles = {
         "mesh": "STL mesh",
@@ -356,7 +313,7 @@ def visualize_robot_representations(
                 cyl = link.cylinder
                 if cyl is None:
                     continue
-                color = _link_color(name)
+                color = colors.get(name, "#888888")
                 r_vol = np.sqrt(max(cyl.volume_displaced / (np.pi * cyl.length), 1e-8))
                 if kind == "drag":
                     all_pts.extend(
@@ -373,7 +330,7 @@ def visualize_robot_representations(
         figs[kind] = fig
         axes[kind] = ax
 
-    # Mesh vertices for a bounding box shared across all four figures.
+    # Shared bounding box from the mesh vertices
     for name in robot.links:
         go = robot.link_geom_objects.get(name)
         if go is None:
@@ -387,8 +344,7 @@ def visualize_robot_representations(
     all_pts_arr = np.array(all_pts)
 
     legend_elements = [
-        Patch(facecolor=c, edgecolor="k", label=n.capitalize())
-        for n, c in LINK_COLORS.items()
+        Patch(facecolor=c, edgecolor="k", label=n) for n, c in legend.items()
     ]
     overlay_legend = legend_elements + [
         Patch(facecolor="white", edgecolor="#1a1a6e", label="Drag cyl. edge"),
@@ -403,8 +359,9 @@ def visualize_robot_representations(
         ax.set_zlabel("Z [m]", fontsize=8)
         ax.view_init(elev=elev, azim=azim)
         ax.legend(handles=overlay_legend if kind == "overlay" else legend_elements,
-                  loc="upper left", fontsize=6)
-        fig.suptitle(f"{title}: {subtitles[kind]}", fontsize=10)
+                  loc="upper left", fontsize=8)
+        if title:
+            fig.suptitle(f"{title}: {subtitles[kind]}", fontsize=10)
         fig.tight_layout()
         if save_prefix is not None:
             fig.savefig(f"{save_prefix}_{kind}{save_suffix}", dpi=150, bbox_inches="tight")

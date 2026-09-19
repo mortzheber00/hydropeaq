@@ -34,6 +34,17 @@ RUN apt-get update && \
         ros-${ROS_DISTRO}-camera-info-manager \
     && rm -rf /var/lib/apt/lists/*
 
+# Minimal LaTeX toolchain for matplotlib usetex + SciencePlots (thesis figures).
+# --no-install-recommends keeps this to the parts needed to render plots.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        texlive-latex-base \
+        texlive-latex-recommended \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        cm-super \
+        dvipng \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install build dependencies for NRP Gazebo and SPlisHSPlasH.
 # These are compiled outside conda to avoid ABI conflicts.
 RUN apt-get update && apt-get install -y --fix-missing \
@@ -76,6 +87,12 @@ RUN apt-get update && apt-get install -y --fix-missing \
         libxinerama-dev \
         libxcursor-dev \
         libxi-dev \
+        libblas3 \
+        libblas-dev \
+        liblapack3 \
+        liblapack-dev \
+        gfortran \
+        libmetis-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CUDA toolkit for SPlisHSPlasH GPU neighborhood search (cuNSearch).
@@ -104,6 +121,11 @@ RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download
 # Install remaining Python dependencies into the conda env
 COPY requirements.txt /tmp/requirements.txt
 RUN /opt/conda/envs/robot/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ffmpeg for matplotlib video export (stage3_visualization/sph/leg_flow_slices.py).
+# Kept as a late layer so adding it does not invalidate the CUDA/conda layers above.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Expose ROS Noetic and system Python packages to the conda Python 3.8 env only.
 # A .pth file in site-packages is scoped to that interpreter — unlike PYTHONPATH

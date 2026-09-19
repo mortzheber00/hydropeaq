@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="robot_only">
+
+    <!-- BODY2 with nothing acting on it but the replay plugin: no fluid plugin,
+         no pool, no ground.  This is body2_pool.world with everything except the
+         robot removed, so that the prescribed gait can be inspected on its own.
+
+         GRAVITY IS OFF so the robot stays in frame.  Set it to 0 0 -9.81 to
+         watch it fall; with no ground it will simply drop out of view, which is
+         why it is off here.
+
+         Note that <gravity> belongs to <world>, not to <physics>: since SDF 1.5
+         a <gravity> inside <physics> is ignored without warning and you silently
+         get the -9.8 default.  body2_pool.world has it in the same wrong place,
+         which goes unnoticed there only because the value it asks for happens to
+         match the default. -->
+
+    <gravity>0 0 -0.0</gravity>
+
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+    </physics>
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <include>
+      <uri>model://BODY2</uri>
+      <pose>0 0 1.0 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>

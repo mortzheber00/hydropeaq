@@ -122,7 +122,7 @@
     <plugin name="gazebo_fluids" filename="libFluidSimulator.so">
       <fluidConfiguration>
         <timeStepSize>0.001</timeStepSize>
-        <particleRadius>0.0035</particleRadius>
+        <particleRadius>0.025</particleRadius>
         <simulationMethod>4</simulationMethod>
         <gravitation>0 0 -9.81</gravitation>
         <cflMethod>1</cflMethod>

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""
-Direct collocation OCP for efficient swimming gait.
+"""Solve the periodic swimming-gait OCP for one robot (Radau collocation).
 
-Uses degree-3 Radau collocation within each interval.
-Minimises squared joint torques over a periodic swim cycle.
-The cycle period T is a free optimization variable; the performance
-target is an average forward speed (distance / T), not distance per
-cycle, so the optimizer can pick the most efficient stride frequency.
+Minimises joint power plus smoothness and drift penalties subject to an average
+speed floor; the cycle period is free. Settings come from the robot's
+``OCPSettings``. Writes task3_guess.npz and task3_solution.npz and logs to
+MLflow (localhost:5000).
+
+Usage:
+  python stage1_gait_optimization/trajopt/run_collocation.py
+  python stage1_gait_optimization/trajopt/run_collocation.py --robot body2
 """
 
 import sys
@@ -17,60 +19,54 @@ sys.path.insert(0, str(STAGE1_DIR))
 
 import mlflow
 import numpy as np
-from hydro_model import QuadrupedRobot, SymbolicDynamics
-from initial_guess import build_initial_guess, build_robot_ik_initial_guess
+from hydro_model import SymbolicDynamics, load_robot
+from hydro_model.trajectory import coords_of, save_solution
+from initial_guess import (
+    build_initial_guess,
+    build_robot_ik_initial_guess,
+)
 from ocp_common import (
     _log_solver_stats,
+    add_symmetry_constraints,
     build_collocation_nlp,
+    cost_of_transport,
+    cycle_energy,
     diagnose_initial_guess,
     extract_solution,
     tangent_to_legacy,
 )
 
-URDF_PATH = STAGE1_DIR.parent / "src" / "amph" / "urdf" / "amph.urdf"
-
-# ── OCP parameters ──────────────────────────────────────────────────────
-N = 64          # collocation intervals
-T_INIT = 1.0    # initial-guess cycle period [s] (warm start; T is now free)
-T_MIN = 1.0     # cycle-period bounds [s]
-T_MAX = 1.0
-D_TARGET = 0.2  # forward distance per nominal cycle [m]
-V_TARGET = D_TARGET / T_INIT  # required average forward speed [m/s]
-TAU_MAX = 3.5   # joint torque limit [Nm]
-F_C = 20.0      # actuator bandwidth [Hz] — first-order filter cutoff
-W_POWER = 2.0    # weight for sum-of-squared per-joint mechanical power (τ·q̇)²
-W_DIST = 0.5    # weight for forward distance reward
-W_VEL_SMOOTH = 20.0  # weight for velocity smoothing
-W_DRIFT = 10.0   # weight for drift penalty
-HEADING_TOL = 0.05  # max yaw angle at endpoint (radians)
-ENFORCE_SYMMETRY = False  # LSPG: q_right(t) = q_left(t + T/2) for thigh & calf
-
-D_COLLOC = 3    # polynomial degree (Radau collocation points)
-
-# ── Initial guess gait (Qu et al. 2025) ─────────────────────────────────
-GAIT = "LSPG33"  # "LSPG25", "LSPG33", "TLPG50", or "Prototype" (robot IK guess)
+# OCP parameters live in each robot's spec (hydro_model/robots/<name>.py).
 
 
-def build_ocp():
+def build_ocp(robot_name: str = "amph"):
+    # --- Robot and dynamics ---
+    print("Building robot and symbolic dynamics...")
+    robot = load_robot(robot_name)
+    dyn = SymbolicDynamics(robot)
+    nq = robot.nq_reduced
+    COORDS = coords_of(robot)
+
+    cfg = robot.spec.ocp
+    N, T_INIT, GAIT, TAU_MAX = cfg.n, cfg.t_init, cfg.gait, cfg.tau_max
+
     mlflow.set_tracking_uri("http://localhost:5000")
     mlflow.set_experiment("gait_ocp")
-    mlflow.start_run(tags={"initial gait": GAIT, "method": "collocation"})
+    mlflow.start_run(tags={"initial gait": GAIT, "method": "collocation",
+                       "robot": robot_name})
     mlflow.log_params({
-        "N": N, "T_INIT": T_INIT, "T_MIN": T_MIN, "T_MAX": T_MAX,
-        "TAU_MAX": TAU_MAX, "GAIT": GAIT, "V_TARGET": V_TARGET,
-        "D_COLLOC": D_COLLOC, "HEADING_TOL": HEADING_TOL, "F_C": F_C,
-        "ENFORCE_SYMMETRY": ENFORCE_SYMMETRY,
+        "robot": robot_name, "N": N, "T_INIT": T_INIT,
+        "T_MIN": cfg.t_min, "T_MAX": cfg.t_max,
+        "TAU_MAX": TAU_MAX, "GAIT": GAIT, "V_TARGET": cfg.v_target,
+        "D_COLLOC": cfg.d_colloc, "HEADING_TOL": cfg.heading_tol, "F_C": cfg.f_c,
+        "ENFORCE_SYMMETRY": cfg.enforce_symmetry,
+        "SYMMETRY_PHASE": cfg.symmetry_phase,
+        "W_POWER": cfg.w_power, "W_DIST": cfg.w_dist,
+        "W_VEL_SMOOTH": cfg.w_vel_smooth, "W_DRIFT": cfg.w_drift,
+        "W_JOINT_SMOOTH": cfg.w_joint_smooth,
     })
 
-    # ── 1. Robot & dynamics ─────────────────────────────────────────────
-    print("Building robot and symbolic dynamics...")
-    robot = QuadrupedRobot(URDF_PATH)
-    robot.forward_kinematics(np.zeros(robot.nq))
-    robot.build_cylinders()
-    dyn = SymbolicDynamics(robot)
-    nq = robot.nq
-
-    # ── 2. Initial guess ────────────────────────────────────────────────
+    # --- Initial guess ---
     print(f"Building initial guess from paper trajectory ({GAIT})...")
     if GAIT in ["LSPG25", "LSPG33", "TLPG50"]:
         X_guess, U_guess = build_initial_guess(dyn, GAIT, N, T_INIT, TAU_MAX)
@@ -81,15 +77,15 @@ def build_ocp():
 
     print(f"  Torque guess RMS = {np.sqrt(np.mean(U_guess**2)):.3f} Nm")
     print(f"  Torque guess max = {np.max(np.abs(U_guess)):.3f} Nm")
-    np.savez("task3_guess.npz", T=T_INIT, X=X_guess, U=U_guess, N=N, nq=nq)
-    mlflow.log_artifact("task3_guess.npz")
-    print("  Initial guess saved to task3_guess.npz")
+    guess_path = save_solution("task3_guess.npz", T=T_INIT, X=X_guess, U=U_guess,
+                               N=N, nq=nq, robot=robot_name, coords=COORDS)
+    mlflow.log_artifact(str(guess_path))
+    print(f"  Initial guess saved to {guess_path}")
 
-    # F=None: collocation has no single-step integrator to check defects
-    # against; the cost-term breakdown is still useful for weight tuning.
+    # No integrator for collocation, so only the cost-term breakdown is printed.
     diagnose_initial_guess(
         X_guess, U_guess, nq, N, T_INIT,
-        W_POWER, W_DIST, W_VEL_SMOOTH, W_DRIFT, F=None,
+        cfg.w_power, cfg.w_dist, cfg.w_vel_smooth, cfg.w_drift, F=None,
     )
 
     save = input("Stop optimization after initial guess? [y/N] ").strip().lower()
@@ -98,50 +94,35 @@ def build_ocp():
         mlflow.end_run()
         return
 
-    # ── 3. NLP setup (shared collocation transcription) ─────────────────
+    # --- NLP ---
     print("Setting up NLP...")
     nlp = build_collocation_nlp(
         dyn, robot, X_guess, U_guess, N,
-        t_lo=T_MIN, t_hi=T_MAX, t_init=T_INIT,
-        v_target=V_TARGET, f_c=F_C, heading_tol=HEADING_TOL, d_colloc=D_COLLOC,
+        t_lo=cfg.t_min, t_hi=cfg.t_max, t_init=T_INIT,
+        v_target=cfg.v_target, f_c=cfg.f_c, heading_tol=cfg.heading_tol,
+        d_colloc=cfg.d_colloc,
     )
     opti = nlp["opti"]
     X, U, T = nlp["X"], nlp["U"], nlp["T"]
     alpha = nlp["alpha"]
     q_ref_quat = nlp["q_ref_quat"]
 
-    # Objective: shared effort / smoothness / drift terms plus a forward-distance
-    # reward (this driver rewards distance directly; the codesign evaluator does
-    # not, relying on the speed floor instead).
-    dist_cost = -W_DIST * (X[0, -1] - X[0, 0]) / T
+    # Unlike the codesign evaluator, this objective also has a distance reward.
+    dist_cost = -cfg.w_dist * (X[0, -1] - X[0, 0]) / T
     opti.minimize(
-        W_POWER * nlp["power_cost"]
+        cfg.w_power * nlp["power_cost"]
         + dist_cost
-        + W_VEL_SMOOTH * nlp["vel_smooth_cost"]
-        + W_DRIFT * nlp["drift_cost"]
+        + cfg.w_vel_smooth * nlp["vel_smooth_cost"]
+        + cfg.w_joint_smooth * nlp["joint_smooth_cost"]
+        + cfg.w_drift * nlp["drift_cost"]
     )
 
-    # ── Left–right symmetry (LSPG) ──────────────────────────────────────
-    # Right-leg joints at time t equal left-leg joints at t + T/2.
-    # T/2 lands on grid point k + N//2 (needs even N). Periodicity makes the
-    # reverse pairing automatic, so one direction per leg pair suffices.
-    # Side joints are pinned to 0 (sign-flip under reflection), so only the
-    # sagittal-plane thigh/calf positions are constrained — the matching joint
-    # velocities follow from the kinematic collocation constraint (q̇ = v), so
-    # constraining them too would be redundant and over-determine the NLP.
-    if ENFORCE_SYMMETRY:
-        assert N % 2 == 0, "LSPG symmetry needs even N so T/2 lands on a grid point"
-        half = N // 2
-        qj0 = 6           # first joint-position row in tangent state
-        # Leg order is [FL, FR, HL, HR]; (right_leg, left_leg) pairs:
-        sym_pairs = [(1, 0), (3, 2)]   # FR↔FL, HR↔HL
-        for k in range(N):
-            kp = (k + half) % N
-            for r_leg, l_leg in sym_pairs:
-                for off in (1, 2):     # thigh, calf
-                    opti.subject_to(X[qj0 + 3 * r_leg + off, k] == X[qj0 + 3 * l_leg + off, kp])
+    sym_phase = []      # phase variable per leg pair
+    if cfg.enforce_symmetry:
+        sym_phase = add_symmetry_constraints(
+            opti, X, X_guess, robot, N, phases=cfg.symmetry_phase)
 
-    # ── 4. Solve ────────────────────────────────────────────────────────
+    # --- Solve ---
     opti.solver(
         "ipopt",
         {
@@ -171,8 +152,24 @@ def build_ocp():
         U_val = src.value(U)
         mlflow.log_param("T_solved", round(T_val, 4))
         mlflow.log_param("bandwidth_alpha", round(float(src.value(alpha)), 4))
-        X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model)
-        extract_solution(X_val, U_val, nq, N, T_val)
+        for (r_leg, _), p in zip(robot.spec.lr_leg_pairs, sym_phase):
+            solved = float(src.value(p)) % 1.0    # delta is unbounded; wrap it
+            mlflow.log_param(f"phase_solved_{r_leg}", round(solved, 4))
+            print(f"  solved phase {r_leg}: {solved:.4f} cycles")
+        X_val = tangent_to_legacy(Xt_val, q_ref_quat, robot.model,
+                                  nq=robot.nq_reduced, nv=robot.nv_reduced)
+        Xc_val = src.value(nlp["Xc"])  # kept in tangent coordinates
+        # Same COT definition as the codesign sweep, so results are comparable.
+        forward = float(X_val[0, -1] - X_val[0, 0])
+        energy = cycle_energy(U_val, Xc_val[nlp["V_J"], :],
+                              nlp["B"], nlp["d"], N, T_val)
+        cot = cost_of_transport(energy, robot, forward)
+        print(f"  Cycle energy         = {energy:.4f} J")
+        print(f"  Cost of transport    = {cot:.4f}")
+        mlflow.log_metrics({"energy": energy, "cot": cot})
+        extract_solution(X_val, U_val, nq, N, T_val,
+                         robot=robot_name, coords=COORDS,
+                         Xc_val=Xc_val)
 
     try:
         sol = opti.solve()
@@ -193,4 +190,8 @@ def build_ocp():
 
 
 if __name__ == "__main__":
-    build_ocp()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--robot", default="amph", help="registered robot name")
+    build_ocp(parser.parse_args().robot)

@@ -1,51 +1,51 @@
 #!/usr/bin/env python3
-"""
-CasADi-symbolic dynamics validation.
+"""Check the CasADi dynamics against Pinocchio and print sample evaluations.
 
-This script:
-  1. Builds the Pinocchio model and cylinder geometry.
-  2. Constructs CasADi symbolic functions for all dynamics terms.
-  3. Verifies the symbolic functions against Pinocchio numeric results.
-  4. Demonstrates forward and inverse dynamics with hydrodynamic forces.
-"""
+Compares mass matrix, gravity and foot FK at a test pose, then prints forward/
+inverse dynamics and the hydrodynamic terms. Robot is set by ``ROBOT``.
 
-from pathlib import Path
+Usage:
+  python stage1_gait_optimization/run_dynamics_validation.py
+"""
 
 import numpy as np
-from hydro_model import QuadrupedRobot, SymbolicDynamics
+from hydro_model import SymbolicDynamics, load_robot
 
-URDF_PATH = Path(__file__).parent.parent / "src" / "amph" / "urdf" / "amph.urdf"
+ROBOT = "body2"   # registered robot name; see hydro_model/robots/
+
 
 
 def main():
-    # ── 1. Build robot + cylinders ─────────────────────────────────────
-    robot = QuadrupedRobot(URDF_PATH)
-    q0 = np.zeros(robot.nq)
-    robot.forward_kinematics(q0)
-    robot.build_cylinders()
+    # --- Robot and cylinders ---
+    # load_robot already builds the cylinders at the neutral pose; np.zeros(nq)
+    # would be invalid for continuous joints.
+    robot = load_robot(ROBOT)
     print(robot)
     print()
 
-    # ── 2. Build symbolic dynamics ─────────────────────────────────────
+    # --- Symbolic dynamics ---
     print("Building CasADi symbolic dynamics...")
     dyn = SymbolicDynamics(robot)
     dyn.print_summary()
     print()
 
-    # ── 2. Trim state ──────────────────────────────────────────────────
+    # --- Trim state ---
     print("\nFinding trim state...")
     q_trim = dyn.find_trim_state()
     print(f"\nq_trim = {q_trim}")
     print()
 
-    # ── 3. Verify against Pinocchio numeric ────────────────────────────
+    # --- Compare with Pinocchio ---
+    # Small offset from home so a closed-chain robot stays assemblable.
+    spec = robot.spec
+    theta_home = (np.zeros(robot.n_actuated) if spec.theta_home is None
+                  else np.asarray(spec.theta_home, dtype=float))
+    theta_test = theta_home + 0.05 * np.sin(np.arange(robot.n_actuated) + 1.0)
+
     q_test = robot.neutral_config()
     q_test[0:3] = [0.1, 0.0, 0.0]
     q_test[3:7] = [0.0, 0.0, 0.0, 1.0]
-    q_test[7:19] = [
-        0.1, 0.3, -0.2, 0.0, 0.4, -0.1,
-        0.2, -0.3, 0.1, -0.1, 0.2, -0.4,
-    ]
+    q_test[7:] = robot.coord_map.expand_numeric(theta_test)
     v_test = np.ones(robot.nv) * 0.05
 
     # Mass matrix
@@ -63,14 +63,14 @@ def main():
 
     # FK foot positions
     robot.forward_kinematics(q_test)
-    for leg in ["Front_Left", "Front_Right", "Hind_Left", "Hind_Right"]:
+    for leg in robot.spec.leg_names:
         pos_sym = np.array(dyn.f_foot_pos[leg](q_test)).flatten()
         pos_pin = robot.foot_positions()[leg]
         err = np.linalg.norm(pos_sym - pos_pin)
         print(f"  Foot {leg} FK error: {err:.2e}")
     print()
 
-    # ── 4. Evaluate dynamics ───────────────────────────────────────────
+    # --- Forward and inverse dynamics ---
     tau_zero = np.zeros(robot.nv)
 
     a_free = dyn.eval_forward_dynamics(q_test, v_test, tau_zero)
@@ -81,11 +81,12 @@ def main():
     tau_hold = dyn.eval_inverse_dynamics(
         q_test, np.zeros(robot.nv), np.zeros(robot.nv)
     )
+
     print("Inverse dynamics (hold position, zero velocity/acceleration):")
     print(f"  tau = {tau_hold}")
     print()
 
-    # ── 5. Hydrodynamic contributions ──────────────────────────────────
+    # --- Hydrodynamic terms ---
     tau_buoy = np.array(dyn.f_tau_buoyancy(q_test)).flatten()
     tau_drag = np.array(dyn.f_tau_drag(q_test, v_test)).flatten()
     M_added = np.array(dyn.f_M_added(q_test))
@@ -97,7 +98,7 @@ def main():
     print(f"  M_added / M_rb ratio (diag): {np.diag(M_added) / np.diag(M_sym)}")
     print()
 
-    # ── 6. State-space ODE ─────────────────────────────────────────────
+    # --- State-space ODE ---
     x0 = np.concatenate([q_test, v_test])
     xdot = np.array(dyn.f_xdot(x0, tau_zero)).flatten()
     print("State-space ODE (x = [q, v]):")
